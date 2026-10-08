@@ -42,6 +42,13 @@ Context for future Claude sessions ("previously on..."). Read this first.
   - The UI selector lists the files; **Reload** re-reads the current one.
   - New models need no code change. STEP bodies will become another object
     type.
+- `Wire` (scene_model.py, 2D or 3D): the edges along its staircase (same
+  rasterizer as ports) are set to PEC. Solvers raise an error if a port edge
+  lies on PEC. Half-wave vibrator check (`fdtd3d_halfwave`): E = 0 on the wire,
+  current maximal at the feed and falling toward the tips. Input impedance is
+  120+100j Ohm at h = λ/20 and 105+80j Ohm at h = λ/40, converging toward the
+  thin-dipole 73 Ohm; the gap and the staircase wire radius dominate the
+  error. The sign convention of X is not verified yet.
 - **Charge editor** (static charge models: analytic / grid): the toolbar
   "Edit" button calls `controller.set_edit_mode`. `edit_tool.ChargeEditTool`
   turns mouse events into controller calls (`charge_at`, `select_charge`,

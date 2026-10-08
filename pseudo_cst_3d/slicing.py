@@ -21,7 +21,7 @@ from field import FieldSource, GridArray, Quantity
 from field3d import AXIS_INDEX
 from mesh import RectangularMesh2D
 from scene3d import BoxRegion, Port3D, SphereRegion
-from scene_model import DiskRegion, Port, RectRegion, SceneModel
+from scene_model import DiskRegion, Port, RectRegion, SceneModel, Wire
 
 PLANE_AXES = {"z": ("x", "y"), "y": ("x", "z"), "x": ("y", "z")}
 
@@ -257,15 +257,23 @@ def slice_scene(scene3d, plane, tolerance=None):
                     obj.material, name=obj.name,
                 ))
 
-        elif isinstance(obj, Port3D):
+        elif isinstance(obj, (Port3D, Wire)):
+            # Segment in the plane -> 2D segment; crossing it -> a point.
             a, b = np.asarray(obj.a, float), np.asarray(obj.b, float)
 
             if abs(a[n] - p) <= tol and abs(b[n] - p) <= tol:
-                out.add(Port((a[ui], a[vi]), (b[ui], b[vi]), name=obj.name))
+                pa, pb = (a[ui], a[vi]), (b[ui], b[vi])
             elif (a[n] - p) * (b[n] - p) < 0.0:
                 t = (p - a[n]) / (b[n] - a[n])
                 c = a + t * (b - a)
-                out.add(Port((c[ui], c[vi]), (c[ui], c[vi]), name=obj.name))
+                pa = pb = (c[ui], c[vi])
+            else:
+                continue
+
+            if isinstance(obj, Wire):
+                out.add(Wire(pa, pb, obj.material, name=obj.name))
+            else:
+                out.add(Port(pa, pb, name=obj.name))
 
     return out
 

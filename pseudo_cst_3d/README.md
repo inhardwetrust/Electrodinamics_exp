@@ -98,8 +98,9 @@ hi = [50, 1.5]
 heatmap = "Hz"
 ```
 
-Object types: `charge`, `port`, `rect`, `disk` (2D); `port`, `box`, `sphere`
-(3D). The full key reference is at the top of `model_spec.py`.
+Object types: `charge`, `port`, `rect`, `disk`, `wire` (2D); `port`, `box`,
+`sphere`, `wire` (3D). A `wire` is a thin PEC conductor along a segment; see
+`models/fdtd3d_halfwave.toml` for a half-wave vibrator fed in its gap. The full key reference is at the top of `model_spec.py`.
 
 **Canvas keys:**
 

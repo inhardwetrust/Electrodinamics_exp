@@ -6,7 +6,7 @@ from vispy import app, scene
 
 from layer_views import create_layer_view
 from layers import ScalarLayer
-from scene_model import DiskRegion, PointCharge, Port, RectRegion
+from scene_model import DiskRegion, PointCharge, Port, RectRegion, Wire
 
 
 def _skip_redundant_qt_swap(canvas):
@@ -369,6 +369,15 @@ class VisPyRenderer:
     PEC_EDGE = (0.9, 0.9, 0.95, 1.0)
 
     def _render_materials(self):
+        for wire in self.scene_model.get_objects(Wire):
+            pts = np.array([wire.a, wire.b], np.float32)
+            if np.allclose(pts[0], pts[1]):
+                # A wire crossing a 3D slice plane.
+                scene.visuals.Markers(pos=pts[:1], size=7, face_color=self.PEC_EDGE,
+                                      edge_color=self.PEC_EDGE, parent=self.material_root)
+            else:
+                scene.visuals.Line(pts, color=self.PEC_EDGE, width=4, parent=self.material_root)
+
         for region in self.scene_model.objects:
             if not isinstance(region, (RectRegion, DiskRegion)):
                 continue

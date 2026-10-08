@@ -16,7 +16,8 @@
 #                 period, steps_per_period, amplitude               (oscillating)
 #   [numerics]    courant (FDTD);  k, softening (point charges)
 #   [materials]   glass = { eps_r = 4.0, sigma = 0.0 },  metal = { pec = true }
-#   [[objects]]   type = "charge" | "port" | "rect" | "disk" | "box" | "sphere"
+#   [[objects]]   type = "charge" | "port" | "rect" | "disk" | "wire" (2D)
+#                        "port" | "box" | "sphere" | "wire" (3D)
 #   [view]        height, heatmap, arrows, steps_per_frame,
 #                 slice = { normal = "y", position = 0.0 }          (3D)
 
@@ -25,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from scene3d import BoxRegion, Port3D, SphereRegion
-from scene_model import DiskRegion, Material, PointCharge, Port, RectRegion
+from scene_model import DiskRegion, Material, PointCharge, Port, RectRegion, Wire
 
 MODELS_DIR = Path(__file__).resolve().parent / "models"
 
@@ -51,11 +52,13 @@ OBJECT_TYPES = {
         "port": ({"a", "b"}, {"name"}),
         "rect": ({"lo", "hi", "material"}, {"name"}),
         "disk": ({"center", "radius", "material"}, {"name"}),
+        "wire": ({"a", "b", "material"}, {"name"}),
     },
     3: {
         "port": ({"a", "b"}, {"name"}),
         "box": ({"lo", "hi", "material"}, {"name"}),
         "sphere": ({"center", "radius", "material"}, {"name"}),
+        "wire": ({"a", "b", "material"}, {"name"}),
     },
 }
 
@@ -235,6 +238,17 @@ def _parse_object(index, obj, dims, materials, fail):
         b = _vector(obj["b"], dims, f"{what}.b", fail)
         port_name = name or "port"
         return Port3D(a=a, b=b, name=port_name) if dims == 3 else Port(a=a, b=b, name=port_name)
+
+    if kind == "wire":
+        mat = material()
+        if not mat.pec:
+            fail(f"{what}: a wire must be made of a PEC material (pec = true)")
+        return Wire(
+            a=_vector(obj["a"], dims, f"{what}.a", fail),
+            b=_vector(obj["b"], dims, f"{what}.b", fail),
+            material=mat,
+            name=name,
+        )
 
     if kind in ("rect", "box"):
         lo = _vector(obj["lo"], dims, f"{what}.lo", fail)

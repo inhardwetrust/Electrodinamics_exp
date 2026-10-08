@@ -8,7 +8,7 @@ from domain import SimulationDomain2D
 from field import GridArray, GridFieldSource, Quantity
 from mesh import RectangularMesh2D
 from params import Parameter
-from scene_model import DiskRegion, Port, RectRegion
+from scene_model import DiskRegion, Port, RectRegion, Wire
 from simulation import Simulation
 from waveforms import WAVEFORMS, waveform
 
@@ -359,6 +359,11 @@ class FdtdTE2D(Simulation):
         self._eps_c = np.where(pec_c, 0.0, eps_c)
         self._eps_max = float(max(self._eps_ex.max(), self._eps_ey.max()))
 
+        # Thin wires: the edges along their staircase become PEC.
+        for wire in self.scene_model.get_objects(Wire):
+            for kind, row, col, _ in self._port_edges(wire):
+                (self._pec_ex if kind == "x" else self._pec_ey)[row, col] = True
+
     @staticmethod
     def _edge_coefficients(eps, sigma, pec, dt):
         loss = sigma * dt / (2.0 * eps)
@@ -410,6 +415,9 @@ class FdtdTE2D(Simulation):
         # Port edges: E -= Cb J  (Cb includes dt / eps of the local material).
         self._port_ex_k = (cb_ex[self._ex_rows, self._ex_cols] * self._ex_signs).astype(f32)
         self._port_ey_k = (cb_ey[self._ey_rows, self._ey_cols] * self._ey_signs).astype(f32)
+
+        if np.any(self._pec_ex[self._ex_rows, self._ex_cols]) or np.any(self._pec_ey[self._ey_rows, self._ey_cols]):
+            raise ValueError("a port lies on metal (PEC) edges; leave a gap for the port")
 
         # Scratch buffers for in-place updates.
         self._tmp_c1 = np.empty((ny, nx), dtype=f32)
@@ -504,12 +512,12 @@ class FdtdTE2D(Simulation):
         for i, j in ((i0, j0), (i1, j1)):
             if not (1 <= i <= self.nx - 1 and 1 <= j <= self.ny - 1):
                 raise ValueError(
-                    f"Port {port.name!r} must lie inside the domain "
+                    f"{type(port).__name__} {port.name!r} must lie inside the domain "
                     "(away from the absorbing boundary)"
                 )
 
         if (i0, j0) == (i1, j1):
-            raise ValueError(f"Port {port.name!r} is shorter than one cell")
+            raise ValueError(f"{type(port).__name__} {port.name!r} is shorter than one cell")
 
         n_i, n_j = abs(i1 - i0), abs(j1 - j0)
         di = 1 if i1 > i0 else -1

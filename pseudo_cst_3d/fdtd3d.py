@@ -7,6 +7,7 @@ import numpy as np
 from field3d import Field3D, GridArray3D
 from params import Parameter
 from scene3d import BoxRegion, Port3D, SphereRegion
+from scene_model import Wire
 from simulation import Simulation
 from waveforms import WAVEFORMS, waveform
 
@@ -297,6 +298,11 @@ class FdtdYee3D(Simulation):
         self._eps_c = np.where(pec_c, 0.0, eps_c)
         self._eps_max = float(max(self._mat[n][0].max() for n in ("ex", "ey", "ez")))
 
+        # Thin wires: the edges along their staircase become PEC.
+        for wire in self.scene_model.get_objects(Wire):
+            for axis, k, j, i, _ in self._port_edges(wire):
+                self._mat["e" + axis][2][k, j, i] = True
+
     def _build_update_coefficients(self):
         dt = self.dt
         interior = {
@@ -324,6 +330,9 @@ class FdtdYee3D(Simulation):
             kk, jj, ii, signs = self._port_idx[axis]
             coef = (cb_full[name][kk, jj, ii] * signs).astype(np.float32) if len(kk) else np.zeros(0, np.float32)
             self._port[axis] = (kk, jj, ii, coef)
+
+            if len(kk) and np.any(self._mat[name][2][kk, jj, ii]):
+                raise ValueError("a port lies on metal (PEC) edges; leave a gap for the port")
 
         self._build_cpml()
 
@@ -430,9 +439,9 @@ class FdtdYee3D(Simulation):
 
         for p in (start, end):
             if not all(1 <= p[a] <= sizes[a] - 1 for a in range(3)):
-                raise ValueError(f"Port {port.name!r} must lie inside the domain")
+                raise ValueError(f"{type(port).__name__} {port.name!r} must lie inside the domain")
         if start == end:
-            raise ValueError(f"Port {port.name!r} is shorter than one cell")
+            raise ValueError(f"{type(port).__name__} {port.name!r} is shorter than one cell")
 
         counts = [abs(end[a] - start[a]) for a in range(3)]
         signs = [1 if end[a] > start[a] else -1 for a in range(3)]

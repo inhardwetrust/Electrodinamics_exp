@@ -1,0 +1,51 @@
+name = "FDTD 3D - half-wave vibrator (two wire arms)"
+description = """Real half-wave dipole: two thin metal arms, fed only in the gap. Unlike the
+ideal line-current 'dipole', the current along the arms is not prescribed -
+it arranges itself (maximum at the feed, zero at the tips)."""
+solver = "fdtd3d"
+
+[domain]
+bounds = [[-1.75, -1.75, -1.75], [1.75, 1.75, 1.75]]   # PML inside
+cells_per_wavelength = 20                               # h = 0.05; 70^3 cells
+
+[boundary]
+kind = "pml"
+cells = 10
+
+[excitation]
+frequency = 1.0           # wavelength 1: total length 0.5 = half a wavelength
+waveform = "sine"
+
+[numerics]
+courant = 0.5
+
+[materials]
+metal = { pec = true }
+
+# Feed: the port spans only the gap between the arms (2 cells).
+[[objects]]
+type = "port"
+name = "feed"
+a = [0.0, 0.0, -0.05]
+b = [0.0, 0.0, 0.05]
+
+[[objects]]
+type = "wire"
+name = "upper arm"
+material = "metal"
+a = [0.0, 0.0, 0.05]
+b = [0.0, 0.0, 0.25]
+
+[[objects]]
+type = "wire"
+name = "lower arm"
+material = "metal"
+a = [0.0, 0.0, -0.25]
+b = [0.0, 0.0, -0.05]
+
+[view]
+height = 3.5
+heatmap = "|E|"
+arrows = "E"
+steps_per_frame = 1
+slice = { normal = "y", position = 0.0 }

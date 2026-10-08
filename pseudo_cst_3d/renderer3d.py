@@ -21,7 +21,7 @@ from layer_views import create_layer_view
 from layers import ScalarLayer
 from renderer import _skip_redundant_qt_swap
 from scene3d import BoxRegion, Port3D, SphereRegion
-from scene_model import DiskRegion, Port, RectRegion
+from scene_model import DiskRegion, Port, RectRegion, Wire
 
 BOX_EDGES = [
     (0, 1), (1, 3), (3, 2), (2, 0),
@@ -266,6 +266,9 @@ class VisPyRenderer3D:
             if isinstance(obj, Port3D):
                 scene.visuals.Line(np.array([obj.a, obj.b], np.float32), color=self.PORT_COLOR,
                                    width=4, parent=root)
+            elif isinstance(obj, Wire):
+                scene.visuals.Line(np.array([obj.a, obj.b], np.float32), color=self.PEC_EDGE,
+                                   width=5, parent=root)
             elif isinstance(obj, BoxRegion):
                 color = self.PEC_EDGE if obj.material.pec else self.DIELECTRIC_EDGE
                 scene.visuals.Line(box_segments(obj.lo, obj.hi), connect="segments",
@@ -352,6 +355,13 @@ class VisPyRenderer3D:
                 scene.visuals.Markers(pos=np.array([obj.a, obj.b], np.float32), size=9,
                                       face_color=(0, 0, 0, 0), edge_color=self.PORT_COLOR,
                                       edge_width=2, parent=self.cut_root)
+            elif isinstance(obj, Wire):
+                pts = np.array([obj.a, obj.b], np.float32)
+                if np.allclose(pts[0], pts[1]):
+                    scene.visuals.Markers(pos=pts[:1], size=7, face_color=self.PEC_EDGE,
+                                          edge_color=self.PEC_EDGE, parent=self.cut_root)
+                else:
+                    scene.visuals.Line(pts, color=self.PEC_EDGE, width=4, parent=self.cut_root)
         self._apply_depth_rules()
 
     # =====================================================

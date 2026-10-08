@@ -77,6 +77,21 @@ class DiskRegion:
         return dx * dx + dy * dy <= self.radius * self.radius
 
 
+@dataclass
+class Wire:
+    """
+    Thin perfectly conducting wire along the segment a -> b (2D or 3D:
+    a and b have 2 or 3 coordinates). FDTD marks the grid edges along a
+    staircase between the nearest nodes as PEC - the classic "thin wire"
+    with an effective radius of a fraction of a cell.
+    """
+
+    a: tuple
+    b: tuple
+    material: Material
+    name: str = ""
+
+
 T = TypeVar("T")
 
 
