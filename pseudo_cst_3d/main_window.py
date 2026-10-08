@@ -16,6 +16,8 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QDoubleSpinBox,
+    QListWidget,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -61,6 +63,9 @@ class MainWindow(QMainWindow):
         self.slice_dock = self._make_dock("Slice (3D)", Qt.DockWidgetArea.RightDockWidgetArea)
         self.sim_dock = self._make_dock("Simulation", Qt.DockWidgetArea.RightDockWidgetArea)
         self.slice_dock.hide()
+        self.editor_dock = self._make_dock("Editor", Qt.DockWidgetArea.RightDockWidgetArea)
+        self.editor_dock.setWidget(self._build_editor_panel())
+        self.editor_dock.hide()
 
         # Permanent hint; showMessage() is used for temporary messages only.
         hint = QLabel(KEY_HINT)
@@ -99,6 +104,11 @@ class MainWindow(QMainWindow):
         )
         toolbar.addWidget(reload_button)
 
+        self.edit_button = QPushButton("Edit")
+        self.edit_button.setCheckable(True)
+        self.edit_button.toggled.connect(self._edit_toggled)
+        toolbar.addWidget(self.edit_button)
+
     def _make_dock(self, title, area):
         dock = QDockWidget(title, self)
         dock.setFeatures(
@@ -127,6 +137,15 @@ class MainWindow(QMainWindow):
         if old is not None and key == old.model_key and not force:
             return
 
+        if old is not None and old.dirty and not force:
+            answer = QMessageBox.question(
+                self, "Unsaved edits",
+                f"Discard the unsaved charge edits in \"{old.spec.name}\"?",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                self._select_in_combo(old.model_key)
+                return
+
         try:
             controller = AppController(model=key, embedded=True)
         except ModelError as error:
@@ -143,6 +162,17 @@ class MainWindow(QMainWindow):
         self.controller = controller
         self.controller.add_listener(self._on_controller_event)
 
+        self.edit_button.blockSignals(True)
+        self.edit_button.setChecked(False)
+        self.edit_button.blockSignals(False)
+        self.edit_button.setEnabled(controller.can_edit)
+        self.edit_button.setToolTip(
+            "Select and drag charges on the canvas"
+            if controller.can_edit
+            else "Editing is available for static charge models"
+        )
+        self.editor_dock.hide()
+
         # Views of this controller (3D scene / flat slice) share the central
         # area as pages of a stack. Replacing the central widget deletes the
         # previous model's canvases.
@@ -150,7 +180,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.view_stack)
         canvas_widget = self._show_active_view()
 
-        self._select_in_combo(key)
+        self._select_in_combo(self.controller.model_key)
 
         self.layers_dock.setWidget(self._scrollable(self._build_layers_panel()))
         self.sim_dock.setWidget(self._scrollable(self._build_simulation_panel()))
@@ -166,6 +196,17 @@ class MainWindow(QMainWindow):
 
     def _select_in_combo(self, key):
         index = self.mode_combo.findData(key)
+
+        if index < 0 and self.controller is not None and key == self.controller.model_key:
+            # A model opened from a file outside models/: list it too.
+            self.mode_combo.blockSignals(True)
+            self.mode_combo.addItem(self.controller.spec.name, key)
+            self.mode_combo.setItemData(
+                self.mode_combo.count() - 1, str(self.controller.spec.path),
+                Qt.ItemDataRole.ToolTipRole,
+            )
+            self.mode_combo.blockSignals(False)
+            index = self.mode_combo.count() - 1
         if index >= 0 and index != self.mode_combo.currentIndex():
             self.mode_combo.blockSignals(True)
             self.mode_combo.setCurrentIndex(index)
@@ -327,6 +368,133 @@ class MainWindow(QMainWindow):
         return panel
 
     # =====================================================
+    # Charge editor
+    # =====================================================
+
+    def _build_editor_panel(self):
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+
+        hint = QLabel("Click a charge to select it, drag to move it.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: gray;")
+        layout.addWidget(hint)
+
+        self.charge_list = QListWidget()
+        self.charge_list.setMinimumHeight(110)
+        self.charge_list.currentRowChanged.connect(self._charge_row_changed)
+        layout.addWidget(self.charge_list, 1)
+
+        form = QFormLayout()
+        self.charge_x = self._editor_spin(-1000.0, 1000.0, 0.05, 3)
+        self.charge_y = self._editor_spin(-1000.0, 1000.0, 0.05, 3)
+        self.charge_q = self._editor_spin(-100.0, 100.0, 0.5, 3)
+        self.charge_x.valueChanged.connect(lambda v: self._charge_edited(position_axis=0, value=v))
+        self.charge_y.valueChanged.connect(lambda v: self._charge_edited(position_axis=1, value=v))
+        self.charge_q.valueChanged.connect(lambda v: self._charge_edited(charge=v))
+        form.addRow("x", self.charge_x)
+        form.addRow("y", self.charge_y)
+        form.addRow("charge q", self.charge_q)
+        layout.addLayout(form)
+
+        row = QHBoxLayout()
+        add = QPushButton("Add charge")
+        add.clicked.connect(lambda: self.controller.add_charge())
+        self.delete_button = QPushButton("Delete")
+        self.delete_button.clicked.connect(self._delete_charge)
+        row.addWidget(add)
+        row.addWidget(self.delete_button)
+        layout.addLayout(row)
+
+        row = QHBoxLayout()
+        save = QPushButton("Save to file")
+        save.clicked.connect(self._save_model)
+        revert = QPushButton("Revert")
+        revert.setToolTip("Reload the model file, dropping unsaved edits")
+        revert.clicked.connect(lambda: self.load_model(self.controller.model_key, force=True))
+        row.addWidget(save)
+        row.addWidget(revert)
+        layout.addLayout(row)
+
+        self.editor_status = QLabel()
+        layout.addWidget(self.editor_status)
+        return panel
+
+    @staticmethod
+    def _editor_spin(lo, hi, step, decimals):
+        spin = QDoubleSpinBox()
+        spin.setRange(lo, hi)
+        spin.setSingleStep(step)
+        spin.setDecimals(decimals)
+        spin.setKeyboardTracking(False)
+        return spin
+
+    def _edit_toggled(self, on):
+        self.controller.set_edit_mode(on)
+        self.editor_dock.setVisible(on)
+
+    def _refresh_editor(self):
+        c = self.controller
+        charges = c.charges() if c.can_edit else []
+
+        self.charge_list.blockSignals(True)
+        self.charge_list.clear()
+        for i, q in enumerate(charges):
+            x, y = q.position
+            self.charge_list.addItem(f"{i + 1}:  q = {q.charge:+.3g}   at ({x:+.3f}, {y:+.3f})")
+        self.charge_list.setCurrentRow(-1 if c.selected_charge is None else c.selected_charge)
+        self.charge_list.blockSignals(False)
+
+        selected = c.selected_charge is not None
+        for spin in (self.charge_x, self.charge_y, self.charge_q):
+            spin.setEnabled(selected)
+        self.delete_button.setEnabled(selected and len(charges) > 1)
+
+        if selected:
+            charge = charges[c.selected_charge]
+            for spin, value in (
+                (self.charge_x, charge.position[0]),
+                (self.charge_y, charge.position[1]),
+                (self.charge_q, charge.charge),
+            ):
+                spin.blockSignals(True)
+                spin.setValue(value)
+                spin.blockSignals(False)
+
+        self.editor_status.setText(
+            f"Unsaved changes in {c.spec.path.name}" if c.dirty else f"Saved: {c.spec.path.name}"
+        )
+        self.editor_status.setStyleSheet("color: #c07000;" if c.dirty else "color: gray;")
+
+    def _charge_row_changed(self, row):
+        self.controller.select_charge(None if row < 0 else row)
+
+    def _charge_edited(self, position_axis=None, value=None, charge=None):
+        index = self.controller.selected_charge
+        if index is None:
+            return
+
+        if charge is not None:
+            self.controller.update_charge(index, charge=charge)
+        else:
+            position = list(self.controller.charges()[index].position)
+            position[position_axis] = value
+            self.controller.update_charge(index, position=position)
+
+    def _delete_charge(self):
+        try:
+            self.controller.remove_charge(self.controller.selected_charge)
+        except ModelError as error:
+            self.statusBar().showMessage(str(error), 6000)
+
+    def _save_model(self):
+        try:
+            self.controller.save_model()
+            self.statusBar().showMessage(f"Saved {self.controller.spec.path}", 6000)
+        except ModelError as error:
+            QMessageBox.warning(self, "Cannot save", str(error))
+
+    # =====================================================
     # Slice panel (3D models)
     # =====================================================
 
@@ -465,6 +633,8 @@ class MainWindow(QMainWindow):
             if hasattr(self, "sim_form"):
                 self.sim_form.refresh()
             self._refresh_status()
+        elif kind in ("edit", "selection", "scene"):
+            self._refresh_editor()
         elif kind == "slice":
             self._refresh_slice()
         elif kind == "view":

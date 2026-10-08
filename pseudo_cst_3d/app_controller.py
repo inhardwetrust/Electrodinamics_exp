@@ -9,6 +9,8 @@ import model_spec
 from layers import ClimPolicy, ScalarLayer, VectorLayer
 from model_spec import ModelError, ModelSpec
 from params import with_value
+from scene_model import PointCharge
+from edit_tool import ChargeEditTool
 from renderer import VisPyRenderer
 from renderer3d import VisPyRenderer3D
 from slicing import SlicePlane, SliceSource, slice_frame, slice_scene
@@ -122,13 +124,15 @@ class AppController:
         """
         spec = model if isinstance(model, ModelSpec) else model_spec.load(model or self.DEFAULT_MODEL)
         self.spec = spec
-        self.model_key = spec.key
+        # Models in models/ are addressed by file stem, others by full path.
+        in_models_dir = spec.path.resolve().parent == model_spec.MODELS_DIR
+        self.model_key = spec.key if in_models_dir else str(spec.path.resolve())
 
         self.is_3d = spec.solver == "fdtd3d"
         self.is_fdtd = spec.solver == "fdtd2d"
 
         # Callbacks fn(kind), kind in {"status", "playback", "layers",
-        # "simulation", "slice", "view"}; "status" fires every frame, the
+        # "simulation", "slice", "view", "edit", "selection", "scene"}; "status" fires every frame, the
         # others on change; lets a UI follow changes made elsewhere (keys on
         # the canvas, ...).
         self._listeners = []
@@ -223,6 +227,12 @@ class AppController:
             self.renderer = self.renderer_2d = self._create_renderer_2d(embedded)
 
         self.renderer.canvas.events.key_press.connect(self._on_key_press)
+
+        # Charge editor state (see "Charge editing" below).
+        self.edit_mode = False
+        self.selected_charge = None
+        self.dirty = False
+        self._edit_tool = None
 
         # -------------------------------------------------
         # Simulation loop
@@ -532,6 +542,109 @@ class AppController:
             self.renderer.view.camera.rect = self.initial_view_rect
 
     # =====================================================
+    # Charge editing (UI-agnostic; the mouse tool and the panel call these)
+    # =====================================================
+
+    # Static charge models only: in "oscillating" the charges are scaled in
+    # time, so an edit would freeze whatever phase they happen to be in.
+    EDITABLE_SOLVERS = ("analytic", "grid")
+
+    @property
+    def can_edit(self):
+        return self.spec.solver in self.EDITABLE_SOLVERS
+
+    def set_edit_mode(self, on):
+        on = bool(on) and self.can_edit
+        if on == self.edit_mode:
+            return
+
+        self.edit_mode = on
+
+        if on:
+            self._edit_tool = ChargeEditTool(self, self.renderer)
+        else:
+            self._edit_tool.detach()
+            self._edit_tool = None
+            self.select_charge(None)
+
+        self._notify("edit")
+
+    def charges(self):
+        return self.scene_model.get_objects(PointCharge)
+
+    def charge_at(self, position, radius):
+        """Index of the charge whose icon covers position (nearest), or None."""
+        best, best_d2 = None, radius * radius
+        for i, charge in enumerate(self.charges()):
+            dx = charge.position[0] - position[0]
+            dy = charge.position[1] - position[1]
+            d2 = dx * dx + dy * dy
+            if d2 <= best_d2:
+                best, best_d2 = i, d2
+        return best
+
+    def select_charge(self, index):
+        self.selected_charge = index
+        self._update_highlight()
+        self._notify("selection")
+
+    def _update_highlight(self):
+        index = self.selected_charge
+        position = None if index is None else self.charges()[index].position
+        self.renderer.set_highlight(position)
+
+    def move_charge(self, index, position):
+        self.update_charge(index, position=position)
+
+    def update_charge(self, index, position=None, charge=None):
+        target = self.charges()[index]
+        if position is not None:
+            target.position = (float(position[0]), float(position[1]))
+        if charge is not None:
+            target.charge = float(charge)
+        self._scene_edited()
+
+    def add_charge(self, position=None, charge=1.0):
+        if position is None:
+            # Middle of what is on screen.
+            x0, x1, y0, y1 = self.renderer.view_bounds()
+            position = (0.5 * (x0 + x1), 0.5 * (y0 + y1))
+
+        self.scene_model.add(PointCharge(position=tuple(position), charge=float(charge)))
+        self.selected_charge = len(self.charges()) - 1
+        self._scene_edited()
+
+    def remove_charge(self, index):
+        if len(self.charges()) <= 1:
+            raise ModelError("a charge model needs at least one charge")
+
+        self.scene_model.objects.remove(self.charges()[index])
+        self.selected_charge = None
+        self._scene_edited()
+
+    def _scene_edited(self):
+        """Rebuild the field from the edited charges and redraw."""
+        self.dirty = True
+        self.spec = dataclasses.replace(self.spec, objects=list(self.scene_model.objects))
+
+        built = model_builder.build(self.spec)
+        self.scene_model = built.scene_model
+        self.source = built.source
+
+        r = self.renderer
+        r.source = self.source
+        r.set_scene(self.scene_model)
+        r.refresh_data(self.source)
+        self._update_highlight()
+        self._notify("scene")
+
+    def save_model(self):
+        """Write the charges back into the model file (other content kept)."""
+        model_spec.save_objects(self.spec)
+        self.dirty = False
+        self._notify("scene")
+
+    # =====================================================
     # Simulation control (UI-agnostic)
     # =====================================================
 
@@ -558,6 +671,10 @@ class AppController:
 
     def shutdown(self):
         """Stop timers before the canvas is thrown away."""
+        if self._edit_tool is not None:
+            self._edit_tool.detach()
+            self._edit_tool = None
+
         if self.simulation is not None:
             self._frame_timer.stop()
 

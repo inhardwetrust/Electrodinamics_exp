@@ -42,6 +42,14 @@ Context for future Claude sessions ("previously on..."). Read this first.
   - The UI selector lists the files; **Reload** re-reads the current one.
   - New models need no code change. STEP bodies will become another object
     type.
+- **Charge editor** (static charge models: analytic / grid): the toolbar
+  "Edit" button calls `controller.set_edit_mode`. `edit_tool.ChargeEditTool`
+  turns mouse events into controller calls (`charge_at`, `select_charge`,
+  `move_charge`); its handlers run first and switch the camera off while a
+  charge is dragged. `_scene_edited` rebuilds the field via model_builder
+  (throttled to ~30 Hz while dragging). `model_spec.save_objects` rewrites only
+  the `[[objects]]` blocks and validates the result before writing. Models
+  outside `models/` use their full path as `model_key`.
 - Git: the repo root is `VisPy_playground/` (remote
   `inhardwetrust/Electrodinamics_exp`). **Only selected folders are committed**:
   never run `git add .` at the root. It is Unlicense'd.

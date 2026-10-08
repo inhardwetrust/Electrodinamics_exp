@@ -154,6 +154,11 @@ class VisPyRenderer:
         self.vector_root = scene.Node(parent=self.view.scene)
         self.geometry_root = scene.Node(parent=self.view.scene)
 
+        # Editor selection ring, drawn above everything (survives set_scene).
+        self.highlight_root = scene.Node(parent=self.view.scene)
+        self._highlight = None
+        self._highlight_position = None
+
         if self.show_mesh:
             self._render_solver_mesh()
 
@@ -573,6 +578,55 @@ class VisPyRenderer:
             text.color = "black" if is_positive else "white"
             text.pos = charge.position
             text.font_size = size_px * self.CHARGE_FONT_PER_MARKER_PX
+
+        self._update_highlight(size_px)
+
+    # =====================================================
+    # Editing support
+    # =====================================================
+
+    HIGHLIGHT_COLOR = (1.0, 0.85, 0.1, 1.0)
+
+    def screen_to_world(self, pos):
+        """Canvas pixel position -> world (x, y)."""
+        transform = self.canvas.scene.node_transform(self.view.scene)
+        x, y = transform.map(np.asarray(pos[:2], dtype=np.float64))[:2]
+        return float(x), float(y)
+
+    def charge_icon_radius_world(self):
+        """Radius of the drawn charge icon in world units (for hit tests)."""
+        upp = self.units_per_pixel()[1]
+        size_px = max(self.charge_icon_diameter / upp, self.charge_icon_min_px)
+        return 0.5 * size_px * upp
+
+    def set_highlight(self, position):
+        """Ring around the selected object; None hides it."""
+        self._highlight_position = None if position is None else tuple(position)
+
+        if self._highlight is None:
+            self._highlight = scene.visuals.Markers(parent=self.highlight_root)
+            self._highlight.update_gl_state(depth_test=False)
+
+        upp = self.units_per_pixel()[1]
+        self._update_highlight(max(self.charge_icon_diameter / upp, self.charge_icon_min_px))
+        self.canvas.update()
+
+    def _update_highlight(self, size_px):
+        if self._highlight is None:
+            return
+
+        if self._highlight_position is None:
+            self._highlight.visible = False
+            return
+
+        self._highlight.visible = True
+        self._highlight.set_data(
+            pos=np.asarray([self._highlight_position], dtype=np.float32),
+            size=size_px + 12,
+            face_color=(0.0, 0.0, 0.0, 0.0),
+            edge_color=self.HIGHLIGHT_COLOR,
+            edge_width=2.5,
+        )
 
     # =====================================================
     # Helpers

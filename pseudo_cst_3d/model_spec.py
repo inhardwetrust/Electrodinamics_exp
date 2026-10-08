@@ -289,3 +289,63 @@ def _check_solver_needs(spec, fail):
             fail("[view] slice only applies to 3D models")
         if slice_spec.get("normal") not in ("x", "y", "z"):
             fail("[view] slice.normal must be 'x', 'y' or 'z'")
+
+
+# =====================================================
+# Saving edited objects
+# =====================================================
+
+def _number(value):
+    text = f"{float(value):.6g}"
+    return text if any(c in text for c in ".en") else text + ".0"
+
+
+def object_to_toml(obj):
+    """One [[objects]] block. Only charges are editable for now."""
+    if isinstance(obj, PointCharge):
+        x, y = obj.position
+        return (
+            "[[objects]]\n"
+            'type = "charge"\n'
+            f"position = [{_number(x)}, {_number(y)}]\n"
+            f"charge = {_number(obj.charge)}\n"
+        )
+
+    raise ModelError(f"saving {type(obj).__name__} objects is not supported yet")
+
+
+def save_objects(spec):
+    """
+    Rewrite only the [[objects]] blocks of spec.path with spec.objects.
+
+    Everything else in the file (other tables, comments) stays as it is.
+    The new blocks go where the first old one was (or at the end).
+    """
+    text = spec.path.read_text(encoding="utf-8")
+    blocks = "\n".join(object_to_toml(obj) for obj in spec.objects) + "\n"
+
+    out, insert_at, skipping = [], None, False
+
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+
+        if stripped.startswith("["):
+            skipping = stripped.startswith("[[objects]]")
+            if skipping:
+                if insert_at is None:
+                    insert_at = len(out)
+                continue
+
+        if not skipping:
+            out.append(line)
+
+    if insert_at is None:
+        out.append("\n")
+        insert_at = len(out)
+
+    out.insert(insert_at, blocks)
+    new_text = "".join(out)
+
+    # Never write a file we could not read back.
+    parse(tomllib.loads(new_text), spec.path)
+    spec.path.write_text(new_text, encoding="utf-8")
