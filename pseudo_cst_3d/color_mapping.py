@@ -133,7 +133,52 @@ def _diverging_lut():
     return np.column_stack((rgb, np.ones(LUT_SIZE)))
 
 
+# Green (negative) - black (zero) - red (positive). Made for a black
+# background: where the field is ~0 the view stays dark, waves glow.
+_GREEN_RED_STOPS = np.array([0.0, 0.25, 0.5, 0.75, 1.0])
+_GREEN_RED_RGB = np.array([
+    [0.35, 1.00, 0.45],
+    [0.05, 0.55, 0.15],
+    [0.00, 0.00, 0.00],
+    [0.62, 0.05, 0.04],
+    [1.00, 0.30, 0.22],
+])
+
+
+# Magnitudes, like dipole_sim: no field = black, then green -> yellow ->
+# orange -> red as the field gets stronger (the hue walks the color wheel
+# from green to red, which is why it passes through yellow).
+_HEAT_STOPS = np.array([0.0, 0.15, 0.35, 0.6, 0.8, 1.0])
+_HEAT_RGB = np.array([
+    [0.00, 0.00, 0.00],
+    [0.00, 0.25, 0.12],
+    [0.05, 0.75, 0.10],
+    [0.95, 0.95, 0.10],
+    [1.00, 0.55, 0.05],
+    [1.00, 0.05, 0.00],
+])
+
+# Signed: purple (negative) - black (zero) - yellow (positive).
+_PURPLE_YELLOW_STOPS = np.array([0.0, 0.25, 0.5, 0.75, 1.0])
+_PURPLE_YELLOW_RGB = np.array([
+    [0.80, 0.40, 1.00],
+    [0.38, 0.08, 0.55],
+    [0.00, 0.00, 0.00],
+    [0.55, 0.45, 0.02],
+    [1.00, 0.92, 0.20],
+])
+
+
+def _interpolated_lut(stops, rgb):
+    t = np.linspace(0.0, 1.0, LUT_SIZE)
+    channels = [np.interp(t, stops, rgb[:, c]) for c in range(3)]
+    return np.column_stack(channels + [np.ones(LUT_SIZE)])
+
+
 _PALETTE_BUILDERS = {
+    "heat": lambda: _interpolated_lut(_HEAT_STOPS, _HEAT_RGB),
+    "purple_yellow": lambda: _interpolated_lut(_PURPLE_YELLOW_STOPS, _PURPLE_YELLOW_RGB),
+    "green_red": lambda: _interpolated_lut(_GREEN_RED_STOPS, _GREEN_RED_RGB),
     "viridis": lambda: get_colormap("viridis").map(
         np.linspace(0.0, 1.0, LUT_SIZE)
     ),

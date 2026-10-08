@@ -1,0 +1,33 @@
+name = "FDTD 3D - dipole (view by slices)"
+description = "Half-wave z-dipole in 3D, viewed through a slice plane inside the 3D scene."
+solver = "fdtd3d"
+
+[domain]
+bounds = [[-2.0, -2.0, -2.0], [2.0, 2.0, 2.0]]   # PML inside; cost ~ N^3
+cells_per_wavelength = 15                         # 60^3 cells ~ 11 ms/step
+
+[boundary]
+kind = "pml"
+cells = 10
+
+[excitation]
+frequency = 1.0
+waveform = "sine"
+
+[numerics]
+courant = 0.5                                     # 3D limit: 1/sqrt(3) = 0.577
+
+[[objects]]
+type = "port"
+name = "port 1"
+a = [0.0, 0.0, -0.25]
+b = [0.0, 0.0, 0.25]
+
+[view]
+height = 4.0
+heatmap = "H normal"
+arrows = "E"
+steps_per_frame = 1
+# y = 0 contains the dipole (E in the plane, H through it);
+# z = 0 is the equatorial plane.
+slice = { normal = "y", position = 0.0 }

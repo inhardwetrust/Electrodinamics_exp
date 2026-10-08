@@ -1,0 +1,30 @@
+name = "Oscillating dipole - quasi-static demo"
+description = "q(t) = +/- q0 cos(2 pi t / period); the static field scaled in time (no propagation)."
+solver = "oscillating"
+
+[domain]
+bounds = [[-11.43, -8.0], [11.43, 8.0]]
+cell_size = 0.1
+
+[excitation]
+period = 4.0
+steps_per_period = 240
+amplitude = 1.0
+
+[numerics]
+k = 1.0
+
+[[objects]]
+type = "charge"
+position = [-1.0, 0.0]
+charge = 1.0
+
+[[objects]]
+type = "charge"
+position = [1.0, 0.0]
+charge = -1.0
+
+[view]
+height = 4.0
+heatmap = "|E|"
+steps_per_frame = 1

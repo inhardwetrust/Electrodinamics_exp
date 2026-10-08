@@ -126,7 +126,7 @@ class VisPyRenderer:
         self.canvas = scene.SceneCanvas(
             keys="interactive",
             size=canvas_size,
-            bgcolor="#202020",
+            bgcolor="black",
             show=show,
         )
 

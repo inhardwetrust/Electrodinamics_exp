@@ -97,7 +97,7 @@ class VisPyRenderer3D:
         self.status_text = ""
 
         self.canvas = scene.SceneCanvas(
-            keys="interactive", size=canvas_size, bgcolor="#202020", show=show,
+            keys="interactive", size=canvas_size, bgcolor="black", show=show,
         )
         _skip_redundant_qt_swap(self.canvas)
 

@@ -49,13 +49,57 @@ python -m venv .venv
 .venv/Scripts/activate        # Windows; on Linux/macOS: source .venv/bin/activate
 pip install -r requirements.txt
 
-python main.py                # Qt window, default model
-python main.py fdtd3d         # start in a given model
-python main.py --canvas-only  # bare VisPy window, keyboard only
+python main.py                       # Qt window, default model
+python main.py fdtd3d_dipole         # a model from models/ (file name)
+python main.py path/to/my_model.toml # any model file
+python main.py --list                # list the models
+python main.py --canvas-only         # bare VisPy window, keyboard only
 ```
 
-Models: `analytic`, `grid`, `oscillating`, `fdtd`, `fdtd_slab`,
-`fdtd_reflector`, `fdtd3d`, `fdtd3d_reflector`.
+## Models are files
+
+Each model is a TOML file in `models/`. The file describes the solver,
+domain, boundary, excitation, materials, objects and the initial view. The
+model selector lists every file in that folder, and **Reload** re-reads the
+current one after you edit it. Invalid files are rejected with a message
+that says what is wrong and where.
+
+```toml
+name = "Dipole + glass slab"
+solver = "fdtd2d"                    # analytic | grid | oscillating | fdtd2d | fdtd3d
+
+[domain]
+bounds = [[-5.71, -4.0], [5.71, 4.0]]
+cells_per_wavelength = 20
+
+[boundary]
+kind = "pml"
+cells = 12
+
+[excitation]
+frequency = 1.0
+waveform = "sine"
+
+[materials]
+glass = { eps_r = 4.0 }
+
+[[objects]]
+type = "port"
+a = [-0.25, 0.0]
+b = [0.25, 0.0]
+
+[[objects]]
+type = "rect"
+material = "glass"
+lo = [-50, 0.75]
+hi = [50, 1.5]
+
+[view]
+heatmap = "Hz"
+```
+
+Object types: `charge`, `port`, `rect`, `disk` (2D); `port`, `box`, `sphere`
+(3D). The full key reference is at the top of `model_spec.py`.
 
 **Canvas keys:**
 
@@ -80,6 +124,7 @@ In 3D: drag to rotate, use the wheel to zoom, and Shift + drag to pan.
 | `field3d.py`, `slicing.py` | 3D field data and slice planes, which turn 3D data into 2D sources |
 | `layers.py`, `layer_views.py` | What to show (config) and how to draw it (VisPy) |
 | `renderer.py`, `renderer3d.py` | The 2D view, and the 3D view with the slice plane inside the scene |
+| `model_spec.py`, `model_builder.py`, `models/` | Model files: parsing and validation, then building the scene plus the source or simulation |
 | `main_window.py`, `qt_forms.py` | Qt shell; forms are generated from the schemas |
 
 ## Status and ideas

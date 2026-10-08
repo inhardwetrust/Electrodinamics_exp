@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSlider,
@@ -28,22 +29,12 @@ from PySide6.QtWidgets import (
 )
 
 from app_controller import AppController
+from model_spec import ModelError
 from color_mapping import palette_names
 from layers import scalar_layer_parameters, vector_layer_parameters
 from params import get_value
 from qt_forms import ParameterForm
 
-
-MODE_LABELS = {
-    "analytic": "Static charges - analytic (GPU)",
-    "grid": "Static charges - solver grid",
-    "oscillating": "Oscillating dipole - quasi-static demo",
-    "fdtd": "FDTD 2D TE - dipole in free space",
-    "fdtd_slab": "FDTD 2D TE - dipole + dielectric slab",
-    "fdtd_reflector": "FDTD 2D TE - dipole + metal reflector",
-    "fdtd3d": "FDTD 3D - dipole (view by slices)",
-    "fdtd3d_reflector": "FDTD 3D - dipole + metal reflector (slices)",
-}
 
 KEY_HINT = (
     "Canvas keys: Q heatmap quantity  V arrows  Space play/pause  "
@@ -54,7 +45,7 @@ KEY_HINT = (
 class MainWindow(QMainWindow):
     STATUS_REFRESH_S = 1.0 / 15.0
 
-    def __init__(self, field_mode=None):
+    def __init__(self, model=None):
         super().__init__()
 
         self.setWindowTitle("Pseudo CST")
@@ -76,7 +67,7 @@ class MainWindow(QMainWindow):
         hint.setStyleSheet("color: gray;")
         self.statusBar().addPermanentWidget(hint)
 
-        self.load_mode(field_mode or AppController.FIELD_MODE)
+        self.load_model(model or AppController.DEFAULT_MODEL)
 
     # =====================================================
     # Frame
@@ -89,13 +80,24 @@ class MainWindow(QMainWindow):
 
         toolbar.addWidget(QLabel(" Model: "))
 
+        # One entry per file in models/ (name from the file, key = file stem).
         self.mode_combo = QComboBox()
-        for mode in AppController.FIELD_MODES:
-            self.mode_combo.addItem(MODE_LABELS.get(mode, mode), mode)
+        for key, name, path in AppController.available_models():
+            self.mode_combo.addItem(name, key)
+            self.mode_combo.setItemData(
+                self.mode_combo.count() - 1, str(path), Qt.ItemDataRole.ToolTipRole,
+            )
         self.mode_combo.currentIndexChanged.connect(
-            lambda i: self.load_mode(self.mode_combo.itemData(i))
+            lambda i: self.load_model(self.mode_combo.itemData(i))
         )
         toolbar.addWidget(self.mode_combo)
+
+        reload_button = QPushButton("Reload")
+        reload_button.setToolTip("Re-read the current model file from disk")
+        reload_button.clicked.connect(
+            lambda: self.load_model(self.controller.model_key, force=True)
+        )
+        toolbar.addWidget(reload_button)
 
     def _make_dock(self, title, area):
         dock = QDockWidget(title, self)
@@ -118,13 +120,27 @@ class MainWindow(QMainWindow):
     # Model switching
     # =====================================================
 
-    def load_mode(self, mode):
-        if self.controller is not None:
-            if mode == self.controller.field_mode:
-                return
-            self.controller.shutdown()
+    def load_model(self, key, force=False):
+        """Switch to (or with force=True: reload) a model from models/."""
+        old = self.controller
 
-        self.controller = AppController(field_mode=mode, embedded=True)
+        if old is not None and key == old.model_key and not force:
+            return
+
+        try:
+            controller = AppController(model=key, embedded=True)
+        except ModelError as error:
+            # Keep the current model; show what is wrong with the file.
+            if old is None:
+                raise
+            QMessageBox.warning(self, "Model file error", str(error))
+            self._select_in_combo(old.model_key)
+            return
+
+        if old is not None:
+            old.shutdown()
+
+        self.controller = controller
         self.controller.add_listener(self._on_controller_event)
 
         # Views of this controller (3D scene / flat slice) share the central
@@ -134,11 +150,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.view_stack)
         canvas_widget = self._show_active_view()
 
-        index = self.mode_combo.findData(mode)
-        if index != self.mode_combo.currentIndex():
-            self.mode_combo.blockSignals(True)
-            self.mode_combo.setCurrentIndex(index)
-            self.mode_combo.blockSignals(False)
+        self._select_in_combo(key)
 
         self.layers_dock.setWidget(self._scrollable(self._build_layers_panel()))
         self.sim_dock.setWidget(self._scrollable(self._build_simulation_panel()))
@@ -151,6 +163,13 @@ class MainWindow(QMainWindow):
 
         self._refresh_status()
         canvas_widget.setFocus()
+
+    def _select_in_combo(self, key):
+        index = self.mode_combo.findData(key)
+        if index >= 0 and index != self.mode_combo.currentIndex():
+            self.mode_combo.blockSignals(True)
+            self.mode_combo.setCurrentIndex(index)
+            self.mode_combo.blockSignals(False)
 
     def _show_active_view(self):
         """Put the controller's active canvas on top (adding it on first use)."""

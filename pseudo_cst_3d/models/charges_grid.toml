@@ -1,0 +1,24 @@
+name = "Static charges - solver grid"
+description = "Same two charges, solved on a fixed mesh and interpolated (undefined outside the domain)."
+solver = "grid"
+
+[domain]
+bounds = [[-11.43, -8.0], [11.43, 8.0]]
+cell_size = 0.1
+
+[numerics]
+k = 1.0
+
+[[objects]]
+type = "charge"
+position = [-1.0, 0.0]
+charge = 1.0
+
+[[objects]]
+type = "charge"
+position = [1.0, 0.0]
+charge = -1.0
+
+[view]
+height = 4.0
+heatmap = "|E|"

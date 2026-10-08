@@ -1,0 +1,39 @@
+name = "FDTD 2D TE - dipole + metal reflector"
+description = "Metal plate a quarter wavelength behind the dipole: a directional antenna."
+solver = "fdtd2d"
+
+[domain]
+bounds = [[-5.71, -4.0], [5.71, 4.0]]
+cells_per_wavelength = 20
+
+[boundary]
+kind = "pml"
+cells = 12
+
+[excitation]
+frequency = 1.0
+waveform = "sine"
+
+[numerics]
+courant = 0.5
+
+[materials]
+metal = { pec = true }
+
+[[objects]]
+type = "port"
+name = "port 1"
+a = [-0.25, 0.0]
+b = [0.25, 0.0]
+
+[[objects]]
+type = "rect"
+name = "reflector"
+material = "metal"
+lo = [-1.0, -0.30]
+hi = [1.0, -0.25]
+
+[view]
+height = 4.0
+heatmap = "Hz"
+steps_per_frame = 2

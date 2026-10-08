@@ -26,10 +26,22 @@ Context for future Claude sessions ("previously on..."). Read this first.
 ## Running
 
 - Python venv: `../.venv` (in `VisPy_playground`), backend PySide6 (Qt6).
-  Run with `../.venv/Scripts/python.exe main.py [mode]`.
-- Modes: `analytic`, `grid`, `oscillating`, `fdtd`, `fdtd_slab`,
-  `fdtd_reflector`, `fdtd3d`, `fdtd3d_reflector`.
-  `--canvas-only` gives a bare VisPy window.
+  Run with `../.venv/Scripts/python.exe main.py [model]`, where `model` is a
+  file stem from `models/` or a path to a `.toml` file. `--list` lists the
+  models; `--canvas-only` gives a bare VisPy window.
+- **Models are files** (`models/*.toml`, the format is documented at the top of
+  `model_spec.py`):
+  - `model_spec.py` parses and strictly validates them: unknown keys,
+    materials or object types raise a `ModelError` naming the file and the
+    object;
+  - `model_builder.py` builds the SceneModel plus the FieldSource or
+    Simulation (solvers: analytic / grid / oscillating / fdtd2d / fdtd3d);
+  - `AppController(model=...)` holds only frontend-wide settings (palettes,
+    arrows, zoom, playback). There are no scene or solver constants in code
+    any more.
+  - The UI selector lists the files; **Reload** re-reads the current one.
+  - New models need no code change. STEP bodies will become another object
+    type.
 - Git: the repo root is `VisPy_playground/` (remote
   `inhardwetrust/Electrodinamics_exp`). **Only selected folders are committed**:
   never run `git add .` at the root. It is Unlicense'd.
@@ -89,14 +101,14 @@ Context for future Claude sessions ("previously on..."). Read this first.
   SliceSource, created on first use. Only the active renderer is updated, and
   `_sync_renderer(full=True)` catches the other one up on switch. Both
   canvases are pages of a QStackedWidget in MainWindow.
-- `app_controller.py` — UI-agnostic logic: modes, presets, slices
+- `app_controller.py` — UI-agnostic logic: layer presets, slices
   (`set_slice`), the simulation loop, and listeners (`status`, `playback`,
   `layers`, `simulation`, `slice`). `main_window.py` is the thin Qt shell, with
-  a Slice dock in 3D modes.
+  a Slice dock for 3D models.
 - Arrows have three levels: strong (full), weak (short and faded), and ~0 (a
   dot). Through-plane ⊙ / ⊗ markers are hollow circles with a dot or a cross.
   The reference is the 98th percentile of the FULL magnitude (`|name|`). In
-  static modes the levels are off (fractions = 0).
+  static models the levels are off (fractions = 0).
 
 ## Pitfalls found (do not rediscover)
 

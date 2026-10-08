@@ -1,0 +1,23 @@
+name = "Static charges - analytic (GPU)"
+description = "Two opposite point charges; exact field evaluated per pixel on the GPU."
+solver = "analytic"
+
+[domain]
+cell_size = 0.1          # display base step; softening defaults to 0.2 * cell_size
+
+[numerics]
+k = 1.0                  # Coulomb constant (normalized units)
+
+[[objects]]
+type = "charge"
+position = [-1.0, 0.0]
+charge = 1.0
+
+[[objects]]
+type = "charge"
+position = [1.0, 0.0]
+charge = -1.0
+
+[view]
+height = 4.0             # initially visible height (world units)
+heatmap = "|E|"

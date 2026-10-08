@@ -1,0 +1,31 @@
+name = "FDTD 2D TE - dipole in free space"
+description = "Half-wave dipole (length 0.5 at frequency 1) radiating in 2D TE (Ex, Ey, Hz)."
+solver = "fdtd2d"
+
+[domain]
+bounds = [[-5.71, -4.0], [5.71, 4.0]]   # PML is inside these bounds
+cells_per_wavelength = 20               # >= ~15 keeps numerical dispersion low
+
+[boundary]
+kind = "pml"                            # "pml" | "mur"
+cells = 12                              # ~ -94 dB reflection
+
+[excitation]
+frequency = 1.0                         # normalized units: wavelength = 1 / frequency
+waveform = "sine"                       # "sine" | "gaussian" | "modulated_gaussian"
+amplitude = 1.0
+
+[numerics]
+courant = 0.5                           # 2D limit: 1/sqrt(2)
+
+[[objects]]
+type = "port"
+name = "port 1"
+a = [-0.25, 0.0]
+b = [0.25, 0.0]
+
+[view]
+height = 4.0
+heatmap = "Hz"
+arrows = "E"
+steps_per_frame = 2
