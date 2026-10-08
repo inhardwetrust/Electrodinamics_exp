@@ -431,6 +431,37 @@ class FdtdYee3D(Simulation):
             for axis, (k, j, i, s) in idx.items()
         }
 
+        self._build_conductor_path()
+
+    def _build_conductor_path(self):
+        """
+        Edges of all wires and ports, for wire_currents(): grid axis and
+        index, sign (+1 when the conductor runs along +axis there) and the
+        position of the edge center along the common antenna axis (the
+        direction of the first conductor).
+        """
+        conductors = [o for o in self.scene_model.objects if isinstance(o, (Wire, Port3D))]
+        self._path = None
+        if not conductors:
+            return
+
+        first = conductors[0]
+        axis_dir = np.asarray(first.b, float) - np.asarray(first.a, float)
+        axis_dir /= np.linalg.norm(axis_dir)
+        offsets = {"x": (0.5, 0, 0), "y": (0, 0.5, 0), "z": (0, 0, 0.5)}
+        unit = {"x": (1, 0, 0), "y": (0, 1, 0), "z": (0, 0, 1)}
+
+        edges, s = [], []
+        for obj in conductors:
+            for axis, k, j, i, sign in self._port_edges(obj):
+                center = self.lo + self.h * (np.array([i, j, k], float) + offsets[axis])
+                # Current along the common axis = grid current * (e_axis . axis_dir).
+                edges.append((axis, k, j, i, float(np.dot(unit[axis], axis_dir))))
+                s.append(float(np.dot(center, axis_dir)))
+
+        order = np.argsort(s)
+        self._path = ([edges[n] for n in order], np.array(s)[order], axis_dir)
+
     def _port_edges(self, port):
         """6-connected staircase of edges between the nearest nodes of a and b."""
         start = [int(round((port.a[a] - self.lo[a]) / self.h)) for a in range(3)]
@@ -488,6 +519,30 @@ class FdtdYee3D(Simulation):
 
     def diagnostics(self):
         return {"W": self.energy(), "I port": self._last_current, "P port": self.port_power()}
+
+    def edge_current(self, axis, k, j, i):
+        """
+        Total current through one Yee edge (along +axis): h * circulation of H
+        around it (discrete Ampere law). On a PEC edge E stays 0, so this is
+        exactly the conduction current; in a port gap it is the source current
+        plus the displacement current - continuous with the wire current.
+        """
+        hx, hy, hz, h = self.hx, self.hy, self.hz, self.h
+        if axis == "z":
+            c = (hy[k, j, i] - hy[k, j, i - 1]) - (hx[k, j, i] - hx[k, j - 1, i])
+        elif axis == "x":
+            c = (hz[k, j, i] - hz[k, j - 1, i]) - (hy[k, j, i] - hy[k - 1, j, i])
+        else:
+            c = (hx[k, j, i] - hx[k - 1, j, i]) - (hz[k, j, i] - hz[k, j, i - 1])
+        return float(c) * h
+
+    def wire_currents(self):
+        if self._path is None:
+            return None
+        edges, s, axis_dir = self._path
+        current = np.array([self.edge_current(a, k, j, i) * proj for a, k, j, i, proj in edges])
+        label = "xyz"[int(np.argmax(np.abs(axis_dir)))]
+        return {"axis_label": label, "s": s, "current": current}
 
     def overlays_3d(self):
         t = self._values["pml_cells"] * self.h

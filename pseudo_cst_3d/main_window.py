@@ -36,6 +36,7 @@ from color_mapping import palette_names
 from layers import scalar_layer_parameters, vector_layer_parameters
 from params import get_value
 from qt_forms import ParameterForm
+from qt_plot import CurvePlot
 
 
 KEY_HINT = (
@@ -292,6 +293,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(panel)
 
         self.diag_labels = {}
+        self.wire_plot = None
 
         if c.simulation is None:
             info = QLabel(
@@ -344,6 +346,14 @@ class MainWindow(QMainWindow):
                 self.diag_labels[label] = value
                 diag_layout.addRow(label, value)
             layout.addWidget(diag_box)
+
+        # --- current along wires / ports
+        if c.wire_plot_data() is not None:
+            wire_box = QGroupBox("Current along the conductor (orange: now, gray: amplitude)")
+            wire_layout = QVBoxLayout(wire_box)
+            self.wire_plot = CurvePlot(y_label="I")
+            wire_layout.addWidget(self.wire_plot)
+            layout.addWidget(wire_box)
 
         # --- parameters (generated from the simulation's schema)
         params_box = QGroupBox("Parameters")
@@ -675,6 +685,10 @@ class MainWindow(QMainWindow):
         for label, value in sim.diagnostics().items():
             if label in self.diag_labels:
                 self.diag_labels[label].setText(f"{value:+.5g}")
+
+        if getattr(self, "wire_plot", None) is not None:
+            s, current, envelope, axis = c.wire_plot_data()
+            self.wire_plot.set_data(s, current, envelope, x_label=axis)
 
     def closeEvent(self, event):
         if self.controller is not None:

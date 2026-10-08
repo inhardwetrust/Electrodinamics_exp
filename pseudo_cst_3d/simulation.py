@@ -59,6 +59,16 @@ class Simulation:
         """
         return {}
 
+    def wire_currents(self):
+        """
+        Optional: current along conductors (wires and port gaps), for a plot.
+
+        Returns {"axis_label": str, "s": array, "current": array}: s is the
+        position of each edge center along the antenna axis, current the
+        current along it (signed, + = along the axis). None if not applicable.
+        """
+        return None
+
     def overlays(self):
         """
         Optional regions the frontend should mark, e.g. absorbing layers

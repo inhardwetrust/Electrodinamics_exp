@@ -49,6 +49,15 @@ Context for future Claude sessions ("previously on..."). Read this first.
   120+100j Ohm at h = λ/20 and 105+80j Ohm at h = λ/40, converging toward the
   thin-dipole 73 Ohm; the gap and the staircase wire radius dominate the
   error. The sign convention of X is not verified yet.
+- **Wire current**: optional `Simulation.wire_currents()` returns
+  {s, current, axis_label} for all wire and port edges along the antenna axis.
+  Current = h * circulation of H around each edge (discrete Ampere law). It is
+  exact on PEC edges because E = 0 there; in a port gap it is the total current
+  (source plus displacement), so it is continuous. The controller tracks a
+  peak-hold envelope every step; `qt_plot.CurvePlot` shows it in the
+  Simulation dock. Half-wave check: the profile is symmetric and continuous at
+  the feed; the current at the last edge is 0.46 at λ/20 and 0.26 at λ/40,
+  converging slowly to cos(kz).
 - **Charge editor** (static charge models: analytic / grid): the toolbar
   "Edit" button calls `controller.set_edit_mode`. `edit_tool.ChargeEditTool`
   turns mouse events into controller calls (`charge_at`, `select_charge`,

@@ -2,6 +2,8 @@
 
 import dataclasses
 
+import numpy as np
+
 from vispy import app
 
 import model_builder
@@ -310,6 +312,11 @@ class AppController:
 
     def _start_loop(self):
         self.playing = False
+
+        # Wire-current envelope (None: the model has no wires / ports).
+        self.wire_envelope = None
+        if self.simulation is not None and self.simulation.wire_currents() is not None:
+            self.wire_envelope = np.zeros(len(self.simulation.wire_currents()["current"]))
         self.steps_per_frame = max(1, int(self.spec.view.get("steps_per_frame", 1)))
 
         if self.simulation is not None:
@@ -696,15 +703,43 @@ class AppController:
         self._update_status()
         self._notify("playback")
 
+    # Envelope of the wire current: peak hold, decaying per solver step.
+    WIRE_ENVELOPE_DECAY = 0.99
+
     def advance(self, steps):
         """Step the simulation and push the new state to the renderer."""
-        self.simulation.step(steps)
+        if self.wire_envelope is not None:
+            # Step one at a time so the envelope sees every peak.
+            for _ in range(int(steps)):
+                self.simulation.step(1)
+                self._update_wire_envelope()
+        else:
+            self.simulation.step(steps)
         self.source = self._current_source()
         self.renderer.refresh_data(self.source)
         self._update_status()
 
+    def _update_wire_envelope(self):
+        current = self.simulation.wire_currents()["current"]
+        env = self.wire_envelope
+        if env is None or env.shape != current.shape:
+            self.wire_envelope = abs(current)
+        else:
+            self.wire_envelope = np.maximum(env * self.WIRE_ENVELOPE_DECAY, abs(current))
+
+    def wire_plot_data(self):
+        """(s, current, envelope, axis_label) or None (no wires / ports)."""
+        if self.simulation is None:
+            return None
+        wc = self.simulation.wire_currents()
+        if wc is None:
+            return None
+        return wc["s"], wc["current"], self.wire_envelope, wc["axis_label"]
+
     def reset_simulation(self):
         self.simulation.reset()
+        if self.wire_envelope is not None:
+            self.wire_envelope = np.zeros_like(self.wire_envelope)
         self.source = self._current_source()
 
         # Fresh layer views: "running" limits must not remember the

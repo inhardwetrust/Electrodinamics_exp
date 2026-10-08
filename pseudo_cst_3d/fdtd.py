@@ -497,6 +497,33 @@ class FdtdTE2D(Simulation):
         self._ey_cols = np.array(ey_c, dtype=np.int64)
         self._ey_signs = np.array(ey_s, dtype=np.float64)
 
+        self._build_conductor_path()
+
+    def _build_conductor_path(self):
+        """Wire and port edges along the antenna axis (see FdtdYee3D)."""
+        conductors = [o for o in self.scene_model.objects if isinstance(o, (Wire, Port))]
+        self._path = None
+        if not conductors:
+            return
+
+        first = conductors[0]
+        axis_dir = np.asarray(first.b, float) - np.asarray(first.a, float)
+        axis_dir /= np.linalg.norm(axis_dir)
+        x0, y0, h = self.domain.x_min, self.domain.y_min, self.h
+
+        edges, s = [], []
+        for obj in conductors:
+            for kind, row, col, _ in self._port_edges(obj):
+                if kind == "x":
+                    center, unit = (x0 + (col + 0.5) * h, y0 + row * h), (1.0, 0.0)
+                else:
+                    center, unit = (x0 + col * h, y0 + (row + 0.5) * h), (0.0, 1.0)
+                edges.append((kind, row, col, float(np.dot(unit, axis_dir))))
+                s.append(float(np.dot(center, axis_dir)))
+
+        order = np.argsort(s)
+        self._path = ([edges[n] for n in order], np.array(s)[order], axis_dir)
+
     def _port_edges(self, port):
         """
         Grid edges along a -> b: 4-connected staircase between the nearest
@@ -573,6 +600,27 @@ class FdtdTE2D(Simulation):
             "I port": self._last_current,
             "P port": self.port_power(),
         }
+
+    def wire_currents(self):
+        """
+        Current per unit length (z) along wires and ports: h * (curl H) on
+        each edge. Exact conduction current on PEC edges (E = 0 there).
+        """
+        if self._path is None:
+            return None
+
+        hz = self.hz
+        edges, s, axis_dir = self._path
+        current = []
+        for kind, row, col, proj in edges:
+            if kind == "x":     # Jx = dHz/dy
+                c = hz[row, col] - hz[row - 1, col]
+            else:               # Jy = -dHz/dx
+                c = -(hz[row, col] - hz[row, col - 1])
+            current.append(float(c) * proj)
+
+        label = "xy"[int(np.argmax(np.abs(axis_dir)))]
+        return {"axis_label": label, "s": s, "current": np.array(current)}
 
     def overlays(self):
         """Regions the frontend should mark (the PML is not physical space)."""
