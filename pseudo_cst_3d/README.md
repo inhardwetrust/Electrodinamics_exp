@@ -95,3 +95,7 @@ Possible next steps:
 - STEP import (OpenCASCADE or gmsh) with voxelization;
 - port impedance and S11, far-field patterns;
 - GPU acceleration.
+
+## License
+
+Public domain: [The Unlicense](../LICENSE). Do whatever you want with it.
