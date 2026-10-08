@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSlider,
+    QStackedWidget,
     QSpinBox,
     QToolBar,
     QVBoxLayout,
@@ -65,8 +66,9 @@ class MainWindow(QMainWindow):
         self._build_toolbar()
 
         self.layers_dock = self._make_dock("Layers", Qt.DockWidgetArea.LeftDockWidgetArea)
-        self.sim_dock = self._make_dock("Simulation", Qt.DockWidgetArea.RightDockWidgetArea)
+        # Created first so it sits above Simulation in the right dock area.
         self.slice_dock = self._make_dock("Slice (3D)", Qt.DockWidgetArea.RightDockWidgetArea)
+        self.sim_dock = self._make_dock("Simulation", Qt.DockWidgetArea.RightDockWidgetArea)
         self.slice_dock.hide()
 
         # Permanent hint; showMessage() is used for temporary messages only.
@@ -125,11 +127,12 @@ class MainWindow(QMainWindow):
         self.controller = AppController(field_mode=mode, embedded=True)
         self.controller.add_listener(self._on_controller_event)
 
-        canvas_widget = self.controller.renderer.canvas.native
-        canvas_widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-
-        # Replacing the central widget deletes the previous canvas widget.
-        self.setCentralWidget(canvas_widget)
+        # Views of this controller (3D scene / flat slice) share the central
+        # area as pages of a stack. Replacing the central widget deletes the
+        # previous model's canvases.
+        self.view_stack = QStackedWidget()
+        self.setCentralWidget(self.view_stack)
+        canvas_widget = self._show_active_view()
 
         index = self.mode_combo.findData(mode)
         if index != self.mode_combo.currentIndex():
@@ -148,6 +151,17 @@ class MainWindow(QMainWindow):
 
         self._refresh_status()
         canvas_widget.setFocus()
+
+    def _show_active_view(self):
+        """Put the controller's active canvas on top (adding it on first use)."""
+        widget = self.controller.renderer.canvas.native
+        widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+        if self.view_stack.indexOf(widget) < 0:
+            self.view_stack.addWidget(widget)
+
+        self.view_stack.setCurrentWidget(widget)
+        return widget
 
     # =====================================================
     # Layers panel
@@ -338,11 +352,20 @@ class MainWindow(QMainWindow):
 
         self.slice_label = QLabel()
         form.addRow("", self.slice_label)
+
+        self.flat_check = QCheckBox("Full viewport (flat slice, 2D view)")
+        self.flat_check.setChecked(c.flat_view)
+        self.flat_check.setToolTip(
+            "Show the slice flat over the whole view area, like the 2D models "
+            "(screen-fixed arrows, 2D zoom/pan). Off: the slice inside the 3D scene."
+        )
+        self.flat_check.toggled.connect(self.controller.set_flat_view)
+        form.addRow("", self.flat_check)
         layout.addLayout(form)
 
         hint = QLabel(
-            "The plane is shown inside the 3D view: drag to rotate, "
-            "wheel to zoom, Shift + drag to pan."
+            "3D view: drag to rotate, wheel to zoom, Shift + drag to pan. "
+            "Flat view: wheel to zoom, drag to pan."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: gray;")
@@ -425,6 +448,9 @@ class MainWindow(QMainWindow):
             self._refresh_status()
         elif kind == "slice":
             self._refresh_slice()
+        elif kind == "view":
+            self._show_active_view().setFocus()
+            self._refresh_clim()
         elif kind == "playback":
             # User actions (play/pause, steps per frame): show immediately.
             self._refresh_status()

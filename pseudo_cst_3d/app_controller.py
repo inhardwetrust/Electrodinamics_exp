@@ -73,6 +73,10 @@ class AppController:
     # >= weak -> full arrow, >= zero -> short faded arrow, below -> ring
     # (or dot / cross when the field crosses a 3D slice plane).
     ARROW_WEAK_FRACTION = 0.25
+
+    # Arrow layout (screen px in 2D / flat views, virtual plane px in 3D).
+    ARROW_SPACING_PX = 20
+    ARROW_LENGTH_PX = 10
     ARROW_ZERO_FRACTION = 0.05
     FDTD_BOUNDARY = "pml"               # "pml" | "mur"
     FDTD_PML_CELLS = 12                 # ~ -94 dB reflection at 20 cells/wavelength
@@ -97,7 +101,7 @@ class AppController:
     # Simulation playback: frames per second and solver steps per frame.
     SIM_FPS = 60
     SIM_STEPS_PER_FRAME = 1
-    SIM_START_PLAYING = True
+    SIM_START_PLAYING = False          # start paused; Space / Play to run
 
     # "oscillating" mode: period in simulation time units.
     OSCILLATION_PERIOD = 4.0
@@ -165,7 +169,8 @@ class AppController:
         self.is_fdtd = self.field_mode.startswith("fdtd") and not self.is_3d
 
         # Callbacks fn(kind), kind in {"status", "playback", "layers",
-        # "simulation"}; "status" fires every frame, the others on change;
+        # "simulation", "slice", "view"}; "status" fires every frame, the
+        # others on change;
         # lets a UI follow changes made elsewhere (keys on the canvas, ...).
         self._listeners = []
 
@@ -344,8 +349,8 @@ class AppController:
 
         self.vector_layer = VectorLayer(
             quantity="E",
-            spacing_px=70,
-            length_px=30,
+            spacing_px=self.ARROW_SPACING_PX,
+            length_px=self.ARROW_LENGTH_PX,
             color="white",
             line_width=2,
             head_type="stealth",
@@ -359,10 +364,21 @@ class AppController:
         # Renderer
         # -------------------------------------------------
 
+        self._embedded = embedded
+        self.mesh_visible = self.SHOW_MESH_3D if self.is_3d else self.SHOW_MESH
+
+        # 3D models: the rotatable 3D scene, plus (created on demand) the flat
+        # 2D view of the same slice ("full viewport"). Only the active one is
+        # updated; the other catches up when it becomes active.
+        self.flat_view = False
+        self.renderer_3d = None
+        self.renderer_2d = None
+
         if self.is_3d:
-            self.renderer = self._create_renderer_3d(embedded)
+            self.renderer_3d = self._create_renderer_3d(embedded)
+            self.renderer = self.renderer_3d
         else:
-            self._create_renderer_2d(embedded, initial_view_height)
+            self.renderer = self.renderer_2d = self._create_renderer_2d(embedded)
 
         self.renderer.canvas.events.key_press.connect(self._on_key_press)
 
@@ -372,8 +388,10 @@ class AppController:
 
         self._start_loop()
 
-    def _create_renderer_2d(self, embedded, initial_view_height):
-        self.renderer = VisPyRenderer(
+    def _create_renderer_2d(self, embedded):
+        initial_view_height = self.INITIAL_VIEW_HEIGHT
+
+        return VisPyRenderer(
             scene_model=self._display_scene(),
             source=self.source,
             layers=[self.heatmap_layer, self.vector_layer],
@@ -381,7 +399,7 @@ class AppController:
             initial_view_rect=self.initial_view_rect,
             canvas_size=self.CANVAS_SIZE,
             solver_mesh=self.mesh,
-            show_mesh=self.SHOW_MESH,
+            show_mesh=self.mesh_visible,
 
             prefer_gpu=self.PREFER_GPU,
             smooth_texture=self.SMOOTH_TEXTURE,
@@ -415,7 +433,7 @@ class AppController:
             plane_scene=self._display_scene(),
             plane_mesh=self.mesh,
             overlays=self._overlays(),
-            show_mesh=self.SHOW_MESH_3D,
+            show_mesh=self.mesh_visible,
             heatmap_sample_px=self.HEATMAP_SAMPLE_PX,
             settle_delay_s=self.SETTLE_DELAY_S,
             canvas_size=self.CANVAS_SIZE,
@@ -486,26 +504,63 @@ class AppController:
         self.slice_plane = self._make_plane(normal, position)
 
         self.source = self._current_source()
-        self.renderer.source = self.source
 
         if new_axis:
             self.mesh = self.slice_plane.mesh()
 
-        # The plane moves inside the 3D scene; the camera stays where it is.
-        self.renderer.set_plane(
-            self.slice_plane,
-            plane_scene=self._display_scene(),
-            plane_mesh=self.mesh if new_axis else None,
-            overlays=self._overlays(),
-        )
-
-        if new_axis:
-            # Other plane extents and axes: fresh layer views.
-            self.renderer.set_layers([self.heatmap_layer, self.vector_layer])
-        else:
-            self.renderer.refresh_data(self.source)
-
+        self._sync_renderer(new_axis=new_axis)
         self._notify("slice")
+
+    def _sync_renderer(self, new_axis, full=False):
+        """
+        Bring the active renderer up to date with the slice.
+
+        new_axis: the plane changed orientation (new extents and mesh).
+        full:     the renderer was inactive and may be stale in every respect.
+        """
+        r = self.renderer
+        r.source = self.source
+        rebuild = new_axis or full
+
+        if r is self.renderer_3d:
+            # The plane moves inside the 3D scene; the camera stays put.
+            r.set_plane(
+                self.slice_plane,
+                plane_scene=self._display_scene(),
+                plane_mesh=self.mesh if rebuild else None,
+                overlays=self._overlays(),
+            )
+        else:
+            r.set_scene(self._display_scene())
+            r.set_overlays(self._overlays())
+            if rebuild:
+                r.set_solver_mesh(self.mesh)
+                r.set_mesh_visible(self.mesh_visible)
+            if new_axis:
+                r.view.camera.rect = self.initial_view_rect
+
+        if rebuild:
+            # Other plane extents and axes: fresh layer views.
+            r.set_layers([self.heatmap_layer, self.vector_layer])
+        else:
+            r.refresh_data(self.source)
+
+    def set_flat_view(self, flat):
+        """3D models: show the slice flat over the whole view, or in 3D."""
+        flat = bool(flat) and self.is_3d
+        if flat == self.flat_view:
+            return
+
+        self.flat_view = flat
+
+        if flat and self.renderer_2d is None:
+            self.renderer_2d = self._create_renderer_2d(self._embedded)
+            self.renderer_2d.canvas.events.key_press.connect(self._on_key_press)
+
+        self.renderer = self.renderer_2d if flat else self.renderer_3d
+        self._sync_renderer(new_axis=False, full=True)
+        self._update_status()
+        self._notify("view")
 
     # =====================================================
     # FDTD scene presets
@@ -650,10 +705,11 @@ class AppController:
         return tuple(self.renderer.layer_views[0].clim)
 
     def set_mesh_visible(self, visible):
+        self.mesh_visible = bool(visible)
         self.renderer.set_mesh_visible(visible)
 
     def reset_view(self):
-        if self.is_3d:
+        if self.renderer is self.renderer_3d:
             self.renderer.reset_view()
         else:
             self.renderer.view.camera.rect = self.initial_view_rect
@@ -688,7 +744,8 @@ class AppController:
         if self.simulation is not None:
             self._frame_timer.stop()
 
-        self.renderer.shutdown()
+        for r in {self.renderer_3d, self.renderer_2d} - {None}:
+            r.shutdown()
 
     # =====================================================
     # Simulation loop

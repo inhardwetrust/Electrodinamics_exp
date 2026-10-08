@@ -83,6 +83,12 @@ Context for future Claude sessions ("previously on..."). Read this first.
   - the plane heatmap is depth tested;
   - plane overlays and arrows are drawn without depth testing;
   - the 3D geometry is depth tested.
+- 3D models have **two views of the same slice**: the 3D scene (the default)
+  and a flat 2D view. The "Full viewport" checkbox calls
+  `controller.set_flat_view`; the flat view is a regular `VisPyRenderer` on the
+  SliceSource, created on first use. Only the active renderer is updated, and
+  `_sync_renderer(full=True)` catches the other one up on switch. Both
+  canvases are pages of a QStackedWidget in MainWindow.
 - `app_controller.py` — UI-agnostic logic: modes, presets, slices
   (`set_slice`), the simulation loop, and listeners (`status`, `playback`,
   `layers`, `simulation`, `slice`). `main_window.py` is the thin Qt shell, with
