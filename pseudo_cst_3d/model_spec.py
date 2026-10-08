@@ -13,6 +13,7 @@
 #                 cell_size = 0.1  or  cells_per_wavelength = 20 (FDTD)
 #   [boundary]    kind = "pml" | "mur",  cells = 12                 (FDTD)
 #   [excitation]  frequency, waveform, amplitude                    (FDTD)
+#                 port_resistance (Ohm, 3D; 0 = ideal current source)
 #                 period, steps_per_period, amplitude               (oscillating)
 #   [numerics]    courant (FDTD);  k, softening (point charges)
 #   [materials]   glass = { eps_r = 4.0, sigma = 0.0 },  metal = { pec = true }
@@ -39,7 +40,7 @@ TOP_KEYS = {
 TABLE_KEYS = {
     "domain": {"bounds", "cell_size", "cells_per_wavelength"},
     "boundary": {"kind", "cells"},
-    "excitation": {"frequency", "waveform", "amplitude", "period", "steps_per_period"},
+    "excitation": {"frequency", "waveform", "amplitude", "period", "steps_per_period", "port_resistance"},
     "numerics": {"courant", "k", "softening"},
     "view": {"height", "heatmap", "arrows", "steps_per_frame", "slice"},
 }

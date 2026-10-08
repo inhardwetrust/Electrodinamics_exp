@@ -34,7 +34,10 @@ class FdtdYee3D(Simulation):
     """
 
     WAVEFORMS = WAVEFORMS
-    RESTART_PARAMETERS = ("courant", "pml_cells")
+    RESTART_PARAMETERS = ("courant", "pml_cells", "port_resistance")
+
+    # Normalized units: eta0 = sqrt(mu0 / eps0) = 1  <->  376.73 Ohm.
+    ETA0_OHM = 376.730313668
     MAX_COURANT = 1.0 / math.sqrt(3.0)
 
     PML_GRADING = 3
@@ -51,6 +54,7 @@ class FdtdYee3D(Simulation):
         frequency=1.0,
         amplitude=1.0,
         pml_cells=10,
+        port_resistance=0.0,
     ):
         self.scene_model = scene_model
 
@@ -69,6 +73,7 @@ class FdtdYee3D(Simulation):
             "frequency": float(frequency),
             "amplitude": float(amplitude),
             "pml_cells": int(pml_cells),
+            "port_resistance": float(port_resistance),
         }
         self._validate()
 
@@ -95,6 +100,10 @@ class FdtdYee3D(Simulation):
             Parameter("amplitude", "Amplitude", "float", 1.0, 0.0, 100.0),
             Parameter("courant", "Courant number", "float", 0.5, 0.05, self.MAX_COURANT),
             Parameter("pml_cells", "PML thickness", "int", 10, 2, 40, unit="cells"),
+            Parameter(
+                "port_resistance", "Port resistance", "float", 0.0, 0.0, 10000.0,
+                unit="Ohm", step=5.0, decimals=1,
+            ),
         ]
 
     def get_parameter(self, name):
@@ -169,9 +178,14 @@ class FdtdYee3D(Simulation):
         self._last_current = 0.0
         self._field_cache = None
 
+        # Port record for Z(f): voltage at E times, gap current at H times.
+        self._rec_v = []
+        self._rec_i = []
+
     def step(self, n=1):
         for _ in range(int(n)):
             self._step_once()
+            self._record_port()
 
         self._field_cache = None
 
@@ -234,6 +248,13 @@ class FdtdYee3D(Simulation):
         # ---------------- Port currents at n + 1/2 (E -= Cb J, J = I / h^2)
         v = self._values
         current = waveform(v["waveform"], (self._step_index + 0.5) * self.dt, v["frequency"], v["amplitude"])
+
+        # With an internal resistance R the port is a voltage source V_s(t)
+        # (the waveform) in series with R, i.e. a Norton current V_s / R in
+        # parallel with R (the conductivity of the port edges).
+        r = self._port_r_normalized()
+        if r > 0.0:
+            current /= r
         self._last_current = current
 
         if current != 0.0:
@@ -315,6 +336,17 @@ class FdtdYee3D(Simulation):
 
         for name in ("ex", "ey", "ez"):
             eps, sigma, pec = self._mat[name]
+
+            # Port resistance as conductivity of the port edges: n edges in
+            # series share R, each edge is a resistor R/n of length h and
+            # cross-section h^2  ->  sigma = n / (R h).
+            kk, jj, ii, _ = self._port_idx[name[1]]
+            r = self._port_r_normalized()
+            if r > 0.0 and len(kk):
+                n_edges = sum(len(self._port_idx[a][0]) for a in "xyz")
+                sigma = sigma.copy()
+                sigma[kk, jj, ii] += n_edges / (r * self.h)
+
             loss = sigma * dt / (2.0 * eps)
             ca = (1.0 - loss) / (1.0 + loss)
             cb = (dt / eps) / (1.0 + loss)
@@ -518,7 +550,59 @@ class FdtdYee3D(Simulation):
         return -self._last_current * self.h * e_along
 
     def diagnostics(self):
-        return {"W": self.energy(), "I port": self._last_current, "P port": self.port_power()}
+        out = {"W": self.energy(), "I port": self._last_current, "P port": self.port_power()}
+        if self._rec_v:
+            out["V port"] = self._rec_v[-1]
+        return out
+
+    # =====================================================
+    # Port: resistance, record, impedance
+    # =====================================================
+
+    def _port_r_normalized(self):
+        return self._values["port_resistance"] / self.ETA0_OHM
+
+    def _port_edges_flat(self):
+        for axis in "xyz":
+            kk, jj, ii, signs = self._port_idx[axis]
+            for k, j, i, sgn in zip(kk, jj, ii, signs):
+                yield axis, int(k), int(j), int(i), float(sgn)
+
+    def port_voltage(self):
+        """V = V_b - V_a = -integral of E along the port (a -> b)."""
+        fields = {"x": self.ex, "y": self.ey, "z": self.ez}
+        return -self.h * sum(sgn * float(fields[a][k, j, i]) for a, k, j, i, sgn in self._port_edges_flat())
+
+    def port_gap_current(self):
+        """Current through the port gap from a to b (into the load at b)."""
+        edges = list(self._port_edges_flat())
+        return sum(sgn * self.edge_current(a, k, j, i) for a, k, j, i, sgn in edges) / len(edges)
+
+    def _record_port(self):
+        if self._port_idx and any(len(self._port_idx[a][0]) for a in "xyz"):
+            self._rec_v.append(self.port_voltage())
+            self._rec_i.append(self.port_gap_current())
+
+    def port_impedance(self, frequencies):
+        """
+        Z(f) seen by the port (normalized, eta0 = 1) from the recorded V(t),
+        I(t): Z = V(f) / I(f), engineering convention (X > 0 inductive).
+        V is sampled at E times n dt, I (from H) at (n - 1/2) dt.
+        Returns (Z, |I(f)|) or None before the first step.
+        """
+        n = len(self._rec_v)
+        if n < 2:
+            return None
+
+        f = np.asarray(frequencies, dtype=np.float64)[:, None]
+        t_v = np.arange(1, n + 1) * self.dt
+        t_i = t_v - 0.5 * self.dt
+        kv = np.exp(-2j * np.pi * f * t_v[None, :])
+        ki = np.exp(-2j * np.pi * f * t_i[None, :])
+        v = kv @ np.asarray(self._rec_v) * self.dt
+        i = ki @ np.asarray(self._rec_i) * self.dt
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return v / i, np.abs(i)
 
     def edge_current(self, axis, k, j, i):
         """

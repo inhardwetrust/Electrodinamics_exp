@@ -48,7 +48,8 @@ Context for future Claude sessions ("previously on..."). Read this first.
   current maximal at the feed and falling toward the tips. Input impedance is
   120+100j Ohm at h = λ/20 and 105+80j Ohm at h = λ/40, converging toward the
   thin-dipole 73 Ohm; the gap and the staircase wire radius dominate the
-  error. The sign convention of X is not verified yet.
+  error. X is in the engineering convention (X > 0 is inductive); this was
+  verified with a short dipole (X < 0).
 - **Wire current**: optional `Simulation.wire_currents()` returns
   {s, current, axis_label} for all wire and port edges along the antenna axis.
   Current = h * circulation of H around each edge (discrete Ampere law). It is
@@ -58,6 +59,25 @@ Context for future Claude sessions ("previously on..."). Read this first.
   Simulation dock. Half-wave check: the profile is symmetric and continuous at
   the feed; the current at the last edge is 0.46 at λ/20 and 0.26 at λ/40,
   converging slowly to cos(kz).
+- **Port resistance and Z(f) / S11** (3D): `port_resistance` (Ohm; 0 = ideal
+  current source). The port is a voltage source V_s = waveform in series with
+  R, implemented as a Norton current V_s/R plus conductivity
+  sigma = n / (R h) on the n port edges, so it uses the normal Ca/Cb
+  coefficients. Every step records V = -integral(E.dl) (at E times) and the
+  gap current (curl H, at H times; the half-step offset is used in the
+  Fourier transform). `port_impedance(f)` = DFT(V) / DFT(I).
+  `controller.impedance_plot_data()` masks frequencies with less than 3% of
+  the excitation (as complex(nan, nan): a plain nan leaves X = 0 and fakes a
+  resonance).
+  Checks:
+  - pulse-DFT Z(1) equals the sine-steady value (117.9+93j Ohm);
+  - Z does not depend on R;
+  - a short dipole is capacitive;
+  - the half-wave model resonates at f = 0.834 with R = 71 Ohm, and |S11|
+    reaches -15 dB at 50 Ohm (model `fdtd3d_halfwave_s11`).
+- `running` clim and the arrow reference have a floor 3 decades below the
+  peak seen since the layer was created, so a decayed pulse does not show
+  float32 noise as "snow".
 - **Charge editor** (static charge models: analytic / grid): the toolbar
   "Edit" button calls `controller.set_edit_mode`. `edit_tool.ChargeEditTool`
   turns mouse events into controller calls (`charge_at`, `select_charge`,

@@ -36,7 +36,7 @@ from color_mapping import palette_names
 from layers import scalar_layer_parameters, vector_layer_parameters
 from params import get_value
 from qt_forms import ParameterForm
-from qt_plot import CurvePlot
+from qt_plot import CurvePlot, SpectrumPlot
 
 
 KEY_HINT = (
@@ -294,6 +294,7 @@ class MainWindow(QMainWindow):
 
         self.diag_labels = {}
         self.wire_plot = None
+        self.z_plot = None
 
         if c.simulation is None:
             info = QLabel(
@@ -354,6 +355,26 @@ class MainWindow(QMainWindow):
             self.wire_plot = CurvePlot(y_label="I")
             wire_layout.addWidget(self.wire_plot)
             layout.addWidget(wire_box)
+
+        # --- port impedance and S11 (from the recorded port V and I)
+        if c.impedance_plot_data() is not None:
+            z_box = QGroupBox("Port: impedance and S11")
+            z_layout = QVBoxLayout(z_box)
+            hint = QLabel(
+                "Computed from everything recorded since reset (Fourier of V(t), I(t)). "
+                "Use a pulse (modulated_gaussian) and run until it has died out."
+            )
+            hint.setWordWrap(True)
+            hint.setStyleSheet("color: gray;")
+            z_layout.addWidget(hint)
+            self.z_plot = SpectrumPlot(x_label="frequency")
+            self.s11_plot = SpectrumPlot(x_label="frequency")
+            self.z_label = QLabel()
+            z_layout.addWidget(self.z_plot)
+            z_layout.addWidget(self.s11_plot)
+            z_layout.addWidget(self.z_label)
+            layout.addWidget(z_box)
+            self._last_z_refresh = 0.0
 
         # --- parameters (generated from the simulation's schema)
         params_box = QGroupBox("Parameters")
@@ -618,6 +639,26 @@ class MainWindow(QMainWindow):
 
         return ", ".join(parts)
 
+    def _refresh_impedance(self):
+        d = self.controller.impedance_plot_data()
+        self.z_plot.set_data(
+            d["f"],
+            [(d["R"], "#ff9e1a", "R [Ohm]"), (d["X"], "#4da3ff", "X [Ohm]")],
+            marker=d["f0"],
+        )
+        z0 = d["z0"]
+        self.s11_plot.set_data(
+            d["f"],
+            [(d["s11_db"], "#5ad15a", f"|S11| [dB], Z0 = {z0:g} Ohm" if z0 else "|S11| [dB]")],
+            marker=d["f0"],
+            y_range=(-30.0, 0.0),
+        )
+        if d["resonance"] is not None:
+            fr, rr = d["resonance"]
+            self.z_label.setText(f"Resonance (X = 0): f = {fr:.3f}, R = {rr:.1f} Ohm")
+        else:
+            self.z_label.setText("Resonance (X = 0): not in the shown band yet")
+
     def _set_sim_parameter(self, name, value):
         try:
             self.controller.set_simulation_parameter(name, value)
@@ -685,6 +726,13 @@ class MainWindow(QMainWindow):
         for label, value in sim.diagnostics().items():
             if label in self.diag_labels:
                 self.diag_labels[label].setText(f"{value:+.5g}")
+
+        if getattr(self, "z_plot", None) is not None:
+            # A DFT over the whole record: refresh at most twice per second.
+            now = time.perf_counter()
+            if now - self._last_z_refresh >= 0.5 or not c.playing:
+                self._last_z_refresh = now
+                self._refresh_impedance()
 
         if getattr(self, "wire_plot", None) is not None:
             s, current, envelope, axis = c.wire_plot_data()

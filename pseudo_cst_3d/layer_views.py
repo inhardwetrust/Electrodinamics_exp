@@ -45,6 +45,10 @@ class ScalarLayerView:
     # Lattice used to estimate percentiles for clim policies.
     CLIM_SAMPLE_PX = 6.0
 
+    # "running" limits never fall more than this many decades below the
+    # strongest limit seen since the layer was created (i.e. since reset).
+    PEAK_FLOOR_DECADES = 3.0
+
     def __init__(self, layer, ctx, parent):
         self.layer = layer
         self.ctx = ctx
@@ -136,13 +140,28 @@ class ScalarLayerView:
         """The source now describes a new state (e.g. next time step)."""
         if self.layer.clim.mode == "running":
             policy = self.layer.clim
-            self._set_clim(running_clim(
+            lo, hi = running_clim(
                 self.clim,
                 self._clim_from_view(allow_empty=True),
                 policy.decay,
                 self.layer.scale,
                 policy.symmetric,
-            ))
+            )
+
+            # Floor: once a pulse has left, the limits must not decay into
+            # float32 noise (the screen would fill with "snow"). Stay within
+            # PEAK_FLOOR of the strongest limit seen in this run.
+            self._clim_peak = max(getattr(self, "_clim_peak", hi), hi)
+            if self.layer.scale == "log":
+                floor = self._clim_peak - self.PEAK_FLOOR_DECADES
+            else:
+                floor = self._clim_peak * 10.0 ** (-self.PEAK_FLOOR_DECADES)
+            if hi < floor:
+                width = hi - lo
+                hi = floor
+                lo = -hi if policy.symmetric else (hi - width if self.layer.scale == "log" else lo)
+
+            self._set_clim((lo, hi))
 
         if self.mode == "grid":
             self.visual.set_grid(self.ctx.source.grid_array(self.layer.quantity))
@@ -312,6 +331,7 @@ class VectorLayerView:
             v.visible = layer.visible
 
         self.counts = {"strong": 0, "weak": 0, "zero": 0, "out": 0, "in": 0}
+        self._peak_reference = 0.0
 
         names = {q.name for q in ctx.source.quantities()}
         self._full_name = f"|{layer.quantity}|" if f"|{layer.quantity}|" in names else None
@@ -363,6 +383,11 @@ class VectorLayerView:
         # (percentile, not max: near-singular peaks would hide everything).
         ok = defined & np.isfinite(full) & (full > 0.0)
         reference = np.percentile(full[ok], 98.0) if np.any(ok) else 0.0
+
+        # Same floor as the heatmap limits: when the field has died out,
+        # leftover round-off noise reads as "zero", not as strong arrows.
+        self._peak_reference = max(self._peak_reference, reference)
+        reference = max(reference, 1e-3 * self._peak_reference)
 
         if reference <= 0.0:
             self._draw(np.empty((0, 2)), np.empty((0, 2)), np.empty((0, 2)),

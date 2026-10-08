@@ -736,6 +736,55 @@ class AppController:
             return None
         return wc["s"], wc["current"], self.wire_envelope, wc["axis_label"]
 
+    # Port impedance spectrum: frequency band relative to the excitation
+    # frequency, and the |I(f)| level below which Z(f) is not shown (too
+    # little excitation there - noise).
+    IMPEDANCE_BAND = (0.4, 1.6)
+    IMPEDANCE_POINTS = 121
+    IMPEDANCE_MIN_LEVEL = 0.03
+
+    def impedance_plot_data(self):
+        """
+        Port impedance from the recorded V(t), I(t), or None when the
+        simulation cannot provide it. Returns {f, R, X (Ohm), s11_db,
+        z0 (Ohm), f0, resonance}. Values where the excitation has almost no
+        energy are NaN.
+        """
+        sim = self.simulation
+        if sim is None or not hasattr(sim, "port_impedance"):
+            return None
+
+        f0 = float(sim.get_parameter("frequency"))
+        f = np.linspace(self.IMPEDANCE_BAND[0] * f0, self.IMPEDANCE_BAND[1] * f0, self.IMPEDANCE_POINTS)
+        result = sim.port_impedance(f)
+
+        if result is None:
+            nan = np.full_like(f, np.nan)
+            return {"f": f, "R": nan, "X": nan, "s11_db": nan, "z0": None, "f0": f0, "resonance": None}
+
+        z, level = result
+        z = z * sim.ETA0_OHM
+        # complex(nan, nan): a plain nan would leave X = 0 there.
+        z[level < self.IMPEDANCE_MIN_LEVEL * level.max()] = complex(np.nan, np.nan)
+
+        r_port = float(sim.get_parameter("port_resistance"))
+        z0 = r_port if r_port > 0.0 else 50.0
+        with np.errstate(divide="ignore", invalid="ignore"):
+            s11_db = 20.0 * np.log10(np.abs((z - z0) / (z + z0)))
+
+        # First zero crossing of X (series resonance), linear interpolation.
+        resonance = None
+        x = z.imag
+        ok = np.isfinite(x)
+        for k in range(len(f) - 1):
+            if ok[k] and ok[k + 1] and x[k] * x[k + 1] <= 0.0 and x[k] != x[k + 1]:
+                fr = f[k] - x[k] * (f[k + 1] - f[k]) / (x[k + 1] - x[k])
+                resonance = (fr, float(np.interp(fr, f, z.real)))
+                break
+
+        return {"f": f, "R": z.real, "X": z.imag, "s11_db": s11_db,
+                "z0": z0, "f0": f0, "resonance": resonance}
+
     def reset_simulation(self):
         self.simulation.reset()
         if self.wire_envelope is not None:

@@ -103,6 +103,9 @@ def _build_oscillating(spec, scene):
 def _build_fdtd2d(spec, scene):
     ex, bnd = spec.excitation, spec.boundary
 
+    if ex.get("port_resistance", 0):
+        raise ModelError(f"{spec.path.name}: port_resistance is supported by the 3D solver only")
+
     simulation = FdtdTE2D(
         scene_model=scene,
         domain=_domain_2d(spec),
@@ -132,6 +135,7 @@ def _build_fdtd3d(spec, scene):
         frequency=float(ex.get("frequency", 1.0)),
         amplitude=float(ex.get("amplitude", 1.0)),
         pml_cells=int(bnd.get("cells", 10)),
+        port_resistance=float(ex.get("port_resistance", 0.0)),
     )
     return BuiltModel(scene, None, simulation, None, simulation.h)
 

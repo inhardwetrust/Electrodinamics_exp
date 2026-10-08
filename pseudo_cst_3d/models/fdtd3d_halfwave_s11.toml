@@ -1,0 +1,51 @@
+name = "FDTD 3D - half-wave vibrator, 50 Ohm port, S11"
+description = """The half-wave vibrator fed by a 50 Ohm port with a broadband pulse.
+Run until the pulse has died out (t ~ 20): the Simulation panel then shows the
+input impedance Z(f) = R + jX and |S11| over frequency, like a port result in CST."""
+solver = "fdtd3d"
+
+[domain]
+bounds = [[-1.75, -1.75, -1.75], [1.75, 1.75, 1.75]]
+cells_per_wavelength = 20
+
+[boundary]
+kind = "pml"
+cells = 10
+
+[excitation]
+frequency = 1.0                 # pulse centre; spectrum covers ~0.6 ... 1.4
+waveform = "modulated_gaussian"
+port_resistance = 50.0          # Ohm; the port is a 1 V source with 50 Ohm inside
+
+[numerics]
+courant = 0.5
+
+[materials]
+metal = { pec = true }
+
+[[objects]]
+type = "port"
+name = "feed"
+a = [0.0, 0.0, -0.05]
+b = [0.0, 0.0, 0.05]
+
+[[objects]]
+type = "wire"
+name = "upper arm"
+material = "metal"
+a = [0.0, 0.0, 0.05]
+b = [0.0, 0.0, 0.25]
+
+[[objects]]
+type = "wire"
+name = "lower arm"
+material = "metal"
+a = [0.0, 0.0, -0.25]
+b = [0.0, 0.0, -0.05]
+
+[view]
+height = 3.5
+heatmap = "|E|"
+arrows = "E"
+steps_per_frame = 4
+slice = { normal = "y", position = 0.0 }

@@ -100,7 +100,12 @@ heatmap = "Hz"
 
 Object types: `charge`, `port`, `rect`, `disk`, `wire` (2D); `port`, `box`,
 `sphere`, `wire` (3D). A `wire` is a thin PEC conductor along a segment; see
-`models/fdtd3d_halfwave.toml` for a half-wave vibrator fed in its gap. The full key reference is at the top of `model_spec.py`.
+`models/fdtd3d_halfwave.toml` for a half-wave vibrator fed in its gap.
+
+For antennas, the Simulation panel plots the **current along the conductor**,
+and with `port_resistance` (3D) it shows the **input impedance Z(f) and
+|S11|**, computed from one broadband pulse. See
+`models/fdtd3d_halfwave_s11.toml`. The full key reference is at the top of `model_spec.py`.
 
 **Canvas keys:**
 
