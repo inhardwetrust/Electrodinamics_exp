@@ -75,11 +75,63 @@ the leading direction-dependent error. For diffusion the difference is small
 and shows mostly in the first steps (a "+" versus a 3x3 square) and in the
 stability limit. It matters more for waves (numerical dispersion).
 
+## 3. Wave equation (1D / 2D)
+
+Models "1D wave" and "2D wave" use the leapfrog scheme
+
+    new = 2 u - u_prev + C^2 * (neighbours - 2 or 4 u)
+
+Each cell keeps TWO numbers, the value and the previous value, so it has a
+velocity, i.e. inertia. That is why a front travels instead of spreading.
+It is the same scheme as the E/H leapfrog on a 1D Yee grid. C is the Courant
+number in cells per step; it is stable for C <= 1 in 1D (exact at C = 1) and
+C <= 1/sqrt(2) in 2D.
+
+Boundaries:
+- `absorbing` (first-order Mur) - the wave leaves;
+- `fixed` - reflects with a sign flip;
+- `reflect` - reflects with the same sign;
+- `periodic`.
+
+dif adds a displacement with zero velocity: a bump splits into two halves.
+The first step is a half step (u1 = u0 + C^2/2 L(u0)), so from a single 1 at
+C = 0.5 the center loses C^2 = 0.25 and each neighbour gains 0.125.
+
+Pulses in the feed:
+- `pulse (hard)`: the cell is set to A only at step "At step" and is free
+  otherwise. In the leapfrog scheme this is a velocity **kick** (the previous
+  value stays 0), not a displacement. In 1D a kick leaves a plateau that
+  grows behind both fronts: at C = 1 it is a checkerboard 1 0 1 0 ..., and
+  the sum grows by 1 per step. In diffusion it is the same as "center peak".
+- `gaussian pulse (soft)` (waves only): the cell is never overwritten; every
+  step it gets D(n) = 2 C (G(n) - G(n-1)) * A added, where G is a gaussian in
+  time (duration = Period, width Period / 4). The kicks sum to zero, so
+  their plateaus cancel and a clean bump of height A runs out both ways.
+  The cell stays transparent for passing waves (like the port in pseudo_cst).
+  Checked: height 1.000 at C = 1; at C = 0.5 a short pulse (period 20) loses
+  height to dispersion (0.93), a longer one (period 40) keeps 1.00.
+The Feed box plots the waveform step by step (per set value 1; gray ticks =
+the cell is free, red line = the current step; for the soft pulse also the
+amount added each step).
+While the step counter is 0, changing the feed rebuilds the start (zeros +
+dif + feed), so an old "constant" value does not stay behind as a kick.
+
+Checked:
+- at C = 1 the halves move exactly one cell per step (height 0.500);
+- at C = 0.5 the peaks drop to 0.445 (numerical dispersion);
+- the 2D ring radius is C*t;
+- the stability limits are exact.
+
+Compare a cell 20 cells away. The wave stays ~0, peaks at step 40 (20 / C),
+then is gone. Diffusion is exactly 0 until step 20 (the stencil's light
+cone) but then only creeps up: 1e-12, 1e-6, 4e-4.
+
 ```bash
 python main.py
 ```
 
-Keys: Space start / pause, N step, R reset.
+Keys: Right arrow = Step anywhere in the window (hold it to keep stepping);
+on the canvas also Space start / pause, N step, R reset.
 
 ## Files
 
@@ -90,4 +142,5 @@ Keys: Space start / pause, N step, R reset.
 | `params.py` | Parameter schema; the Qt form is generated from it |
 | `controller.py` | Playback, pending "restart" parameters, color limits |
 | `renderer.py` | VisPy heatmap with grid, indices, values in cells (1D / 2D) |
+| `feed_plot.py` | Feed box plot: the waveform step by step, current step marked |
 | `main_window.py`, `main.py` | Qt shell |

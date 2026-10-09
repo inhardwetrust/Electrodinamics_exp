@@ -6,6 +6,7 @@
 from vispy import app
 
 from diffusion import Diffusion1D, Diffusion2D
+from wave import Wave1D, Wave2D
 from renderer import ArrayRenderer
 
 
@@ -18,7 +19,12 @@ class Controller:
         "model"     another model was selected (the panel must be rebuilt)
     """
 
-    MODELS = {"1D diffusion": Diffusion1D, "2D diffusion": Diffusion2D}
+    MODELS = {
+        "1D diffusion": Diffusion1D,
+        "2D diffusion": Diffusion2D,
+        "1D wave": Wave1D,
+        "2D wave": Wave2D,
+    }
     DEFAULT_MODEL = "1D diffusion"
 
     DEFAULT_DIF = "center peak"
@@ -88,9 +94,7 @@ class Controller:
         else:
             self.simulation.set_parameter(name, value)
             if param.group == "feed":
-                # New feed values: show them now, not only after the next step.
-                self.simulation.apply_set()
-                self._refresh()
+                self._feed_changed()
 
         self._notify("params")
 
@@ -104,10 +108,17 @@ class Controller:
         self.simulation = self.MODEL()
         self.color_limits = getattr(self.MODEL, "DEFAULT_COLOR_LIMITS", "initial")
         self.pending.clear()
+
+        # Each model brings its own sensible start: dif, palette, speed.
+        self.dif = getattr(self.MODEL, "DEFAULT_DIF", self.DEFAULT_DIF)
         if self.dif not in self.simulation.dif_presets():
-            self.dif = self.DEFAULT_DIF
-        if self.set_name not in self.simulation.set_presets():
-            self.set_name = "none"
+            self.dif = self.simulation.dif_presets()[0]
+        self.renderer.palette = getattr(self.MODEL, "DEFAULT_PALETTE", "heat")
+        self.steps_per_second = getattr(self.MODEL, "DEFAULT_STEPS_PER_SECOND",
+                                        self.DEFAULT_STEPS_PER_SECOND)
+        # A new model starts clean: no feed carried over from the old one
+        # (its modulation settings belong to the old model).
+        self.set_name = "none"
         self._notify("model")
         self.reset()
 
@@ -119,8 +130,22 @@ class Controller:
         """Choose the set ("feed"); it takes effect immediately, no Reset."""
         self.set_name = name
         self.simulation.set_source(name)
-        self._refresh()
+        self._feed_changed()
         self._notify("params")
+
+    def _feed_changed(self):
+        """
+        Show a new feed now, not only after the next step. At step 0 the start
+        is rebuilt (zeros + dif + feed): otherwise a value forced by the old
+        feed (e.g. "constant" before switching to a pulse) would stay in the
+        start state and act as an extra kick.
+        """
+        if self.simulation.step_index == 0:
+            self.simulation.reset(dif=self.dif)
+            self._initial_clim = _clim_of(self.simulation.state, symmetric=self._symmetric())
+        else:
+            self.simulation.apply_set()
+        self._refresh()
 
     def set_palette(self, name):
         self.renderer.palette = name
@@ -215,7 +240,7 @@ class Controller:
         key = event.key.name.upper() if event.key is not None else ""
         if key == "SPACE":
             self.set_playing(not self.playing)
-        elif key == "N" and not self.playing:
+        elif key in ("N", "RIGHT") and not self.playing:
             self.step()
         elif key == "R":
             self.reset()
@@ -233,7 +258,7 @@ def _clim_of(state, previous=None, symmetric=False):
     if previous is not None:
         lo, hi = min(lo, previous[0]), max(hi, previous[1])
     if symmetric:
-        m = max(abs(lo), abs(hi))
+        m = max(abs(lo), abs(hi)) or 1.0      # all zeros: -1 .. 1
         lo, hi = -m, m
     if hi <= lo:
         hi = lo + 1.0

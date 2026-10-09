@@ -4,6 +4,7 @@
 # goes through the Controller; controller events refresh the widgets.
 
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QComboBox,
     QDockWidget,
@@ -21,8 +22,9 @@ from PySide6.QtWidgets import (
 )
 
 from controller import Controller
+from feed_plot import FeedPlot
 
-KEY_HINT = "Canvas keys: Space start/pause   N step   R reset   |   wheel zoom, drag pan"
+KEY_HINT = "Keys: Right arrow step (hold = repeat)   |   canvas: Space start/pause   N step   R reset   |   wheel zoom, drag pan"
 
 
 class MainWindow(QMainWindow):
@@ -49,8 +51,17 @@ class MainWindow(QMainWindow):
         hint.setStyleSheet("color: gray;")
         self.statusBar().addPermanentWidget(hint)
 
+        # Right arrow = Step anywhere in the window (holding it repeats).
+        # A focused number field still uses it to move its text cursor.
+        step_key = QShortcut(QKeySequence(Qt.Key.Key_Right), self)
+        step_key.activated.connect(self._step_key)
+
         self._refresh_all()
         canvas.setFocus()
+
+    def _step_key(self):
+        if not self.controller.playing:
+            self.controller.step()
 
     # =====================================================
     # Panel
@@ -142,6 +153,11 @@ class MainWindow(QMainWindow):
         feed_form = QFormLayout()
         self._add_param_rows(feed_form, "feed")
         box_layout.addLayout(feed_form)
+        self.feed_plot = FeedPlot()
+        self.feed_plot.setToolTip("The feed waveform, step by step (per set value 1).\n"
+                                  "Gray ticks: the cell is free at that step.\n"
+                                  "Red line: the current step.")
+        box_layout.addWidget(self.feed_plot)
         layout.addWidget(box)
 
         # --- view
@@ -297,6 +313,7 @@ class MainWindow(QMainWindow):
                     w.setValue(value)
             if name in self.pending_labels:
                 self.pending_labels[name].setVisible(c.is_pending(name))
+        self._refresh_feed_plot()
 
     def _refresh_playback(self):
         c = self.controller
@@ -304,7 +321,13 @@ class MainWindow(QMainWindow):
         with QSignalBlocker(self.speed_spin):
             self.speed_spin.setValue(c.steps_per_second)
 
+    def _refresh_feed_plot(self):
+        sim = self.controller.simulation
+        steps = sim.feed_window()
+        self.feed_plot.set_data(steps, sim.feed_curves(steps), sim.step_index)
+
     def _refresh_state(self):
+        self._refresh_feed_plot()
         for name, value in self.controller.simulation.diagnostics().items():
             if name in self.diag_labels:
                 self.diag_labels[name].setText(str(value) if isinstance(value, int) else f"{value:.6g}")

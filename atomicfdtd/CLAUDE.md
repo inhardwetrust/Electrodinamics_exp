@@ -47,8 +47,15 @@ or `canvas.render()`, never screen grabs).
   converges exactly to linspace(1, 0); center = 1 with fixed ends gives a
   tent; 2D left / right columns give equal linear rows. The renderer outlines
   masked cells (`set_marks`).
-- **Feed modulation** (`Simulation` base): `feed_wave` (constant / sine),
-  `feed_period` (in steps), `feed_amplitude`, `feed_offset`.
+- **Feed modulation** (`Simulation` base): `feed_wave` (constant / sine /
+  pulse (hard)), `feed_period` (in steps), `feed_amplitude`, `feed_offset`,
+  `feed_at` (pulse start step). `feed_factor` returns None = "not forced this
+  step". Waves add `gaussian pulse (soft)`: an additive source
+  (`_WaveBase.apply_set`), never overwrites the cell. At step 0 a feed change
+  rebuilds the start (`controller._feed_changed`) - a value forced by the old
+  feed would otherwise remain as a hidden velocity kick.
+- Feed plot: `feed_plot.FeedPlot` (QPainter) draws `sim.feed_curves(sim.feed_window())`;
+  models override `feed_curves` / `feed_span` for their own waveforms.
   forced = A * set * w(n) + offset, where n is the step index. The models
   increment n before `apply_set()`, so the forced value belongs to the new
   time level and n = 0 at reset gives sin = 0. The params have
@@ -60,5 +67,15 @@ or `canvas.render()`, never screen grabs).
 - Colors and labels: `round_values()` / `format_value()` in renderer.py. With
   "match numbers" the color uses the rounded value, so equal labels have equal
   colors (checked: the old mode had two colors for "0.018", the new one none).
+- **Waves** (`wave.py`: `Wave1D`, `Wave2D`): leapfrog
+  new = 2u - u_prev + C^2 L(u). `apply_dif` sets u_prev so that the initial
+  velocity is zero (an exact Taylor first step). Boundaries: absorbing
+  (Mur 1st order) / fixed / reflect / periodic.
+  Model class attributes `DEFAULT_DIF`, `DEFAULT_PALETTE`,
+  `DEFAULT_STEPS_PER_SECOND` and `DEFAULT_COLOR_LIMITS` are applied by
+  `controller.set_model`. A model switch resets the feed to "none" - the old
+  feed with constant modulation was silently pinning the new model.
+  Checks: see README section 3 (C = 1 exact split, dispersion at C = .5, ring
+  radius C*t, exact stability limits, far-cell wave vs diffusion).
 - Run: `../.venv/Scripts/python.exe main.py`. Git: the repo root is
   `VisPy_playground/`, commit only selected folders.

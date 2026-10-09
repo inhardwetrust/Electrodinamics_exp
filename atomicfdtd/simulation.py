@@ -58,9 +58,10 @@ class Simulation:
 
     # Time modulation of the set: forced = A * set * w(n) + offset, where n is
     # the step index and w = 1 ("constant") or sin(2 pi n / period) ("sine").
-    FEED_WAVES = ("constant", "sine")
+    #   "pulse (hard)": forced to A * set only at step `feed_at`, free otherwise
+    FEED_WAVES = ("constant", "sine", "pulse (hard)")
     FEED_DEFAULTS = {"feed_wave": "constant", "feed_period": 20.0,
-                     "feed_amplitude": 1.0, "feed_offset": 0.0}
+                     "feed_amplitude": 1.0, "feed_offset": 0.0, "feed_at": 1}
 
     def _init_feed(self, values):
         self._feed = dict(self.FEED_DEFAULTS)
@@ -71,13 +72,20 @@ class Simulation:
         return [
             Param("feed_wave", "Waveform", "choice", "constant", choices=self.FEED_WAVES,
                   group="feed", tooltip="constant: the set values as they are\n"
-                                        "sine: set * A * sin(2 pi n / period) + offset"),
+                                        "sine: set * A * sin(2 pi n / period) + offset\n"
+                                        "pulse (hard): set * A once, at step 'At step'; "
+                                        "free before and after\n"
+                                        "gaussian pulse (soft, waves only): adds a bump of "
+                                        "height A that runs away; the cell stays free"),
             Param("feed_period", "Period", "float", 20.0, 1.0, 100000.0, step=1.0,
-                  decimals=1, group="feed", tooltip="In steps (sine only)."),
+                  decimals=1, group="feed",
+                  tooltip="In steps. sine: the period; soft pulse: its duration (width = period / 4)."),
             Param("feed_amplitude", "Amplitude A", "float", 1.0, -1000.0, 1000.0,
                   step=0.1, group="feed"),
             Param("feed_offset", "Offset", "float", 0.0, -1000.0, 1000.0,
                   step=0.1, group="feed", tooltip="Added to the forced cells."),
+            Param("feed_at", "At step", "int", 1, 1, 1000000, group="feed",
+                  tooltip="pulses: the step at which the pulse starts"),
         ]
 
     def get_feed(self, name):
@@ -93,10 +101,41 @@ class Simulation:
         self._feed[name] = type(self.FEED_DEFAULTS[name])(value)
 
     def feed_factor(self, n):
-        """w(n): 1, or sin(2 pi n / period)."""
-        if self._feed["feed_wave"] == "sine":
+        """w(n): 1, sin(2 pi n / period), or for a pulse 1 / None (= not forced)."""
+        wave = self._feed["feed_wave"]
+        if wave == "sine":
             return math.sin(2.0 * math.pi * n / self._feed["feed_period"])
+        if wave == "pulse (hard)":
+            return 1.0 if n == self._feed["feed_at"] else None
         return 1.0
+
+    def feed_span(self):
+        """How many steps the feed plot shows: enough to see one whole event."""
+        feed, wave = self._feed, self._feed["feed_wave"]
+        if wave == "sine":
+            return int(max(30, 3 * feed["feed_period"]))
+        if wave == "constant":
+            return 30
+        return int(max(30, feed["feed_at"] + feed["feed_period"] + 10))
+
+    def feed_window(self):
+        """Step range for the feed plot; it scrolls to keep the current step in view."""
+        span = self.feed_span()
+        start = max(0, self.step_index - int(0.75 * span))
+        return np.arange(start, start + span + 1)
+
+    def feed_curves(self, steps):
+        """
+        [(label, values)] for the feed plot, per set value 1. NaN = the cell
+        is free at that step (not forced).
+        """
+        feed = self._feed
+        values = np.full(len(steps), np.nan)
+        for i, n in enumerate(steps):
+            w = self.feed_factor(int(n))
+            if w is not None:
+                values[i] = feed["feed_amplitude"] * w + feed["feed_offset"]
+        return [("forced value", values)]
 
     def set_presets(self):
         """Names of the set patterns this model offers ("none" first)."""
@@ -121,10 +160,13 @@ class Simulation:
         values = getattr(self, "_set", None)
         if values is None:
             return
+        w = self.feed_factor(self.step_index)
+        if w is None:
+            return  # a pulse outside its step: the cells are free
+
         mask = ~np.isnan(values)
         feed = self._feed
-        factor = feed["feed_amplitude"] * self.feed_factor(self.step_index)
-        self.state[mask] = values[mask] * factor + feed["feed_offset"]
+        self.state[mask] = values[mask] * feed["feed_amplitude"] * w + feed["feed_offset"]
 
     def set_mask(self):
         """Boolean array: cells that are forced by the set."""
