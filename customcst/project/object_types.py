@@ -105,6 +105,11 @@ OBJECT_TYPES = {
             note="cone between two PEC bodies, small end = +",
             allowed_kinds=("solid",),
         ),
+        ObjectType(
+            "waveport", "Waveguide port",
+            note="cylinder on the end face of a line, outside the model; Z0 = the line's own",
+            allowed_kinds=("solid",),
+        ),
     )
 }
 

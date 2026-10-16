@@ -55,13 +55,19 @@ def points_inside(body, points):
 
 
 def segments_hit_surface(body, starts, ends):
+    """Bool array: segment start -> end crosses or touches the body's surface."""
+    return segment_crossings(body, starts, ends) > 0
+
+
+def segment_crossings(body, starts, ends):
     """
-    Bool array: segment start -> end crosses or touches a triangle of the
-    body (Moller-Trumbore with the segment parameter in [0, 1]).
+    Int array: how many times each segment start -> end crosses the body's
+    surface (Moller-Trumbore, segment parameter in [0, 1]). Hits at the same
+    point of the segment (a shared triangle edge or vertex) count once.
     """
     starts = np.asarray(starts, dtype=np.float64).reshape(-1, 3)
     ends = np.asarray(ends, dtype=np.float64).reshape(-1, 3)
-    hit = np.zeros(len(starts), dtype=bool)
+    hit = np.zeros(len(starts), dtype=np.int64)
 
     if len(body.triangles) == 0:
         return hit
@@ -91,7 +97,13 @@ def segments_hit_surface(body, starts, ends):
         v = np.einsum("ptj,ptj->pt", d, qvec) * inv
         t = np.einsum("ptj,tj->pt", qvec, e2) * inv
         inside = (u >= -eps) & (v >= -eps) & (u + v <= 1 + eps) & (t >= -eps) & (t <= 1 + eps)
-        hit[chunk] = np.any(ok & inside, axis=1)
+        mask = ok & inside
+        # Distinct crossing positions along each segment.
+        t_hit = np.where(mask, np.round(t, 9), np.nan)
+        t_sorted = np.sort(t_hit, axis=1)
+        first = np.isfinite(t_sorted[:, :1])
+        new = np.isfinite(t_sorted[:, 1:]) & (np.diff(t_sorted, axis=1) > 0)
+        hit[chunk] = first[:, 0].astype(np.int64) + new.sum(axis=1)
 
     return hit
 

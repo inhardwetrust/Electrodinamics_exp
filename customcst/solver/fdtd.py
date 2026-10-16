@@ -27,6 +27,28 @@
 # Recorded each step: V at E times (n dt), the gap current I (circulation of
 # H around the port edges, mean over the column) at H times ((n - 1/2) dt).
 #
+# Waveguide port (discretize.DiscreteWavePort): the port plane is a domain
+# end and the line runs on into the CPML (materials are edge-replicated),
+# so a wave leaving through the port is absorbed: the port is matched to
+# the line by construction, its reference impedance is the line's Z0.
+#   - source: a soft sheet on the port plane, E_t += A s(t) e_mode, with
+#     A = 2 c0 dt / (sqrt(eps_eff) dd) so the wave toward the line is
+#     ~ s(t) volts (the other half runs into the CPML and is lost);
+#   - V at the measure plane (a few cells in): the projection of E_t on the
+#     mode, V = <E, e> / <e, e> (e = the mode field for 1 V);
+#   - I: H of a quasi-TEM line has the pattern of the AIR-filled line,
+#     H = I Z0_air / eta0 (n x e_air), so I = eta0 / Z0_air <H, g> / <g, g>,
+#     g = n x e_air, n = the direction of the line. Sampled on the two H
+#     planes around the measure plane (half steps h0, h1 away) and
+#     interpolated linearly to it, (h1 H0 + h0 H1) / (h0 + h1); in the
+#     spectrum / cos(beta sqrt(h0 h1)), the interpolation's loss on a wave
+#     (exact for h0 = h1, second order otherwise);
+#   - <.,.>: sums over the plane's edges weighted by their dual face area.
+#     The H edges of a plane sit at the same (u, v) as the E edges.
+#   - the spectra V, I are moved back to the port plane by the line's
+#     transfer matrix (beta = 2 pi f sqrt(eps_eff) / c0, the measure
+#     distance L): V0 = V cos bL + j Z0 I sin bL, I0 = I cos bL + j V / Z0 sin bL.
+#
 # Excitation: sine-modulated Gaussian (no DC) centered at f0 = (f_min +
 # f_max) / 2, its spectrum is 20 dB down at f_min and f_max.
 #
@@ -53,6 +75,7 @@ from project.settings import C0, GHZ
 
 EPS0 = 8.8541878128e-12
 MU0 = 4e-7 * math.pi
+ETA0 = MU0 * C0
 
 PML_GRADING = 3
 PML_SIGMA_FACTOR = 0.8
@@ -96,7 +119,7 @@ class FdtdSolver:
         self.pml = int(pml_cells)
         self.pulse = Pulse.for_band(f_min_ghz * GHZ, f_max_ghz * GHZ)
 
-        names = [p.name for p in materials.ports]
+        names = [p.name for p in materials.ports] + [w.name for w in materials.waveports]
         if active_port is not None and active_port not in names:
             raise ValueError(f"no port named {active_port!r} (have {names})")
         self.active_port = active_port
@@ -273,12 +296,75 @@ class FdtdSolver:
 
     def _build_ports(self):
         self.records = [PortRecord(p.name) for p, _, _ in self._port_edges]
-        self._source = None
+        self._sources = []      # (axis, index, coef): E[axis][index] -= coef * V_s
         for port, edges, area in self._port_edges:
             if port.name == self.active_port:
                 # E -= Cb J,  J = sign V_s / (R A_e)
                 coef = self.cb[port.axis][tuple(edges.T)] * port.sign / (port.resistance * area)
-                self._source = (port.axis, tuple(edges.T), coef.astype(np.float32))
+                self._sources.append((port.axis, tuple(edges.T), coef.astype(np.float32)))
+
+        self._waveports = [self._build_waveport(w) for w in self.materials.waveports]
+        self.records += [PortRecord(w["port"].name) for w in self._waveports]
+
+    def _build_waveport(self, port):
+        p = self.pml
+        a, mode = port.axis, port.mode
+        u, v = mode.u_axis, mode.v_axis
+        lines = self.materials.grid.lines
+        du, dv = np.diff(lines[u]), np.diff(lines[v])
+        ddu, ddv = _dual(du), _dual(dv)
+        w_u = du[:, None] * ddv[None, :]            # dual faces of the u-edges (nu, nv+1)
+        w_v = ddu[:, None] * dv[None, :]            # (nu+1, nv)
+
+        def plane(index, shape):
+            # In-plane slice of an extended array (u, v in domain index ranges).
+            s = [None] * 3
+            s[a] = index
+            s[u] = slice(p, p + shape[0])
+            s[v] = slice(p, p + shape[1])
+            return tuple(s)
+
+        cyclic = 1.0 if (a, u, v) in ((0, 1, 2), (1, 2, 0), (2, 0, 1)) else -1.0
+        n = port.direction * cyclic
+        g_v = n * mode.e_u_air                      # (n x e_air)_v, at the u-edge positions
+        g_u = -n * mode.e_v_air                     # (n x e_air)_u, at the v-edge positions
+        z0_air = 1.0 / (C0 * mode.capacitance_air)
+
+        i0, im = port.index + p, port.measure + p
+        lines_a = self.lines[a]
+        h0 = 0.5 * (lines_a[im] - lines_a[im - 1])      # node -> H planes
+        h1 = 0.5 * (lines_a[im + 1] - lines_a[im])
+        w = {
+            "port": port, "u": u, "v": v,
+            "e_plane": (plane(im, w_u.shape), plane(im, w_v.shape)),
+            # H planes im - 1/2 and im + 1/2 (H index k sits between nodes k and k + 1)
+            "h_planes": [(plane(k, w_u.shape), plane(k, w_v.shape)) for k in (im - 1, im)],
+            "h_weights": (h1 / (h0 + h1), h0 / (h0 + h1)),
+            "e_u": (mode.e_u * w_u).astype(np.float32), "e_v": (mode.e_v * w_v).astype(np.float32),
+            "e_norm": float(np.sum(mode.e_u ** 2 * w_u) + np.sum(mode.e_v ** 2 * w_v)),
+            "g_u": (g_u * w_v).astype(np.float32), "g_v": (g_v * w_u).astype(np.float32),
+            "i_scale": ETA0 / z0_air / float(np.sum(g_v ** 2 * w_u) + np.sum(g_u ** 2 * w_v)),
+            "length": abs(lines_a[im] - lines_a[i0]),
+            "h_half": math.sqrt(h0 * h1),
+        }
+        if port.name == self.active_port:
+            dd = 0.5 * (lines_a[i0 + 1] - lines_a[i0 - 1])
+            amp = 2.0 * C0 * self.dt / (math.sqrt(mode.eps_eff) * dd)
+            for comp, field in ((u, mode.e_u), (v, mode.e_v)):
+                self._sources.append((comp, plane(i0, field.shape), (-amp * field).astype(np.float32)))
+        return w
+
+    def _waveport_vi(self, w):
+        u, v = w["u"], w["v"]
+        e_u_plane, e_v_plane = w["e_plane"]
+        voltage = (np.sum(self.e[u][e_u_plane] * w["e_u"], dtype=np.float64) +
+                   np.sum(self.e[v][e_v_plane] * w["e_v"], dtype=np.float64)) / w["e_norm"]
+        current = 0.0
+        for (at_u, at_v), weight in zip(w["h_planes"], w["h_weights"]):
+            # H_v sits at the u-edge positions, H_u at the v-edge positions.
+            current += weight * (np.sum(self.h[v][at_u] * w["g_v"], dtype=np.float64) +
+                                 np.sum(self.h[u][at_v] * w["g_u"], dtype=np.float64))
+        return float(voltage), float(current * w["i_scale"])
 
     def _port_voltage(self, port, edges):
         e = self.e[port.axis][tuple(edges.T)].astype(np.float64)
@@ -438,10 +524,10 @@ class FdtdSolver:
             target *= self.ca[f][interior]
             target += self.cb[f][interior] * (d1 - d2)
 
-        if self._source is not None:
-            axis, index, coef = self._source
-            vs = float(self.pulse((self.step_index + 0.5) * self.dt))
-            e[axis][index] -= coef * np.float32(vs)
+        if self._sources:
+            vs = np.float32(self.pulse((self.step_index + 0.5) * self.dt))
+            for axis, index, coef in self._sources:
+                e[axis][index] -= coef * vs
 
         if self._elements:
             self._update_elements()
@@ -463,6 +549,10 @@ class FdtdSolver:
         for record, (port, edges, _) in zip(self.records, self._port_edges):
             record.v.append(self._port_voltage(port, edges))
             record.i.append(self._port_current(port, edges))
+        for record, w in zip(self.records[len(self._port_edges):], self._waveports):
+            v, i = self._waveport_vi(w)
+            record.v.append(v)
+            record.i.append(i)
 
     def energy(self):
         """Total field energy (J) inside the meshed domain + PML."""
@@ -515,6 +605,21 @@ class FdtdSolver:
             v = np.exp(-2j * np.pi * f * t_v[None]) @ np.asarray(record.v) * self.dt
             i = np.exp(-2j * np.pi * f * t_i[None]) @ np.asarray(record.i) * self.dt
             out[record.name] = (v, i)
+
+        for w in self._waveports:
+            port = w["port"]
+            v, i = out[port.name]
+            beta = 2 * np.pi * f[:, 0] * math.sqrt(port.mode.eps_eff) / C0
+            i = i / np.cos(beta * w["h_half"])
+            z0, bl = port.resistance, beta * w["length"]
+            out[port.name] = (v * np.cos(bl) + 1j * z0 * i * np.sin(bl),
+                              i * np.cos(bl) + 1j * v / z0 * np.sin(bl))
+        return out
+
+    def reference_impedances(self):
+        """{port name: Ohm}: R of the lumped ports, the line's Z0 of the waveguide ports."""
+        out = {p.name: p.resistance for p in self.materials.ports}
+        out.update({w.name: w.resistance for w in self.materials.waveports})
         return out
 
     def excitation_spectrum(self, frequencies):
@@ -522,3 +627,11 @@ class FdtdSolver:
         n = self.step_index
         t = (np.arange(n) + 0.5) * self.dt
         return np.exp(-2j * np.pi * f * t[None]) @ self.pulse(t) * self.dt
+
+
+def _dual(d):
+    """Dual lengths at the nodes of a line with steps d (half steps at the ends)."""
+    out = np.zeros(len(d) + 1)
+    out[:-1] += 0.5 * d
+    out[1:] += 0.5 * d
+    return out

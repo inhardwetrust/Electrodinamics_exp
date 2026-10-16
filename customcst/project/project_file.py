@@ -29,6 +29,7 @@ import tomllib
 
 from project.object_types import CONDUCTOR_TYPES, OBJECT_TYPES, Assignment
 from project.ports import port_geometry
+from project.waveports import waveport_geometry
 from project.settings import SECTIONS, check_settings
 
 UP_AXES = ("x", "y", "z")
@@ -118,6 +119,18 @@ class Project:
             b.name: port_geometry(b, conductors, polar=False)
             for b in geometry.bodies
             if self.get(b.name) is not None and self.get(b.name).type == "lumped"
+        }
+
+    def waveports(self, geometry):
+        """{waveguide port body name: WavePortGeometry}."""
+        materials = [
+            b for b in geometry.bodies
+            if self.get(b.name) is not None and self.get(b.name).type in CONDUCTOR_TYPES + ("dielectric",)
+        ]
+        return {
+            b.name: waveport_geometry(b, materials)
+            for b in geometry.bodies
+            if self.get(b.name) is not None and self.get(b.name).type == "waveport"
         }
 
     def orphans(self, geometry):

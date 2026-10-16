@@ -133,6 +133,82 @@ Lessons:
   cavity whose layers are not thin.
 - Pick the 2π branch explicitly when unwrapping long lines.
 
+## Waveguide ports
+
+A port that launches the line's own TEM / quasi-TEM wave and splits the
+field into incident and reflected waves. It has no gap parasitics, so a
+connector can be simulated.
+
+**In CAD** the port is a short cylinder standing on the end face of the
+line, outside the model (an extruded circle: easy to draw in SolidWorks).
+- `project/waveports.py` takes from it the axis (must be x, y or z), the
+  port plane (the cap that touches the model), the direction (the line runs
+  away from the port body) and the radius (the port region on the plane).
+- The diameter must reach the outer conductor: the conductor touching the
+  circle is ground, the one inside is the signal.
+- The port body is only a marker and is never meshed.
+- Type `waveport` ("Waveguide port") has no parameters: the reference
+  impedance is the line's own Z0.
+
+**Mesh**: the port plane is the domain end on its side, with no padding.
+The materials are edge-replicated into the CPML, so the line runs on into
+the absorber, as if it were infinitely long.
+
+**Mode** (`solver/port_mode.py`): the 2D Laplace problem div(ε grad φ) = 0
+on the port plane's nodes, with the discretized edge εr and the FDTD's own
+edge conductances. So it is the mode of the staircased line the FDTD sees,
+not of the ideal line.
+- Metal pieces are nodes joined by PEC edges. Pieces touching the border are
+  at 0 V, the largest piece of the signal at 1 V, and the others float.
+- Conductors are grouped with 8-connectivity only to decide ground and
+  signal.
+- Outputs: C', C0', Z0 = 1 / (c0 √(C' C0')), εeff, and E for 1 V with and
+  without the dielectric (the H pattern is the air one).
+
+**FDTD** (`solver/fdtd.py`):
+- source: a soft E sheet with the mode's pattern on the port plane; half the
+  wave goes into the line, half into the CPML;
+- V and I are sampled 3 cells in: V by projection on e, I by projection of
+  H on n × e_air. I is interpolated between the two H planes and corrected
+  for the interpolation;
+- the spectra are moved back to the port plane with the line's transfer
+  matrix;
+- the power waves are the same as for a lumped port, with R = Z0.
+
+**Discretization fix that made it work** (`discretize._close_metal`): per
+conductor, every edge between two of its metal nodes is PEC. Before, a node
+on a curved surface could have PEC edges across the line but a free edge
+along it. The FDTD then saw a different conductor than the 2D mode: E_x
+appeared, H did not follow E, and the coax wave impedance was 51.4 Ω
+against 46.1 Ω from the mode. S11 was −25 dB, and is −80 dB after the fix.
+Lines made of boxes are unaffected, and all older checks still pass.
+
+**Validation** (`checks/check_waveport.py`, ~1.5 min), coax with a 1.27 mm
+pin, PTFE and a 4.25 / 5.0 mm shield, 30 mm long, 1–10 GHz:
+- uniform line:
+  - S11 < −78 dB;
+  - |S21| = 1.0000 ± 0.0003;
+  - the S21 phase equals the delay 30 mm √εeff / c0 within 1.6° at 10 GHz
+    (grid dispersion);
+- with a 10 mm εr 4.4 section in the middle (a dielectric step in a coax
+  stays TEM, so line theory is exact):
+  - S11 and S21 match the ABCD cascade with the mode solver's Z0 and εeff
+    within 0.016 and 0.027;
+  - reciprocity and symmetry are exact;
+  - |S11|² + |S21|² = 1 within 0.4 % in band (−1.2 % at the band edge);
+- errors: a cone instead of a cylinder; a port inside the model.
+
+Z0 of the staircased coax: 46.1 Ω at 4 cells per feature, 49.95 Ω at 8
+(theory 50.01 Ω).
+
+Performance warning: the brute-force point and segment tests over all
+triangles are slow for curved bodies on fine grids (135 s to discretize a
+3 mm coax at 128² cells). Connectors need ray casting along the grid
+lines.
+
+Next: microstrip waveguide ports (a rectangular port body), then a real
+SMA STEP.
+
 ## Lumped elements (R, L, C)
 
 "Lumped element" is a body type, like a port: a cylinder or cone drawn

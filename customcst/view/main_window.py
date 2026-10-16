@@ -51,6 +51,7 @@ class MainWindow(QMainWindow):
         self.project = None
         self.ports = {}             # {port body name: PortGeometry}
         self.elements = {}          # {lumped element body name: PortGeometry}
+        self.waveports = {}         # {waveguide port body name: WavePortGeometry}
         self.mesh = None            # MeshResult
         self.materials = None       # MaterialGrid (solver's view)
         self._mesh_coordinate = None    # where the mesh plane is (m)
@@ -196,7 +197,7 @@ class MainWindow(QMainWindow):
             return "no materials"
         if self.materials.errors:
             return self.materials.errors[0]
-        if not self.materials.ports:
+        if not self.materials.ports and not self.materials.waveports:
             return "no valid port"
         return None
 
@@ -297,15 +298,18 @@ class MainWindow(QMainWindow):
     def _refresh_model(self, center_slider=False):
         self.ports = self.project.ports(self.geometry) if self.project else {}
         self.elements = self.project.elements(self.geometry) if self.project else {}
+        self.waveports = self.project.waveports(self.geometry) if self.project else {}
         self.view.set_ports(list(self.ports.values()), list(self.elements.values()))
 
         types = {n: a.type for n, a in self.project.assignments.items()} if self.project else {}
         self.view.set_type_colors(types)
 
         columns = {**self.ports, **self.elements}       # bodies that need a line on their axis
-        self.mesh = build_grid(self.geometry, self.project, columns) if self.project else None
+        self.mesh = (build_grid(self.geometry, self.project, columns, self.waveports)
+                     if self.project else None)
         self.materials = (
-            discretize(self.mesh, self.geometry, self.project, self.ports, self.elements)
+            discretize(self.mesh, self.geometry, self.project, self.ports, self.elements,
+                       self.waveports)
             if self.mesh is not None and self.mesh.ok else None
         )
         self._configure_mesh_slider(center=center_slider)
@@ -470,6 +474,13 @@ class MainWindow(QMainWindow):
                 ])
                 row.setData(0, Qt.UserRole, ("info", "mesh", None))
                 row.setForeground(1, QColor("#2a2"))
+            for port in m.waveports:
+                row = QTreeWidgetItem(item, [
+                    f"{port.name} line",
+                    f"Z0 {port.mode.z0:.2f} Ω, εeff {port.mode.eps_eff:.3f}", "",
+                ])
+                row.setData(0, Qt.UserRole, ("info", "mesh", None))
+                row.setForeground(1, QColor("#2a2"))
             for error in m.errors:
                 self._note_row(item, "mesh", f"✗ {error}", "#d33")
             for warning in m.warnings:
@@ -507,6 +518,8 @@ class MainWindow(QMainWindow):
                 self._port_rows(type_item, name)
             elif assignment.type == "lumped":
                 self._element_rows(type_item, name)
+            elif assignment.type == "waveport":
+                self._waveport_rows(type_item, name)
 
             body_item.setExpanded(True)
             type_item.setExpanded(True)
@@ -553,6 +566,27 @@ class MainWindow(QMainWindow):
             ("ends", f"{element.minus_body} — {element.plus_body}", ""),
             ("gap", f"{element.gap_length / MM:.3f}", "mm"),
         ):
+            row = QTreeWidgetItem(type_item, [label, value, unit])
+            row.setData(0, Qt.UserRole, ("info", name, None))
+            row.setForeground(1, QColor("#2a2"))
+
+    def _waveport_rows(self, type_item, name):
+        port = self.waveports.get(name)
+        if port is None:
+            return
+        if not port.ok:
+            self._note_row(type_item, name, f"✗ {port.error}", "#d33")
+            return
+        rows = [
+            ("plane", f"{AXES[port.axis]} = {port.plane / MM:.4g}", "mm"),
+            ("line runs to", f"{'+' if port.direction > 0 else '−'}{AXES[port.axis]}", ""),
+            ("⌀", f"{2 * port.radius / MM:.4g}", "mm"),
+        ]
+        discrete = [w for w in (self.materials.waveports if self.materials else []) if w.name == name]
+        if discrete:
+            mode = discrete[0].mode
+            rows += [("Z0 (line)", f"{mode.z0:.2f}", "Ω"), ("εeff", f"{mode.eps_eff:.3f}", "")]
+        for label, value, unit in rows:
             row = QTreeWidgetItem(type_item, [label, value, unit])
             row.setData(0, Qt.UserRole, ("info", name, None))
             row.setForeground(1, QColor("#2a2"))

@@ -9,7 +9,9 @@
 #      - planar faces of material bodies normal to the axis, and the body
 #        extents along the axis;
 #      - port axes (transverse coordinates), so each port lies on a line;
-#      - the domain ends (model box + padding).
+#      - the domain ends (model box + padding). A waveguide port's plane
+#        is the domain end on its side, with no padding: the line runs
+#        through it into the absorber.
 #   2. Merge fixpoints closer than min_step into one. Thin bodies (35 um
 #      copper) collapse onto one line here: this is where a thin solid
 #      becomes a sheet. Inside a cluster the priority is: domain end >
@@ -82,11 +84,12 @@ class MeshResult:
         return self.grid is not None
 
 
-def build_grid(geometry, project, ports=None):
+def build_grid(geometry, project, ports=None, waveports=None):
     """
     MeshResult for the project's typed bodies; untyped bodies are ignored.
     ports: {name: PortGeometry} of everything that needs a grid line on its
     axis (ports and lumped elements).
+    waveports: {name: WavePortGeometry}: their planes end the domain.
     """
     result = MeshResult()
     mesh = project.settings["mesh"]
@@ -114,6 +117,12 @@ def build_grid(geometry, project, ports=None):
     hi = np.max([b.bounds[1] for b, _ in materials], axis=0)
     pad = padding_m(project.settings)
     lo, hi = lo - pad, hi + pad
+    for w in (waveports or {}).values():
+        if w.ok:
+            if w.direction > 0:
+                lo[w.axis] = w.plane
+            else:
+                hi[w.axis] = w.plane
 
     n_per_lambda = mesh["cells_per_wavelength"]
     densest = max([n for _, n in materials if n is not None] + [1.0])

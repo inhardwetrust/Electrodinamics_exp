@@ -24,6 +24,7 @@ TYPE_COLORS = {
     "pec": (0.85, 0.55, 0.25),
     "dielectric": (0.25, 0.55, 0.3),
     "port": (0.75, 0.75, 0.8),
+    "waveport": (0.85, 0.3, 0.8),
 }
 EDGE_COLOR = (0.08, 0.08, 0.1, 1.0)
 SELECTED_EDGE_COLOR = (1.0, 0.85, 0.2, 1.0)

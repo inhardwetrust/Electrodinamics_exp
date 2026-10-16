@@ -15,7 +15,7 @@ import numpy as np
 
 def port_waves(solver, frequencies):
     """{port name: (a(f), b(f))}."""
-    resistances = {p.name: p.resistance for p in solver.materials.ports}
+    resistances = solver.reference_impedances()
     out = {}
     for name, (v, i) in solver.spectra(frequencies).items():
         r = resistances[name]

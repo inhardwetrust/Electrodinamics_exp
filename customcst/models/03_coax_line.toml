@@ -1,0 +1,34 @@
+# customcst project for 03_coax_line.stp
+
+[simulation]
+f_min = 1.0   # GHz
+f_max = 10.0   # GHz
+padding = 1.0   # mm
+
+[mesh]
+cells_per_wavelength = 20.0
+cells_per_feature = 8.0
+max_ratio = 1.3
+min_step = 0.0   # mm
+
+[bodies.inner]
+type = "pec"
+
+[bodies.insulation]
+type = "dielectric"
+eps_r = 2.1
+tan_d = 0.0
+f_ref = 10.0   # GHz
+mu_r = 1.0
+
+[bodies.outer]
+type = "pec"
+
+[bodies.port1]
+type = "waveport"
+
+[bodies.port2]
+type = "waveport"
+
+[view]
+up = "z"

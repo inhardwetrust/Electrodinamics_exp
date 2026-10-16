@@ -41,10 +41,11 @@ class _Worker(QObject):
 
     def run(self):
         try:
-            names = [p.name for p in self.materials.ports]
+            ports = list(self.materials.ports) + list(self.materials.waveports)
+            names = [p.name for p in ports]
             f = np.linspace(self.f_min, self.f_max, FREQUENCY_POINTS) * 1e9
             result = SimulationResult(
-                f, names, [p.resistance for p in self.materials.ports],
+                f, names, [p.resistance for p in ports],
                 f"FDTD, {self.f_min:g}-{self.f_max:g} GHz, grid {self.materials.grid.shape}",
             )
 

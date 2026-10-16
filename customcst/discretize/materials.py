@@ -25,25 +25,36 @@
 #     weighted by the half steps (normal B is continuous).
 #   - PEC on E-edges: the edge midpoint is inside (or on) a conductor, OR a
 #     short segment through the midpoint ACROSS the edge (+- tolerance along
-#     each of the two perpendicular axes) crosses the conductor's surface.
+#     each of the two perpendicular axes) passes THROUGH a thin conductor:
+#     it crosses the surface at least twice (enters and leaves within the
+#     segment); for a sheet (no inside) one crossing is enough.
 #     tolerance ~ the mesh min_step, so a thin body whose faces were merged
-#     onto the edge's grid plane becomes a sheet of PEC edges there. The
-#     tolerance is never applied along the edge: an edge that only points
-#     at nearby metal (a port column next to a sheet) stays free.
+#     onto the edge's grid plane becomes a sheet of PEC edges there.
+#     A single crossing of a THICK body's surface does not count: an edge
+#     just outside a curved conductor must stay free, or every curved
+#     conductor would grow by the tolerance (a coax pin got 0.2 mm fatter,
+#     Z0 -24 %). The tolerance is never applied along the edge either: an
+#     edge that only points at nearby metal (a port column) stays free.
 #     A thick conductor is filled: interior edges are PEC too (same fields
 #     outside, and no leaks through staircase gaps).
+#     Closure, per conductor: every edge between two of its metal nodes
+#     (nodes its PEC edges touch) is PEC too, so no metal node has a free
+#     edge along a line (see _close_metal).
 #   - sigma from the loss tangent: sigma = 2 pi f_ref eps0 eps_r tan_d
 #     (exact at f_ref only: a constant sigma is a frequency-independent
 #     conductivity, so the effective tan_d scales as f_ref / f).
 #   - ports: the edges along the port axis whose midpoints lie in the gap.
 #     Both column ends must touch PEC edges, none of the column may be PEC.
+#   - waveguide ports: the grid plane of the port (a domain end) and the
+#     line's mode on it (solver/port_mode.py), found on the discretized
+#     materials, so it is the mode of the staircased line the FDTD sees.
 
 import math
 from dataclasses import dataclass, field
 
 import numpy as np
 
-from geometry.queries import points_in_or_on, points_inside, segments_hit_surface
+from geometry.queries import points_in_or_on, points_inside, segment_crossings
 from project.object_types import CONDUCTOR_TYPES
 from project.settings import GHZ
 
@@ -78,6 +89,30 @@ class DiscreteElement:
 
 
 @dataclass
+class DiscreteWavePort:
+    """
+    A waveguide port on the grid plane `index` along `axis` (0 or the last
+    line: a domain end); the line runs from it toward `direction` * axis.
+    `measure` is the plane where V and I are sampled (a few cells into the
+    line, away from the source); results are moved back to the port plane.
+    """
+    name: str
+    axis: int
+    direction: int
+    index: int
+    measure: int
+    mode: object                # PortMode
+
+    @property
+    def resistance(self):
+        """Reference impedance: the line's own Z0."""
+        return float(self.mode.z0)
+
+
+MEASURE_CELLS = 3
+
+
+@dataclass
 class MaterialGrid:
     grid: object
     eps_r: tuple                # (Ex, Ey, Ez)-shaped float32 arrays
@@ -89,6 +124,7 @@ class MaterialGrid:
     bodies: list                # body names for cell_body
     ports: list = field(default_factory=list)
     elements: list = field(default_factory=list)       # DiscreteElement
+    waveports: list = field(default_factory=list)      # DiscreteWavePort
     warnings: list = field(default_factory=list)
     errors: list = field(default_factory=list)
 
@@ -98,10 +134,11 @@ def edge_shape(shape, axis):
     return tuple(n if a == axis else n + 1 for a, n in enumerate(shape))
 
 
-def discretize(mesh, geometry, project, ports=None, elements=None):
+def discretize(mesh, geometry, project, ports=None, elements=None, waveports=None):
     """
     mesh: a MeshResult (its grid and the merge distance it used).
     ports / elements: {name: PortGeometry} of the port and lumped bodies.
+    waveports: {name: WavePortGeometry}.
     """
     grid = mesh.grid
     lines = grid.lines
@@ -163,12 +200,15 @@ def discretize(mesh, geometry, project, ports=None, elements=None):
         eps_r.append(_edge_average(cell_eps, axis, h).astype(np.float32))
         dielectric.append(_edge_average(is_dielectric, axis, h) > 0)
         sigma.append(_edge_average(cell_sigma, axis, h).astype(np.float32))
+        pec.append(np.zeros(edge_shape(shape, axis), dtype=bool))
 
-        mid = _edge_midpoints(lines, axis)
-        metal = np.zeros(len(mid), dtype=bool)
-        for body in conductors:
-            metal |= _edges_in_metal(body, mid, axis, tolerance)
-        pec.append(metal.reshape(edge_shape(shape, axis)))
+    midpoints = [_edge_midpoints(lines, axis) for axis in range(3)]
+    for body in conductors:
+        own = [_edges_in_metal(body, midpoints[axis], axis, tolerance).reshape(edge_shape(shape, axis))
+               for axis in range(3)]
+        _close_metal(own, shape)
+        for axis in range(3):
+            pec[axis] |= own[axis]
 
     # --- H-edges: mu --------------------------------------------------------
     mu_r = tuple(_dual_harmonic(cell_mu, axis, h).astype(np.float32) for axis in range(3))
@@ -187,7 +227,33 @@ def discretize(mesh, geometry, project, ports=None, elements=None):
         if element.ok:
             _discretize_element(result, element, project.get(element.name).values, mesh.min_step)
 
+    for waveport in (waveports or {}).values():
+        if waveport.ok:
+            _discretize_waveport(result, waveport, mesh.min_step)
+
     return result
+
+
+def _discretize_waveport(result, port, snap):
+    from solver.port_mode import solve_port_mode      # solver -> discretize, not the other way
+
+    lines = result.grid.lines[port.axis]
+    index = 0 if port.direction > 0 else len(lines) - 1
+    if abs(lines[index] - port.plane) > snap + 1e-12:
+        result.errors.append(f"{port.name}: the port plane is not at the domain boundary")
+        return
+    measure = index + port.direction * MEASURE_CELLS
+    if not 0 < measure < len(lines) - 1:
+        result.errors.append(f"{port.name}: the line is shorter than {MEASURE_CELLS + 1} cells")
+        return
+
+    u, v = [a for a in range(3) if a != port.axis]
+    mode = solve_port_mode(result, port.axis, index,
+                           circle=(port.center[u], port.center[v], port.radius))
+    if not mode.ok:
+        result.errors.append(f"{port.name}: {mode.errors[0]}")
+        return
+    result.waveports.append(DiscreteWavePort(port.name, port.axis, port.direction, index, measure, mode))
 
 
 def _edges_in_metal(body, midpoints, axis, tolerance):
@@ -200,6 +266,7 @@ def _edges_in_metal(body, midpoints, axis, tolerance):
 
     m = midpoints[near]
     hit = points_in_or_on(body, m, 1e-6 * tolerance)       # inside, or exactly on a face
+    needed = 1 if body.kind == "sheet" else 2               # through a thin solid: in + out
     for u in range(3):
         if u == axis:
             continue
@@ -207,10 +274,37 @@ def _edges_in_metal(body, midpoints, axis, tolerance):
         offset[u] = tolerance
         rest = ~hit
         if rest.any():
-            hit[rest] |= segments_hit_surface(body, m[rest] - offset, m[rest] + offset)
+            crossings = segment_crossings(body, m[rest] - offset, m[rest] + offset)
+            hit[rest] |= crossings >= needed
 
     result[near] = hit
     return result
+
+
+def _close_metal(edges, shape):
+    """
+    Closure of one conductor's PEC edges (in place): its metal nodes are the
+    nodes its PEC edges touch, and every edge between two of its metal
+    nodes is PEC too. Without it a node on a curved surface could have PEC
+    edges across the line but a free edge along it: the solver then sees a
+    conductor that carries no current along the line there, and the TEM
+    mode of the staircased line is broken (a coax pin came out 11 % off in
+    Z0). Per body, so a gap between two conductors is never closed.
+    """
+    nodes = np.zeros(tuple(n + 1 for n in shape), dtype=bool)
+    for axis, pec in enumerate(edges):
+        lo = [slice(None)] * 3
+        hi = [slice(None)] * 3
+        lo[axis] = slice(0, -1)
+        hi[axis] = slice(1, None)
+        nodes[tuple(lo)] |= pec
+        nodes[tuple(hi)] |= pec
+    for axis in range(3):
+        lo = [slice(None)] * 3
+        hi = [slice(None)] * 3
+        lo[axis] = slice(0, -1)
+        hi[axis] = slice(1, None)
+        edges[axis] |= nodes[tuple(lo)] & nodes[tuple(hi)]
 
 
 def _inside_box_filtered(body, points):
