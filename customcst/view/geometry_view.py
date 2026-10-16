@@ -11,6 +11,7 @@
 import numpy as np
 
 from vispy import scene
+from vispy.util import keys, transforms
 
 SCENE_UNIT = 1e-3      # one scene unit = 1 mm
 
@@ -79,6 +80,129 @@ def cone_mesh(base, tip, radius, segments=24):
     faces = [(i, (i + 1) % n, apex) for i in range(n)]
     faces += [((i + 1) % n, i, center) for i in range(n)]
     return vertices.astype(np.float32), np.array(faces, dtype=np.uint32)
+
+
+class TrackballCamera(scene.TurntableCamera):
+    """
+    CAD-style free rotation (as the middle-button orbit in SolidWorks or
+    Inventor), on top of VisPy's TurntableCamera so the "up" axis mapping,
+    zoom and projection stay the same.
+
+    Orientation: a free 4x4 rotation matrix (`_rotation`), not azimuth /
+    elevation. Left drag = virtual trackball (Shoemake): the press and the
+    current cursor are lifted onto a sphere over the view center, the model
+    turns about the axis perpendicular to both. Dragging through the middle
+    tilts about a screen axis; dragging around the rim rolls about the view
+    direction. The pivot is the camera center (moved by panning).
+
+    Pan: Space + left drag or Shift + left drag (`space_down` is set by the
+    view's key handlers); the motion follows the screen axes in any
+    orientation.
+
+    Matrices are VisPy's row-vector convention: camera coords
+    v_cam @ A @ T(pos) @ R @ S @ T(center) = world (see
+    Base3DRotationCamera._update_camera_pos); a rotation about a screen
+    axis is Q in "A-space", so R_new = Q @ R.
+    """
+
+    space_down = False
+    TRACKBALL_RADIUS = 0.8          # fraction of the half view size
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._rotation = None
+        self._last = None
+        self._pan_start = None
+
+    def set_orientation(self, elevation, azimuth):
+        """Reset to a turntable-style view (up axis vertical)."""
+        self._rotation = None
+        self.elevation, self.azimuth, self.roll = elevation, azimuth, 0.0
+        self._rotation = super()._get_rotation_tr()
+        self.view_changed()
+
+    def _get_rotation_tr(self):
+        if self._rotation is None:
+            return super()._get_rotation_tr()
+        return self._rotation
+
+    # -------------------------------------------------
+
+    def viewbox_mouse_event(self, event):
+        if event.handled or not self.interactive:
+            return
+
+        if event.type == "mouse_press":
+            self._last = None
+            self._pan_start = None
+
+        if event.type == "mouse_move" and event.press_event is not None \
+                and 1 in event.buttons and 2 not in event.buttons:
+            modifiers = event.mouse_event.modifiers
+            if self.space_down or keys.SHIFT in modifiers:
+                self._pan(event)
+            elif not modifiers:
+                self._trackball(event)
+            else:
+                super().viewbox_mouse_event(event)
+            # Moves are left unhandled, like in the stock cameras. Note:
+            # VisPy drops moves that come < 10 ms after the previous one;
+            # the trackball works from the last DELIVERED position and the
+            # pan from the press point, so nothing is lost.
+            return
+
+        super().viewbox_mouse_event(event)
+
+    def _sphere(self, pos):
+        w, h = self._viewbox.size
+        r = self.TRACKBALL_RADIUS * 0.5 * min(w, h)
+        x = (pos[0] - 0.5 * w) / r
+        y = -(pos[1] - 0.5 * h) / r             # screen y grows downward
+        d2 = x * x + y * y
+        if d2 <= 1.0:
+            return np.array([x, y, np.sqrt(1.0 - d2)])
+        d = np.sqrt(d2)
+        return np.array([x / d, y / d, 0.0])     # outside: on the rim (roll)
+
+    def _trackball(self, event):
+        pos = np.asarray(event.mouse_event.pos[:2], dtype=float)
+        if self._last is None:
+            self._last = np.asarray(event.mouse_event.press_event.pos[:2], dtype=float)
+        v1, v2 = self._sphere(self._last), self._sphere(pos)
+        self._last = pos
+
+        axis_cam = np.cross(v1, v2)
+        norm = np.linalg.norm(axis_cam)
+        if norm < 1e-12:
+            return
+        angle = np.degrees(np.arctan2(norm, np.dot(v1, v2)))
+
+        # Screen axis -> A-space (the camera's dims mapping).
+        up, forward, right = self._get_dim_vectors()
+        a_map = np.array([right, up, -forward], dtype=float)   # rows: x, y, z camera axes
+        axis = (axis_cam / norm) @ a_map
+
+        if self._rotation is None:
+            self._rotation = super()._get_rotation_tr()
+        q = transforms.rotate(-angle, axis)
+        self._rotation = q @ self._rotation
+        self.view_changed()
+
+    def _pan(self, event):
+        press = event.mouse_event.press_event
+        if self._pan_start is None or self._pan_start[0] is not press:
+            self._pan_start = (press, np.array(self.center, dtype=float))
+        # scale_factor spans the shorter side of the view (see
+        # PerspectiveCamera._update_transform): the model at the pivot depth
+        # follows the cursor exactly.
+        units_per_px = self._scale_factor / min(self._viewbox.size)
+        d = (np.asarray(press.pos[:2], float) - np.asarray(event.mouse_event.pos[:2], float))
+        d = d * units_per_px
+        d[1] *= -1                                       # screen y grows downward
+        m = self.transform.matrix[:3, :3]                # camera -> world directions
+        move = np.array([d[0], d[1], 0.0]) @ m
+        move /= max(np.linalg.norm(m[0]), 1e-30)         # keep world units
+        self.center = tuple(self._pan_start[1] + move)
 
 
 class _BodyVisual:
@@ -153,7 +277,8 @@ class GeometryView:
         _skip_redundant_qt_swap(self.canvas)
 
         self.view = self.canvas.central_widget.add_view()
-        self.view.camera = scene.TurntableCamera(fov=30, elevation=25, azimuth=-50)
+        self.view.camera = TrackballCamera(fov=30, elevation=25, azimuth=-50)
+        self._init_space_pan()
 
         self.root = scene.Node(parent=self.view.scene)
         self.mesh_lines = scene.visuals.Line(connect="segments", color=MESH_COLOR,
@@ -182,6 +307,37 @@ class GeometryView:
         self._bounds = (np.zeros(3), np.ones(3))
 
         self._init_headlight()
+
+    def _init_space_pan(self):
+        """
+        Space + drag pans (like Shift + drag). The canvas takes keyboard focus
+        when the mouse enters it, so Space reaches the 3D view and does not
+        toggle a checkbox in the tree that had the focus.
+        """
+        native = self.canvas.native
+        enter = native.enterEvent
+
+        def on_enter(event):
+            native.setFocus()
+            enter(event)
+
+        native.enterEvent = on_enter
+        self.canvas.events.key_press.connect(lambda e: self._space(e, True))
+        self.canvas.events.key_release.connect(lambda e: self._space(e, False))
+
+    def _space(self, event, down):
+        if event.key != keys.SPACE:
+            return
+        native = getattr(event, "native", None)
+        if native is not None and native.isAutoRepeat():
+            return
+        self.view.camera.space_down = down
+        from PySide6.QtCore import Qt
+        if down:
+            self.canvas.native.setCursor(Qt.OpenHandCursor)
+        else:
+            self.canvas.native.unsetCursor()
+        event.handled = True
 
     def _init_headlight(self):
         """The light follows the camera, so no side of a model stays dark."""
@@ -371,7 +527,7 @@ class GeometryView:
         camera = self.view.camera
         camera.center = tuple(center)
         camera.scale_factor = 1.25 * size
-        camera.elevation, camera.azimuth = 25.0, -50.0
+        camera.set_orientation(25.0, -50.0)
 
     # =====================================================
     # Style

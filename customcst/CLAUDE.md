@@ -32,5 +32,26 @@ Context for future Claude sessions. Read this first, then `ARCHITECTURE.md`.
   `sys.stdout.reconfigure(encoding="utf-8")` (they print ε, Ω).
 - Never write into the user's project TOML from tests: copy the model into
   the scratchpad first.
+- 3D navigation (`geometry_view.TrackballCamera`, CAD-style like the
+  middle-button orbit in SolidWorks or Inventor):
+  - left drag rotates as a virtual trackball. The rotation is a free
+    matrix: through the middle it tilts about a screen axis, around the
+    rim it rolls about the view direction. The pivot is the camera center;
+  - Space + left drag (or Shift + left drag) pans; the model at the pivot
+    depth follows the cursor exactly;
+  - the wheel or a right drag zooms;
+  - Reset view (and a change of the Up axis) restores an isometric view
+    with the up axis vertical;
+  - key autorepeat is ignored. The canvas takes the focus when the mouse
+    enters it, so Space never toggles a checkbox in the tree.
+- **VisPy drops mouse moves that come < 10 ms after the previous one**
+  (`app/base.py _vispy_mouse_move`). The camera is built for that: the
+  trackball works from the last DELIVERED position, the pan from the press
+  point. Synthetic UI tests must space the moves (`QTest.qWait(15)`
+  between them) and leave ≥ 0.5 s between drags. Otherwise only one move
+  arrives and the result looks 10x too small.
+- Layout: Project dock on the left; the central QTabWidget holds
+  "3D View" (the VisPy canvas) and "Results" (ResultsPanel). After a run,
+  the window switches to Results. The status bar stays at the bottom.
 - Only OCP code goes in `geometry/step_io.py`; everything above it is numpy.
 - Git: never `git add .` at the repo root (see the pseudo_cst_3d notes).

@@ -16,7 +16,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDockWidget, QFileDialog, QLabel,
-    QMainWindow, QMenu, QMessageBox, QSlider, QToolBar, QTreeWidget,
+    QMainWindow, QMenu, QMessageBox, QSlider, QTabWidget, QToolBar, QTreeWidget,
     QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -54,7 +54,10 @@ class MainWindow(QMainWindow):
         self.materials = None       # MaterialGrid (solver's view)
         self._mesh_coordinate = None    # where the mesh plane is (m)
         self.view = GeometryView()
-        self.setCentralWidget(self.view.canvas.native)
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        self.tabs.addTab(self.view.canvas.native, "3D View")
+        self.setCentralWidget(self.tabs)
 
         self.runner = SimulationRunner(self)
         self.runner.progress.connect(self._sim_progress)
@@ -175,10 +178,7 @@ class MainWindow(QMainWindow):
 
     def _build_results_panel(self):
         self.results = ResultsPanel()
-        dock = QDockWidget("Results")
-        dock.setFeatures(QDockWidget.DockWidgetMovable)
-        dock.setWidget(self.results)
-        self.addDockWidget(Qt.BottomDockWidgetArea, dock)
+        self.tabs.addTab(self.results, "Results")
 
     # =====================================================
     # Simulation
@@ -228,6 +228,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("simulation finished", 4000)
         self.results.default_dir = os.path.dirname(self.geometry.source)
         self.results.set_result(result)
+        self.tabs.setCurrentWidget(self.results)       # show what was computed
 
     def _sim_failed(self, message):
         self._sim_done()
