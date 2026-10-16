@@ -72,6 +72,8 @@ class ResultsPanel(QWidget):
         self.info = QLabel()
         self.info.setStyleSheet("color: gray")
         self.info.setWordWrap(True)
+        self.status = QLabel()          # saved / outdated
+        self.status.setWordWrap(True)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -79,6 +81,7 @@ class ResultsPanel(QWidget):
         layout.addWidget(self.stack, 1)
         layout.addLayout(marker_row)
         layout.addWidget(self.readout)
+        layout.addWidget(self.status)
         layout.addWidget(self.info)
         self._redraw()
 
@@ -88,6 +91,10 @@ class ResultsPanel(QWidget):
 
     def set_message(self, text):
         self.info.setText(text)
+
+    def set_status(self, text, color="gray"):
+        self.status.setText(text)
+        self.status.setStyleSheet(f"color: {color}")
 
     def set_result(self, result):
         self.result = result

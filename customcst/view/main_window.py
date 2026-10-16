@@ -28,6 +28,7 @@ from project.project_file import UP_AXES, Project, ProjectError
 from project.settings import SECTIONS
 from view.geometry_view import GeometryView
 from view.results_panel import ResultsPanel
+from solver.result_file import fingerprint, load_result, result_path, save_result
 from view.sim_runner import SimulationRunner
 
 MM = 1e-3
@@ -207,6 +208,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Simulate", f"Cannot simulate: {problem}")
             return
         sim = self.project.settings["simulation"]
+        self._run_fingerprint = fingerprint(self.project)      # the inputs of this run
         self.simulate_action.setEnabled(False)
         self.stop_action.setEnabled(True)
         self.results.set_message("running...")
@@ -228,9 +230,15 @@ class MainWindow(QMainWindow):
             self.results.set_message("stopped")
             return
         self.result = result
-        self.statusBar().showMessage("simulation finished", 4000)
+        result.fingerprint = self._run_fingerprint
+        try:
+            path = save_result(self.geometry.source, result)
+            self.statusBar().showMessage(f"simulation finished, saved to {os.path.basename(path)}", 6000)
+        except OSError as error:
+            self.statusBar().showMessage(f"simulation finished, NOT saved: {error}", 10000)
         self.results.default_dir = os.path.dirname(self.geometry.source)
         self.results.set_result(result)
+        self._update_result_status()
         self.tabs.setCurrentWidget(self.results)       # show what was computed
 
     def _sim_failed(self, message):
@@ -287,6 +295,7 @@ class MainWindow(QMainWindow):
 
         self._refresh_model(center_slider=True)
         self._fill_tree()
+        self._load_result(path)
 
         lo, hi = geometry.bounds
         self.setWindowTitle(f"customcst - {os.path.basename(path)}  ({_fmt_mm(hi - lo)} mm)")
@@ -591,6 +600,37 @@ class MainWindow(QMainWindow):
             row.setData(0, Qt.UserRole, ("info", name, None))
             row.setForeground(1, QColor("#2a2"))
 
+    # =====================================================
+    # Saved results
+    # =====================================================
+
+    def _load_result(self, step_path):
+        """Shows the results saved next to the STEP file, if any."""
+        try:
+            self.result = load_result(step_path)
+        except Exception as error:          # a damaged file must not block opening the model
+            self.result = None
+            self.statusBar().showMessage(f"{os.path.basename(result_path(step_path))}: {error}", 10000)
+        self.results.default_dir = os.path.dirname(step_path)
+        self.results.set_result(self.result)
+        if self.result is None:
+            self.results.set_message("no results yet: ▶ Simulate")
+        self._update_result_status()
+
+    def _update_result_status(self):
+        """Saved / outdated line under the plot (the model may change after a run)."""
+        if self.result is None:
+            self.results.set_status("")
+            return
+        saved = f"saved {self.result.saved}" if self.result.saved else "not saved"
+        current = fingerprint(self.project) if self.project is not None else None
+        if current is not None and self.result.fingerprint == current:
+            self.results.set_status(f"{saved}; matches the current model and settings", "#2a2")
+        else:
+            self.results.set_status(
+                f"⚠ {saved}; OUTDATED: the STEP file, the body types or the settings changed "
+                f"since this run (▶ Simulate to update)", "#c80")
+
     def _top_item(self, role, owner):
         for i in range(self.tree.topLevelItemCount()):
             item = self.tree.topLevelItem(i)
@@ -608,6 +648,7 @@ class MainWindow(QMainWindow):
         self._fill_section(self._top_item("section", "mesh"))
         self._resize_columns()
         self._show_summary()
+        self._update_result_status()
 
     # =====================================================
     # Editing

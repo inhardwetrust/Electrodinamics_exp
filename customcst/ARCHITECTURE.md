@@ -133,6 +133,22 @@ Lessons:
   cavity whose layers are not thin.
 - Pick the 2π branch explicitly when unwrapping long lines.
 
+## Saved results
+
+`solver/result_file.py`: after a run, the results go next to the STEP
+file (model.step -> model.npz, numpy without pickle, written atomically).
+- Contents: frequencies, ports, reference impedances, S[j, k, f], Z_in,
+  the run's info lines, the save time and a fingerprint of the inputs.
+- The fingerprint is SHA-256 of the STEP bytes plus the body types,
+  parameters and [simulation] / [mesh] settings (not [view]).
+- Opening the model loads the results. When the fingerprint no longer
+  matches (after an edit, or a new STEP), they are still shown, with an
+  "OUTDATED" line under the plot. Undoing the edit makes them current
+  again.
+- `*.npz` is git-ignored: results are derived data.
+- `checks/check_result_file.py` covers the round trip and what does and
+  does not change the fingerprint.
+
 ## Waveguide ports
 
 A port that launches the line's own TEM / quasi-TEM wave and splits the
@@ -201,10 +217,8 @@ pin, PTFE and a 4.25 / 5.0 mm shield, 30 mm long, 1–10 GHz:
 Z0 of the staircased coax: 46.1 Ω at 4 cells per feature, 49.95 Ω at 8
 (theory 50.01 Ω).
 
-Performance warning: the brute-force point and segment tests over all
-triangles are slow for curved bodies on fine grids (135 s to discretize a
-3 mm coax at 128² cells). Connectors need ray casting along the grid
-lines.
+Performance: discretize casts rays along the grid lines
+(`geometry/raycast.py`, see Level 3). The coax went from 26 s to 0.9 s.
 
 Next: microstrip waveguide ports (a rectangular port body), then a real
 SMA STEP.
@@ -359,7 +373,18 @@ UI, and the type is stored in `model.toml` next to the file.
   - `points_in_or_on` (the robust "belongs to the body" test, needed for
     points on faces).
 
-  The voxelizer will reuse the same ray/triangle code.
+  These are still used for single points (ports). The grid-wide tests of
+  discretize live in `geometry/raycast.py`:
+  - `LineHits` holds the crossings of a whole family of parallel grid lines
+    with one body, testing each triangle only against the lines in its
+    bounding box, and keeps them sorted;
+  - inside, on the surface and crossings of a segment are then binary
+    searches;
+  - lines shifted by a tiny asymmetric offset (four, on both sides) avoid
+    double counts on triangle edges and find points on faces.
+
+  `checks/check_raycast.py` checks edge-for-edge equality with the brute
+  force on all models (34x faster there; 26 s -> 0.9 s for the coax).
 - Checks: `checks/check_project_file.py` and `checks/check_ports.py`.
 - First real model: `models/01_linie50x30_3.stp` (from Inventor). A 50 Ω
   microstrip on FR4: w = 3.0 mm, h = 1.6 mm, 35 µm copper, 50 x 30 mm,

@@ -10,20 +10,10 @@ import numpy as np
 from PySide6.QtCore import QObject, QThread, Signal
 
 from solver.fdtd import FdtdSolver
+from solver.result_file import SimulationResult
 from solver.sparams import input_impedance, s_column
 
 FREQUENCY_POINTS = 401
-
-
-class SimulationResult:
-    def __init__(self, frequencies, ports, resistances, comment=""):
-        self.frequencies = frequencies
-        self.ports = ports              # port names, in S-matrix order
-        self.resistances = resistances  # reference R per port (Ohm)
-        self.comment = comment
-        self.s = {}                     # (j, k) -> complex array
-        self.z_in = {}                  # port -> complex array
-        self.info = []                  # text lines (steps, status, time)
 
 
 class _Worker(QObject):

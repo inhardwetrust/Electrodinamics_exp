@@ -54,7 +54,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from geometry.queries import points_in_or_on, points_inside, segment_crossings
+from geometry.raycast import crossings_on_grid, in_or_on_grid, inside_on_grid
 from project.object_types import CONDUCTOR_TYPES
 from project.settings import GHZ
 
@@ -167,11 +167,9 @@ def discretize(mesh, geometry, project, ports=None, elements=None, waveports=Non
     cell_sigma = np.zeros(shape)
     cell_mu = np.ones(shape)
     cell_body = np.full(shape, -1, dtype=np.int32)
-    cx, cy, cz = np.meshgrid(*centers, indexing="ij")
-    cell_points = np.stack((cx, cy, cz), axis=-1).reshape(-1, 3)
 
     for body, values in dielectrics:
-        inside = _inside_box_filtered(body, cell_points).reshape(shape)
+        inside = _cells_inside(body, centers)
         cell_eps[inside] = values["eps_r"]
         cell_mu[inside] = values["mu_r"]
         cell_sigma[inside] = 2 * math.pi * values["f_ref"] * GHZ * EPS0 * values["eps_r"] * values["tan_d"]
@@ -187,8 +185,7 @@ def discretize(mesh, geometry, project, ports=None, elements=None, waveports=Non
             )
 
     for body in conductors:
-        inside = _inside_box_filtered(body, cell_points).reshape(shape)
-        cell_body[inside] = names.index(body.name)
+        cell_body[_cells_inside(body, centers)] = names.index(body.name)
 
     # --- E-edges: eps, sigma, PEC ------------------------------------------
     is_dielectric = np.zeros(shape)
@@ -202,10 +199,8 @@ def discretize(mesh, geometry, project, ports=None, elements=None, waveports=Non
         sigma.append(_edge_average(cell_sigma, axis, h).astype(np.float32))
         pec.append(np.zeros(edge_shape(shape, axis), dtype=bool))
 
-    midpoints = [_edge_midpoints(lines, axis) for axis in range(3)]
     for body in conductors:
-        own = [_edges_in_metal(body, midpoints[axis], axis, tolerance).reshape(edge_shape(shape, axis))
-               for axis in range(3)]
+        own = [_edges_in_metal(body, lines, axis, tolerance) for axis in range(3)]
         _close_metal(own, shape)
         for axis in range(3):
             pec[axis] |= own[axis]
@@ -256,29 +251,27 @@ def _discretize_waveport(result, port, snap):
     result.waveports.append(DiscreteWavePort(port.name, port.axis, port.direction, index, measure, mode))
 
 
-def _edges_in_metal(body, midpoints, axis, tolerance):
-    """PEC rule for E-edges along `axis` (see the header)."""
-    result = np.zeros(len(midpoints), dtype=bool)
-    lo, hi = body.bounds
-    near = np.nonzero(np.all((midpoints >= lo - tolerance) & (midpoints <= hi + tolerance), axis=1))[0]
-    if len(near) == 0:
-        return result
-
-    m = midpoints[near]
-    hit = points_in_or_on(body, m, 1e-6 * tolerance)       # inside, or exactly on a face
+def _edges_in_metal(body, lines, axis, tolerance):
+    """
+    PEC rule for the E-edges along `axis` (see the header), as an edge-shaped
+    bool array. Ray casting along the grid lines (geometry/raycast.py): the
+    midpoints lie on lines along `axis` through the nodes of the other two
+    axes; the cross segments lie on lines along those axes.
+    """
+    coords = [0.5 * (l[1:] + l[:-1]) if a == axis else l for a, l in enumerate(lines)]
+    delta = 1e-6 * tolerance
+    hit = in_or_on_grid(body, axis, coords, delta)          # inside, or exactly on a face
     needed = 1 if body.kind == "sheet" else 2               # through a thin solid: in + out
-    for u in range(3):
-        if u == axis:
-            continue
-        offset = np.zeros(3)
-        offset[u] = tolerance
-        rest = ~hit
-        if rest.any():
-            crossings = segment_crossings(body, m[rest] - offset, m[rest] + offset)
-            hit[rest] |= crossings >= needed
+    for across in range(3):
+        if across != axis:
+            hit |= crossings_on_grid(body, across, coords, tolerance, delta,
+                                     all_offsets=body.kind == "sheet") >= needed
+    return hit
 
-    result[near] = hit
-    return result
+
+def _cells_inside(body, centers):
+    """Bool (nx, ny, nz): cell centers strictly inside the body (rays along x)."""
+    return inside_on_grid(body, 0, centers)
 
 
 def _close_metal(edges, shape):
@@ -305,21 +298,6 @@ def _close_metal(edges, shape):
         lo[axis] = slice(0, -1)
         hi[axis] = slice(1, None)
         edges[axis] |= nodes[tuple(lo)] & nodes[tuple(hi)]
-
-
-def _inside_box_filtered(body, points):
-    result = np.zeros(len(points), dtype=bool)
-    lo, hi = body.bounds
-    idx = np.nonzero(np.all((points >= lo) & (points <= hi), axis=1))[0]
-    if len(idx):
-        result[idx] = points_inside(body, points[idx])
-    return result
-
-
-def _edge_midpoints(lines, axis):
-    coords = [0.5 * (l[1:] + l[:-1]) if a == axis else l for a, l in enumerate(lines)]
-    g = np.meshgrid(*coords, indexing="ij")
-    return np.stack(g, axis=-1).reshape(-1, 3)
 
 
 def _edge_average(cell_values, axis, h):
