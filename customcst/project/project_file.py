@@ -108,6 +108,18 @@ class Project:
             if self.get(b.name) is not None and self.get(b.name).type == "port"
         }
 
+    def elements(self, geometry):
+        """{lumped element body name: PortGeometry (no polarity)}."""
+        conductors = [
+            b for b in geometry.bodies
+            if self.get(b.name) is not None and self.get(b.name).type in CONDUCTOR_TYPES
+        ]
+        return {
+            b.name: port_geometry(b, conductors, polar=False)
+            for b in geometry.bodies
+            if self.get(b.name) is not None and self.get(b.name).type == "lumped"
+        }
+
     def orphans(self, geometry):
         names = {b.name for b in geometry.bodies}
         return sorted(n for n in self.assignments if n not in names)
@@ -182,7 +194,7 @@ class Project:
             for param in assignment.object_type.params:
                 value = assignment.values[param.name]
                 comment = f"   # {param.unit}" if param.unit else ""
-                lines.append(f"{param.name} = {value!r}{comment}")
+                lines.append(f"{param.name} = {_toml_value(value)}{comment}")
 
             lines.append("")
 
@@ -192,6 +204,11 @@ class Project:
         with open(temp, "w", encoding="utf-8", newline="\n") as f:
             f.write("\n".join(lines))
         os.replace(temp, self.path)
+
+
+def _toml_value(value):
+    """Numbers as repr, strings as basic (double-quoted) TOML strings."""
+    return json.dumps(value, ensure_ascii=False) if isinstance(value, str) else repr(value)
 
 
 def _key(name):

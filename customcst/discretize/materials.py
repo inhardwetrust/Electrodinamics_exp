@@ -62,6 +62,22 @@ class DiscretePort:
 
 
 @dataclass
+class DiscreteElement:
+    """
+    Lumped R, L, C on a column of E-edges (see solver/fdtd.py). Values in SI;
+    0 = that part is absent (series: shorted, parallel: open).
+    """
+    name: str
+    axis: int
+    edges: np.ndarray           # (n, 3)
+    length: float               # m
+    topology: str               # "series" | "parallel"
+    r: float                    # Ohm
+    l: float                    # H
+    c: float                    # F
+
+
+@dataclass
 class MaterialGrid:
     grid: object
     eps_r: tuple                # (Ex, Ey, Ez)-shaped float32 arrays
@@ -72,6 +88,7 @@ class MaterialGrid:
     cell_body: np.ndarray       # (nx, ny, nz) int: -1 = background, else body index
     bodies: list                # body names for cell_body
     ports: list = field(default_factory=list)
+    elements: list = field(default_factory=list)       # DiscreteElement
     warnings: list = field(default_factory=list)
     errors: list = field(default_factory=list)
 
@@ -81,8 +98,11 @@ def edge_shape(shape, axis):
     return tuple(n if a == axis else n + 1 for a, n in enumerate(shape))
 
 
-def discretize(mesh, geometry, project, ports=None):
-    """mesh: a MeshResult (its grid and the merge distance it used)."""
+def discretize(mesh, geometry, project, ports=None, elements=None):
+    """
+    mesh: a MeshResult (its grid and the merge distance it used).
+    ports / elements: {name: PortGeometry} of the port and lumped bodies.
+    """
     grid = mesh.grid
     lines = grid.lines
     shape = grid.shape
@@ -161,7 +181,11 @@ def discretize(mesh, geometry, project, ports=None):
 
     for port in (ports or {}).values():
         if port.ok:
-            _discretize_port(result, port, project.get(port.name).values["impedance"])
+            _discretize_port(result, port, project.get(port.name).values["impedance"], mesh.min_step)
+
+    for element in (elements or {}).values():
+        if element.ok:
+            _discretize_element(result, element, project.get(element.name).values, mesh.min_step)
 
     return result
 
@@ -260,55 +284,82 @@ def _dual_harmonic(cell_values, axis, h):
     return (w_lo + w_hi) / (w_lo * inv[lo] + w_hi * inv[hi])
 
 
-def _discretize_port(result, port, resistance):
+def _column(result, item, snap, kind):
+    """
+    The edge column of a port or lumped element along its axis:
+    (axis, sign, edges, length) or None (an error is recorded).
+    The axis must lie on grid lines; it is snapped to the nearest line
+    within `snap` (the mesh merge distance), e.g. an element drawn on the
+    top of 35 um copper whose face was merged onto the substrate line.
+    """
     lines = result.grid.lines
-    direction = port.plus - port.minus
+    direction = item.plus - item.minus
     axis = int(np.argmax(np.abs(direction)))
 
     if np.linalg.norm(np.delete(direction, axis)) > 1e-9 * np.linalg.norm(direction):
-        result.errors.append(f"{port.name}: the port axis is not along x, y or z")
-        return
+        result.errors.append(f"{item.name}: the {kind} axis is not along x, y or z")
+        return None
 
-    # The column: the grid line through the port axis (a fixpoint, so exact).
     index = []
     for a in range(3):
         if a == axis:
             continue
-        i = int(np.argmin(np.abs(lines[a] - port.minus[a])))
-        if abs(lines[a][i] - port.minus[a]) > 1e-9:
-            result.errors.append(f"{port.name}: the axis is not on a grid line ({AXES[a]})")
-            return
+        i = int(np.argmin(np.abs(lines[a] - item.minus[a])))
+        if abs(lines[a][i] - item.minus[a]) > snap + 1e-12:
+            result.errors.append(f"{item.name}: the axis is not on a grid line ({AXES[a]})")
+            return None
         index.append(i)
 
     along = lines[axis]
     mids = 0.5 * (along[1:] + along[:-1])
-    g0, g1 = sorted((port.gap_minus[axis], port.gap_plus[axis]))
+    g0, g1 = sorted((item.gap_minus[axis], item.gap_plus[axis]))
     n = np.nonzero((mids > g0) & (mids < g1))[0]
     if len(n) == 0:
-        result.errors.append(f"{port.name}: the gap is shorter than one cell")
-        return
+        result.errors.append(f"{item.name}: the gap is shorter than one cell")
+        return None
 
     edges = np.zeros((len(n), 3), dtype=np.int64)
     edges[:, axis] = n
     others = [a for a in range(3) if a != axis]
     edges[:, others[0]], edges[:, others[1]] = index
 
-    pec = result.pec[axis]
-    if pec[tuple(edges.T)].any():
-        result.errors.append(f"{port.name}: part of the port column is PEC (short circuit)")
-        return
+    if result.pec[axis][tuple(edges.T)].any():
+        result.errors.append(f"{item.name}: part of the {kind} column is PEC (short circuit)")
+        return None
 
     for end, node_index in (("first", n[0]), ("last", n[-1] + 1)):
         node = [0, 0, 0]
         node[axis] = node_index
         node[others[0]], node[others[1]] = index
         if not _node_on_metal(result.pec, node, result.grid.shape):
-            result.errors.append(f"{port.name}: the {end} end of the column does not touch PEC")
-            return
+            result.errors.append(f"{item.name}: the {end} end of the column does not touch PEC")
+            return None
 
     sign = 1 if direction[axis] > 0 else -1
     length = float(along[n[-1] + 1] - along[n[0]])
-    result.ports.append(DiscretePort(port.name, axis, sign, edges, resistance, length))
+    return axis, sign, edges, length
+
+
+def _discretize_port(result, port, resistance, snap):
+    column = _column(result, port, snap, "port")
+    if column is not None:
+        axis, sign, edges, length = column
+        result.ports.append(DiscretePort(port.name, axis, sign, edges, resistance, length))
+
+
+def _discretize_element(result, element, values, snap):
+    column = _column(result, element, snap, "element")
+    if column is None:
+        return
+    axis, _, edges, length = column
+    r, l, c = values["r"], values["l"] * 1e-9, values["c"] * 1e-12
+    if values["topology"] == "series" and r == 0 and l == 0 and c == 0:
+        result.warnings.append(f"{element.name}: series R = L = C = 0 is a plain short")
+    if values["topology"] == "parallel" and r == 0 and l == 0 and c == 0:
+        result.warnings.append(f"{element.name}: parallel R = L = C = 0 is an open circuit")
+    result.elements.append(DiscreteElement(
+        element.name, axis, edges, length, values["topology"], r, l, c,
+    ))
 
 
 def _node_on_metal(pec, node, shape):

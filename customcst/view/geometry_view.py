@@ -34,6 +34,8 @@ GHOST_GRAY = np.array([0.6, 0.6, 0.65])
 MESH_COLOR = (0.55, 0.8, 1.0, 0.55)
 PEC_EDGE_COLOR = (1.0, 0.95, 0.1, 1.0)            # bright yellow
 PORT_EDGE_COLOR = (1.0, 0.2, 0.9, 1.0)            # magenta
+ELEMENT_EDGE_COLOR = (1.0, 1.0, 1.0, 1.0)         # white: no body or edge uses it
+ELEMENT_COLOR = (1.0, 1.0, 1.0, 1.0)
 DIELECTRIC_LOW = np.array([0.2, 0.45, 0.75])      # eps_r = 1: dim blue
 DIELECTRIC_HIGH = np.array([0.3, 0.95, 1.0])      # eps_r >= 10: bright cyan
 DOMAIN_COLOR = (0.35, 0.65, 1.0, 1.0)
@@ -432,12 +434,14 @@ class GeometryView:
             idx = [f[take] for f in np.indices(materials.pec[b].shape)]
 
             is_port = np.zeros(pec.shape, dtype=bool)
-            for port in materials.ports:
-                if port.axis != b:
-                    continue
-                for e in port.edges:
-                    if e[axis] == index:
-                        is_port[tuple(np.delete(e, axis))] = True
+            is_element = np.zeros(pec.shape, dtype=bool)
+            for items, mask in ((materials.ports, is_port), (materials.elements, is_element)):
+                for item in items:
+                    if item.axis != b:
+                        continue
+                    for e in item.edges:
+                        if e[axis] == index:
+                            mask[tuple(np.delete(e, axis))] = True
 
             def endpoints(mask):
                 n = [i[mask] for i in idx]
@@ -446,13 +450,14 @@ class GeometryView:
                 end[:, b] = lines[b][n[b] + 1]
                 return np.stack((start, end), axis=1).reshape(-1, 3)
 
-            for mask, color in ((is_port, PORT_EDGE_COLOR), (pec & ~is_port, PEC_EDGE_COLOR)):
+            for mask, color in ((is_port, PORT_EDGE_COLOR), (is_element, ELEMENT_EDGE_COLOR),
+                                (pec & ~is_port, PEC_EDGE_COLOR)):
                 if mask.any():
                     p = endpoints(mask)
                     thick_pos.append(p)
                     thick_col.append(np.tile(color, (len(p), 1)))
 
-            diel = (~pec) & (~is_port) & in_dielectric
+            diel = (~pec) & (~is_port) & (~is_element) & in_dielectric
             if diel.any():
                 p = endpoints(diel)
                 t = np.clip(np.log(np.maximum(eps[diel], 1.0)) / np.log(10.0), 0, 1)
@@ -480,7 +485,7 @@ class GeometryView:
             self.domain_box.visible = True
         self.canvas.update()
 
-    def set_ports(self, ports):
+    def set_ports(self, ports, elements=()):
         """
         ports: PortGeometry list. Each valid port is an arrow - -> + along its
         axis; the active gap is the thick part. Invalid ports: a red axis.
@@ -516,6 +521,20 @@ class GeometryView:
 
             for visual in visuals:
                 visual.set_gl_state("translucent", depth_test=False)
+
+        # Lumped elements: a thick white bar across the gap (no polarity).
+        for element in elements:
+            if element.minus is None:
+                continue
+            if element.ok:
+                a, b = element.gap_minus / SCENE_UNIT, element.gap_plus / SCENE_UNIT
+                color, width = ELEMENT_COLOR, 6.0
+            else:
+                a, b = element.minus / SCENE_UNIT, element.plus / SCENE_UNIT
+                color, width = PORT_ERROR_COLOR, 2.0
+            bar = scene.visuals.Line(pos=np.array([a, b], dtype=np.float32), color=color,
+                                     width=width, parent=self.port_root)
+            bar.set_gl_state("translucent", depth_test=False)
 
         self.canvas.update()
 

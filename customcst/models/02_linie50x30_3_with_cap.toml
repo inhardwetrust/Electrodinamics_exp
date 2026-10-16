@@ -1,0 +1,46 @@
+# customcst project for 02_linie50x30_3_with_cap.stp
+
+[simulation]
+f_min = 1.0   # GHz
+f_max = 5.0   # GHz
+padding = 10.0   # mm
+
+[mesh]
+cells_per_wavelength = 20.0
+cells_per_feature = 4.0
+max_ratio = 1.3
+min_step = 0.0   # mm
+
+[bodies.capacitor]
+type = "lumped"
+topology = "series"
+r = 0.0   # Ω
+l = 0.0   # nH
+c = 1.0   # pF
+
+[bodies.gnd]
+type = "pec"
+
+[bodies.line_a]
+type = "pec"
+
+[bodies.line_b]
+type = "pec"
+
+[bodies.port1]
+type = "port"
+impedance = 50.0   # Ω
+
+[bodies.port2]
+type = "port"
+impedance = 50.0   # Ω
+
+[bodies.substrate]
+type = "dielectric"
+eps_r = 4.3
+tan_d = 0.02
+f_ref = 3.0   # GHz
+mu_r = 1.0
+
+[view]
+up = "y"

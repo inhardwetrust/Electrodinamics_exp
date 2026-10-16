@@ -133,6 +133,43 @@ Lessons:
   cavity whose layers are not thin.
 - Pick the 2π branch explicitly when unwrapping long lines.
 
+## Lumped elements (R, L, C)
+
+"Lumped element" is a body type, like a port: a cylinder or cone drawn
+across a gap between two PEC bodies, with no polarity.
+
+- **Parameters**: topology `series` | `parallel` (a choice parameter; the
+  UI picks it from a menu on double click), R (Ω), L (nH), C (pF). A value
+  of 0 means that part is absent.
+- **Geometry and grid**: `project/ports.py port_geometry(..., polar=False)`
+  finds the axis and the gap. `discretize._column` builds the edge column,
+  shared with the ports, and snaps the axis to the nearest grid line within
+  the mesh min_step: an element drawn on top of 35 µm copper ends up on the
+  merged copper plane. The result is a `DiscreteElement`.
+- **Solver** (`solver/fdtd.py`):
+  - each edge carries the element scaled by k = l_e / L, and the trapezoidal
+    companion model I(n+1) = G V(n+1) + I_hist is solved together with
+    Ampère's law: E(n+1) = (E_std − Cb (I_hist + I(n)) / 2A) /
+    (1 + Cb G l / 2A);
+  - A-stable for any values: L = 1 pH and a parallel 1 nF are checked;
+  - a series R = L = C = 0 becomes PEC edges.
+- **Validation** (`checks/check_lumped.py`, about 2 min), as a VNA
+  calibration on a 50 Ω line with a 1 mm gap:
+  - the ABCD B entry is linear in the series Z, so the short, open and
+    R = 50 standards remove the fixture (ports and line halves) and the gap
+    capacitance;
+  - recovered values: R 100 Ω (99.7–100.4), C 1 pF (0.993–1.012),
+    L 5 nH (4.96–5.06);
+  - the gap's own capacitance comes out as 0.064 pF;
+  - frequencies where the line halves are near λ/4 or 3λ/4 (the gap at a
+    voltage node) are ill-conditioned for this de-embedding and are
+    skipped.
+- **UI**: an element is drawn as a white bar across its gap, its edges are
+  white on the Materials plane, and its tree rows show the ends and the
+  gap. The user's model `models/02_linie50x30_3_with_cap.stp` (a 1 mm cut
+  with a half-cylinder on top) gives the expected high-pass curve: S21 is
+  about −3 dB at the 1.6 GHz corner for 1 pF.
+
 ## Level 3 (staircase, done)
 
 `discretize/materials.py` `discretize(mesh_result, geometry, project, ports)`

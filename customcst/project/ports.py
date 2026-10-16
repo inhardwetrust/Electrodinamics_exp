@@ -10,6 +10,10 @@
 # faces are fine).
 #
 # The port body itself is only a marker: it is never meshed as a material.
+#
+# Lumped elements (R, L, C) use the same geometry without polarity
+# (polar=False): a plain cylinder is fine, "minus" / "plus" are just the two
+# ends in file order.
 
 from dataclasses import dataclass
 from typing import Optional
@@ -41,11 +45,11 @@ class PortGeometry:
         return float(np.linalg.norm(self.gap_plus - self.gap_minus))
 
 
-def port_geometry(body, conductors):
+def port_geometry(body, conductors, polar=True):
     """PortGeometry of a port body; conductors: the PEC bodies of the model."""
     result = PortGeometry(body.name)
 
-    ends = _cone_ends(body)
+    ends = _cone_ends(body, polar)
     if isinstance(ends, str):
         result.error = ends
         return result
@@ -109,15 +113,13 @@ def _bisect(is_metal, t_metal, t_free, steps=40):
     return 0.5 * (t_metal + t_free)
 
 
-def _cone_ends(body):
+def _cone_ends(body, polar=True):
     """((minus center, r), (plus center, r)) or an error string."""
     circles = body.circles
+    shape = "a truncated cone" if polar else "a cylinder or cone"
 
     if body.kind != "solid" or len(circles) != 2:
-        return (
-            f"a port must be a truncated cone (two circular ends), "
-            f"found {len(circles)} circle(s)"
-        )
+        return f"must be {shape} (two circular ends), found {len(circles)} circle(s)"
 
     (c0, a0, r0), (c1, a1, r1) = ((row[:3], row[3:6], row[6]) for row in circles)
     axis = c1 - c0
@@ -126,6 +128,9 @@ def _cone_ends(body):
     if length <= 0 or abs(abs(np.dot(a0, a1)) - 1.0) > 1e-6 \
             or abs(abs(np.dot(axis / length, a0)) - 1.0) > 1e-6:
         return "the two circles are not coaxial"
+
+    if not polar:
+        return (c0, r0), (c1, r1)
 
     if abs(r0 - r1) <= 1e-6 * max(r0, r1):
         return "both ends have the same radius: make the + end smaller (truncated cone)"

@@ -39,7 +39,7 @@ def _fmt_mm(values):
 
 
 def _fmt_value(value):
-    return f"{value:.6g}"
+    return value if isinstance(value, str) else f"{value:.6g}"
 
 
 class MainWindow(QMainWindow):
@@ -50,6 +50,7 @@ class MainWindow(QMainWindow):
         self.geometry = None
         self.project = None
         self.ports = {}             # {port body name: PortGeometry}
+        self.elements = {}          # {lumped element body name: PortGeometry}
         self.mesh = None            # MeshResult
         self.materials = None       # MaterialGrid (solver's view)
         self._mesh_coordinate = None    # where the mesh plane is (m)
@@ -140,6 +141,7 @@ class MainWindow(QMainWindow):
             "  <span style='color:#ccc;background:#222'>&nbsp;"
             "<b style='color:#fff21a'>━ PEC</b>&nbsp; "
             "<b style='color:#ff33e6'>━ port</b>&nbsp; "
+            "<b style='color:#ffffff'>━ lumped</b>&nbsp; "
             "<b style='color:#4df2ff'>━ dielectric</b> (brighter = higher εr)&nbsp;</span>"
         )
         self.legend.setVisible(False)
@@ -294,14 +296,16 @@ class MainWindow(QMainWindow):
 
     def _refresh_model(self, center_slider=False):
         self.ports = self.project.ports(self.geometry) if self.project else {}
-        self.view.set_ports(list(self.ports.values()))
+        self.elements = self.project.elements(self.geometry) if self.project else {}
+        self.view.set_ports(list(self.ports.values()), list(self.elements.values()))
 
         types = {n: a.type for n, a in self.project.assignments.items()} if self.project else {}
         self.view.set_type_colors(types)
 
-        self.mesh = build_grid(self.geometry, self.project, self.ports) if self.project else None
+        columns = {**self.ports, **self.elements}       # bodies that need a line on their axis
+        self.mesh = build_grid(self.geometry, self.project, columns) if self.project else None
         self.materials = (
-            discretize(self.mesh, self.geometry, self.project, self.ports)
+            discretize(self.mesh, self.geometry, self.project, self.ports, self.elements)
             if self.mesh is not None and self.mesh.ok else None
         )
         self._configure_mesh_slider(center=center_slider)
@@ -501,6 +505,8 @@ class MainWindow(QMainWindow):
 
             if assignment.type == "port":
                 self._port_rows(type_item, name)
+            elif assignment.type == "lumped":
+                self._element_rows(type_item, name)
 
             body_item.setExpanded(True)
             type_item.setExpanded(True)
@@ -533,6 +539,21 @@ class MainWindow(QMainWindow):
             ("gap", f"{port.gap_length / MM:.3f}"),
         ):
             row = QTreeWidgetItem(type_item, [label, value, "mm" if label == "gap" else ""])
+            row.setData(0, Qt.UserRole, ("info", name, None))
+            row.setForeground(1, QColor("#2a2"))
+
+    def _element_rows(self, type_item, name):
+        element = self.elements.get(name)
+        if element is None:
+            return
+        if not element.ok:
+            self._note_row(type_item, name, f"✗ {element.error}", "#d33")
+            return
+        for label, value, unit in (
+            ("ends", f"{element.minus_body} — {element.plus_body}", ""),
+            ("gap", f"{element.gap_length / MM:.3f}", "mm"),
+        ):
+            row = QTreeWidgetItem(type_item, [label, value, unit])
             row.setData(0, Qt.UserRole, ("info", name, None))
             row.setForeground(1, QColor("#2a2"))
 
@@ -620,8 +641,25 @@ class MainWindow(QMainWindow):
         self._after_edit()
 
     def _item_double_clicked(self, item, _column):
-        if item.data(0, Qt.UserRole)[0] in ("param", "setting") and self.project is not None:
+        role, owner, name = item.data(0, Qt.UserRole)
+        if role not in ("param", "setting") or self.project is None:
+            return
+
+        param = (self.project.get(owner).object_type.param(name) if role == "param"
+                 else SECTIONS[owner].param(name))
+        if not param.choices:
             self.tree.editItem(item, 1)
+            return
+
+        # A choice: pick it from a menu at the row (the tree has no combo editor).
+        menu = QMenu(self)
+        for choice in param.choices:
+            action = menu.addAction(choice)
+            action.setCheckable(True)
+            action.setChecked(item.text(1) == choice)
+            action.triggered.connect(lambda _=False, c=choice: item.setText(1, c))
+        rect = self.tree.visualItemRect(item)
+        menu.exec(self.tree.viewport().mapToGlobal(rect.bottomLeft()))
 
     def _item_changed(self, item, column):
         role, owner, param = item.data(0, Qt.UserRole)

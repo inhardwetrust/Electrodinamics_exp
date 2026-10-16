@@ -29,6 +29,20 @@
 #
 # Excitation: sine-modulated Gaussian (no DC) centered at f0 = (f_min +
 # f_max) / 2, its spectrum is 20 dB down at f_min and f_max.
+#
+# Lumped elements (discretize.DiscreteElement): R, L, C in series or in
+# parallel on a column of n edges; each edge carries the element scaled by
+# k = l_e / L (R, L times k, C divided by k), so the column sums to the
+# element. Edge voltage V = E l_e, current I along +axis, J = I / A_e.
+# The element is discretized with the trapezoidal rule (A-stable for any
+# R, L, C) as a companion model  I(n+1) = G V(n+1) + I_hist(n), and solved
+# together with Ampere's law on its edges (time-centered current):
+#   E(n+1) = (E_std - Cb (I_hist + I(n)) / (2A)) / (1 + Cb G l / (2A))
+# where E_std is the plain Yee update. Companion models:
+#   R: G = 1/R.   C: G = 2C/dt, I_hist = -G V(n) - I_C(n).
+#   L: G = dt/2L, I_hist = G V(n) + I_L(n).
+#   series: Z = R + 2L/dt + dt/2C, V_hist = -(Z_L I + V_L) + (Z_C I + V_C),
+#           G = 1/Z, I_hist = -V_hist / Z.
 
 import math
 from dataclasses import dataclass, field
@@ -90,6 +104,7 @@ class FdtdSolver:
         self._build_grid()
         self.dt = courant * self._dt_max()
         self._build_coefficients()
+        self._build_elements()
         self._build_ports()
         self._build_cpml()
         self.reset()
@@ -175,6 +190,82 @@ class FdtdSolver:
         left = np.where(nodes > 0, d[np.maximum(nodes - 1, 0)], 0.0)
         right = np.where(nodes < len(d), d[np.minimum(nodes, len(d) - 1)], 0.0)
         return 0.5 * (left + right)
+
+    # =====================================================
+    # Lumped elements
+    # =====================================================
+
+    def _build_elements(self):
+        """Per-edge companion-model constants of every lumped element."""
+        dt = self.dt
+        self._elements = []
+        for element in self.materials.elements:
+            edges = element.edges + self.pml
+            axis = element.axis
+            index = tuple(edges.T)
+            length = self.d[axis][edges[:, axis]]
+            area = self._dual_area(axis, edges)
+            k = length / element.length                    # share of the column
+
+            e = {"name": element.name, "axis": axis, "index": index,
+                 "l": length, "area": area, "topology": element.topology,
+                 "cb": self.cb[axis][index].astype(np.float64)}
+
+            if element.topology == "parallel":
+                e["g_r"] = (1.0 / (element.r * k)) if element.r > 0 else np.zeros_like(k)
+                e["g_c"] = (2.0 * element.c / k / dt) if element.c > 0 else np.zeros_like(k)
+                e["g_l"] = (dt / (2.0 * element.l * k)) if element.l > 0 else np.zeros_like(k)
+                e["g"] = e["g_r"] + e["g_c"] + e["g_l"]
+            else:
+                z_r = element.r * k
+                z_l = (2.0 * element.l * k / dt) if element.l > 0 else np.zeros_like(k)
+                z_c = (dt / (2.0 * element.c / k)) if element.c > 0 else np.zeros_like(k)
+                z = z_r + z_l + z_c
+                if np.any(z <= 0):
+                    # R = L = C = 0 in series: a short -> PEC edges.
+                    self.ca[axis][index] = 0.0
+                    self.cb[axis][index] = 0.0
+                    continue
+                e.update(z_l=z_l, z_c=z_c, z=z, g=1.0 / z)
+
+            self._elements.append(e)
+
+    def _reset_elements(self):
+        for e in self._elements:
+            n = len(e["l"])
+            for key in ("i", "v", "i_c", "i_l", "v_l", "v_c"):
+                e[key] = np.zeros(n)
+
+    def _update_elements(self):
+        for e in self._elements:
+            field = self.e[e["axis"]]
+            e_std = field[e["index"]].astype(np.float64)
+            i0, v0 = e["i"], e["v"]
+
+            if e["topology"] == "parallel":
+                i_hist = (-e["g_c"] * v0 - e["i_c"]) + (e["g_l"] * v0 + e["i_l"])
+            else:
+                v_hist = -(e["z_l"] * i0 + e["v_l"]) + (e["z_c"] * i0 + e["v_c"])
+                i_hist = -v_hist / e["z"]
+
+            factor = e["cb"] / (2.0 * e["area"])
+            e1 = (e_std - factor * (i_hist + i0)) / (1.0 + factor * e["g"] * e["l"])
+            v1 = e1 * e["l"]
+            i1 = e["g"] * v1 + i_hist
+
+            if e["topology"] == "parallel":
+                e["i_c"] = e["g_c"] * (v1 - v0) - e["i_c"]
+                e["i_l"] = e["g_l"] * (v1 + v0) + e["i_l"]
+            else:
+                e["v_l"] = e["z_l"] * (i1 - i0) - e["v_l"]
+                e["v_c"] = e["z_c"] * (i1 + i0) + e["v_c"]
+
+            e["i"], e["v"] = i1, v1
+            field[e["index"]] = e1.astype(np.float32)
+
+    def element_state(self):
+        """{element: (V, I)} now: total column voltage and mean current."""
+        return {e["name"]: (float(np.sum(e["v"])), float(np.mean(e["i"]))) for e in self._elements}
 
     # =====================================================
     # Ports
@@ -301,6 +392,7 @@ class FdtdSolver:
                 psi[...] = 0.0
         self.step_index = 0
         self.records = [PortRecord(r.name) for r in self.records]
+        self._reset_elements()
 
     @property
     def t(self):
@@ -350,6 +442,9 @@ class FdtdSolver:
             axis, index, coef = self._source
             vs = float(self.pulse((self.step_index + 0.5) * self.dt))
             e[axis][index] -= coef * np.float32(vs)
+
+        if self._elements:
+            self._update_elements()
 
     @staticmethod
     def _cut(f, d, other):

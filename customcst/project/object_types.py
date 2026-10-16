@@ -15,13 +15,23 @@ from typing import Optional
 class Param:
     name: str                 # key in the TOML file
     label: str                # shown in the UI
-    default: float
+    default: object                 # float, or a str for a choice
     minimum: Optional[float] = None
     maximum: Optional[float] = None
     unit: str = ""
+    choices: tuple = ()             # non-empty: the value is one of these strings
 
     def validate(self, value):
-        """float(value) within the limits, or ValueError naming the parameter."""
+        """
+        A number within the limits (or one of `choices`), or ValueError
+        naming the parameter.
+        """
+        if self.choices:
+            text = str(value).strip().lower()
+            if text not in self.choices:
+                raise ValueError(f"{self.label}: must be one of {', '.join(self.choices)}")
+            return text
+
         if isinstance(value, bool):
             raise ValueError(f"{self.label}: not a number: {value!r}")
 
@@ -74,6 +84,17 @@ OBJECT_TYPES = {
                 Param("mu_r", "μr", 1.0, minimum=1.0),
             ),
             # A dielectric sheet has no volume to fill.
+            allowed_kinds=("solid",),
+        ),
+        ObjectType(
+            "lumped", "Lumped element",
+            params=(
+                Param("topology", "R, L, C in", "series", choices=("series", "parallel")),
+                Param("r", "R", 0.0, minimum=0.0, unit="Ω"),
+                Param("l", "L", 0.0, minimum=0.0, unit="nH"),
+                Param("c", "C", 1.0, minimum=0.0, unit="pF"),
+            ),
+            note="cylinder or cone between two PEC bodies; 0 = that part is absent",
             allowed_kinds=("solid",),
         ),
         ObjectType(

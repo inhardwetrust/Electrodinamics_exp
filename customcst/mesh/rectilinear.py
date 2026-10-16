@@ -83,7 +83,11 @@ class MeshResult:
 
 
 def build_grid(geometry, project, ports=None):
-    """MeshResult for the project's typed bodies; untyped bodies are ignored."""
+    """
+    MeshResult for the project's typed bodies; untyped bodies are ignored.
+    ports: {name: PortGeometry} of everything that needs a grid line on its
+    axis (ports and lumped elements).
+    """
     result = MeshResult()
     mesh = project.settings["mesh"]
     f_max = project.settings["simulation"]["f_max"] * GHZ
