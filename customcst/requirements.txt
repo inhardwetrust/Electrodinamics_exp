@@ -1,0 +1,5 @@
+numpy
+scipy
+vispy
+PySide6
+cadquery-ocp   # OpenCASCADE: STEP import / tessellation

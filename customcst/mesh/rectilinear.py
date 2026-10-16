@@ -1,0 +1,239 @@
+# rectilinear.py
+#
+# Level 2: the compute grid. A non-uniform rectilinear grid is three sorted
+# arrays of node coordinates x[], y[], z[] (meters); every line runs through
+# the whole domain (as in CST's hexahedral mesh and openEMS).
+#
+# Per axis:
+#   1. Fixpoints: coordinates that must be grid lines.
+#      - planar faces of material bodies normal to the axis, and the body
+#        extents along the axis;
+#      - port axes (transverse coordinates), so each port lies on a line;
+#      - the domain ends (model box + padding).
+#   2. Merge fixpoints closer than min_step into one. Thin bodies (35 um
+#      copper) collapse onto one line here: this is where a thin solid
+#      becomes a sheet. Inside a cluster the priority is: domain end >
+#      dielectric face > conductor face > port axis, so the substrate
+#      thickness stays exact and the copper sits on its surface.
+#   3. Target step per interval between fixpoints:
+#        min( lambda(f_max) / N in the densest material spanning it,
+#             interval / cells_per_feature ),  but >= min_step.
+#   4. Grading: the step may grow by at most (max_ratio - 1) per unit
+#      distance from any interval with a smaller target:
+#        h(x) = min_j ( h_j + (max_ratio - 1) * dist(x, interval_j) ).
+#   5. Lines: in each interval, n = ceil(integral dx / h) cells, placed by
+#      inverting that integral, so steps follow h(x) and hit both ends.
+
+import math
+from dataclasses import dataclass, field
+
+import numpy as np
+
+from project.object_types import CONDUCTOR_TYPES
+from project.settings import C0, GHZ, MM, padding_m
+
+AXES = "xyz"
+
+PRIORITY_DOMAIN = 3
+PRIORITY_DIELECTRIC = 2
+PRIORITY_CONDUCTOR = 1
+PRIORITY_PORT = 0
+
+SAMPLES_PER_INTERVAL = 400
+
+
+@dataclass
+class RectilinearGrid:
+    lines: tuple            # (x[], y[], z[]) node coordinates, meters
+
+    @property
+    def shape(self):
+        """Cell counts (nx, ny, nz)."""
+        return tuple(len(l) - 1 for l in self.lines)
+
+    @property
+    def cell_count(self):
+        return int(np.prod(self.shape))
+
+    @property
+    def bounds(self):
+        return (np.array([l[0] for l in self.lines]), np.array([l[-1] for l in self.lines]))
+
+    def steps(self, axis):
+        return np.diff(self.lines[axis])
+
+    def time_step(self):
+        """FDTD Courant limit for the smallest cell: c dt <= 1/sqrt(sum 1/h^2)."""
+        h = [self.steps(a).min() for a in range(3)]
+        return 1.0 / (C0 * math.sqrt(sum(1.0 / s ** 2 for s in h)))
+
+
+@dataclass
+class MeshResult:
+    grid: RectilinearGrid = None
+    fixpoints: list = field(default_factory=list)   # per axis: kept fixpoints (m)
+    merged: list = field(default_factory=list)      # per axis: [(kept, [dropped...])]
+    warnings: list = field(default_factory=list)
+    error: str = ""
+    min_step: float = 0.0                           # merge distance actually used (m)
+
+    @property
+    def ok(self):
+        return self.grid is not None
+
+
+def build_grid(geometry, project, ports=None):
+    """MeshResult for the project's typed bodies; untyped bodies are ignored."""
+    result = MeshResult()
+    mesh = project.settings["mesh"]
+    f_max = project.settings["simulation"]["f_max"] * GHZ
+
+    materials = []          # (body, sqrt(eps_r mu_r) or None for conductors)
+    untyped = []
+    for body in geometry.bodies:
+        assignment = project.get(body.name)
+        if assignment is None:
+            untyped.append(body.name)
+        elif assignment.type in CONDUCTOR_TYPES:
+            materials.append((body, None))
+        elif assignment.type == "dielectric":
+            v = assignment.values
+            materials.append((body, math.sqrt(v["eps_r"] * v["mu_r"])))
+
+    if untyped:
+        result.warnings.append(f"ignored (no type): {', '.join(untyped)}")
+    if not materials:
+        result.error = "no bodies with a material type"
+        return result
+
+    lo = np.min([b.bounds[0] for b, _ in materials], axis=0)
+    hi = np.max([b.bounds[1] for b, _ in materials], axis=0)
+    pad = padding_m(project.settings)
+    lo, hi = lo - pad, hi + pad
+
+    n_per_lambda = mesh["cells_per_wavelength"]
+    densest = max([n for _, n in materials if n is not None] + [1.0])
+    h_lambda_min = C0 / (f_max * densest) / n_per_lambda
+    min_step = mesh["min_step"] * MM if mesh["min_step"] > 0 else h_lambda_min / 10.0
+    result.min_step = min_step
+
+    valid_ports = [p for p in (ports or {}).values() if p.ok]
+
+    lines = []
+    for axis in range(3):
+        points = _fixpoints(axis, materials, valid_ports, lo[axis], hi[axis])
+        kept, merged = _merge(points, min_step)
+        result.fixpoints.append(np.array([p for p, _ in kept]))
+        result.merged.append(merged)
+
+        targets = _interval_targets(
+            axis, result.fixpoints[axis], materials, f_max, n_per_lambda,
+            mesh["cells_per_feature"], min_step,
+        )
+        lines.append(_place_lines(result.fixpoints[axis], targets, mesh["max_ratio"]))
+
+    result.grid = RectilinearGrid(tuple(lines))
+    return result
+
+
+# =====================================================
+# Fixpoints
+# =====================================================
+
+def _fixpoints(axis, materials, ports, lo, hi):
+    """[(coordinate, priority)] along one axis."""
+    points = [(lo, PRIORITY_DOMAIN), (hi, PRIORITY_DOMAIN)]
+
+    for body, n in materials:
+        priority = PRIORITY_CONDUCTOR if n is None else PRIORITY_DIELECTRIC
+        b_lo, b_hi = body.bounds
+        points += [(b_lo[axis], priority), (b_hi[axis], priority)]
+
+        # Planar faces normal to this axis (exact for boxes, caps of cylinders).
+        v = body.vertices[body.triangles]                       # (T, 3, 3)
+        normal = np.cross(v[:, 1] - v[:, 0], v[:, 2] - v[:, 0])
+        length = np.linalg.norm(normal, axis=1)
+        flat = length > 0
+        aligned = np.zeros(len(v), dtype=bool)
+        aligned[flat] = np.abs(normal[flat, axis]) >= (1.0 - 1e-9) * length[flat]
+        for c in np.unique(np.round(v[aligned, 0, axis], 12)):
+            points.append((float(c), priority))
+
+    for port in ports:
+        direction = port.plus - port.minus
+        if np.abs(direction[axis]) <= 1e-9 * np.linalg.norm(direction):
+            points.append((float(port.minus[axis]), PRIORITY_PORT))   # transverse: one line
+
+    return [(c, p) for c, p in points if lo <= c <= hi]
+
+
+def _merge(points, min_step):
+    """
+    Clusters of fixpoints closer than min_step become one: the highest
+    priority wins (mean on ties). Returns (kept [(coord, priority)],
+    merged [(kept coord, [dropped coords])]).
+    """
+    points = sorted(points)
+    clusters = [[points[0]]]
+    for c, p in points[1:]:
+        if c - clusters[-1][-1][0] < min_step:
+            clusters[-1].append((c, p))
+        else:
+            clusters.append([(c, p)])
+
+    kept, merged = [], []
+    for cluster in clusters:
+        top = max(p for _, p in cluster)
+        winners = [c for c, p in cluster if p == top]
+        coord = float(np.mean(winners))
+        kept.append((coord, top))
+
+        dropped = sorted({round(c, 12) for c, _ in cluster} - {round(coord, 12)})
+        if dropped:
+            merged.append((coord, dropped))
+
+    return kept, merged
+
+
+# =====================================================
+# Steps
+# =====================================================
+
+def _interval_targets(axis, fixpoints, materials, f_max, n_per_lambda, cells_per_feature, min_step):
+    """Target step for each interval between consecutive fixpoints."""
+    targets = []
+    for a, b in zip(fixpoints[:-1], fixpoints[1:]):
+        n = 1.0                             # air
+        for body, refr in materials:
+            if refr is None:
+                continue
+            b_lo, b_hi = body.bounds
+            if b_lo[axis] < b and b_hi[axis] > a:      # body spans part of this slab
+                n = max(n, refr)
+
+        h = C0 / (f_max * n) / n_per_lambda
+        h = min(h, (b - a) / cells_per_feature)
+        targets.append(max(h, min_step))
+    return np.array(targets)
+
+
+def _place_lines(fixpoints, targets, max_ratio):
+    growth = max_ratio - 1.0
+    a_all, b_all = fixpoints[:-1], fixpoints[1:]
+
+    def h_of(x):
+        # Distance from each x to each interval (0 inside it).
+        d = np.maximum(0.0, np.maximum(a_all[None] - x[:, None], x[:, None] - b_all[None]))
+        return np.min(targets[None] + growth * d, axis=1)
+
+    lines = [fixpoints[0]]
+    for a, b in zip(a_all, b_all):
+        x = np.linspace(a, b, SAMPLES_PER_INTERVAL)
+        density = 1.0 / h_of(x)
+        cumulative = np.concatenate(([0.0], np.cumsum(0.5 * (density[1:] + density[:-1]) * np.diff(x))))
+        n = max(1, int(math.ceil(cumulative[-1] - 1e-9)))
+        inner = np.interp(np.arange(1, n) * cumulative[-1] / n, cumulative, x)
+        lines.extend(inner)
+        lines.append(b)
+
+    return np.array(lines)

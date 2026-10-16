@@ -1,0 +1,38 @@
+# customcst project for 01_linie50x30_3.stp
+
+[bodies."01_linie50x30_3#1"]
+type = "pec"
+
+[bodies."01_linie50x30_3#2"]
+type = "dielectric"
+eps_r = 1.0
+tan_d = 0.0
+f_ref = 10.0   # GHz
+mu_r = 1.0
+
+[bodies."01_linie50x30_3#3"]
+type = "pec"
+
+[bodies.gnd]
+type = "pec"
+
+[bodies.line]
+type = "pec"
+
+[bodies.port1]
+type = "port"
+impedance = 50.0   # Ω
+
+[bodies.port2]
+type = "port"
+impedance = 50.0   # Ω
+
+[bodies.substrate]
+type = "dielectric"
+eps_r = 1.0
+tan_d = 0.0
+f_ref = 10.0   # GHz
+mu_r = 1.0
+
+[view]
+up = "z"

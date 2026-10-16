@@ -1,0 +1,28 @@
+# customcst project for patch_2g4.step
+
+[simulation]
+f_min = 1.0   # GHz
+f_max = 5.0   # GHz
+padding = 0.0   # mm
+
+[mesh]
+cells_per_wavelength = 20.0
+cells_per_feature = 4.0
+max_ratio = 1.3
+min_step = 0.0   # mm
+
+[bodies.ground]
+type = "pec"
+
+[bodies.patch]
+type = "pec"
+
+[bodies.substrate]
+type = "dielectric"
+eps_r = 4.3
+tan_d = 0.0
+f_ref = 10.0   # GHz
+mu_r = 1.0
+
+[view]
+up = "z"
