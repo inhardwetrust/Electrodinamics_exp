@@ -133,6 +133,50 @@ Lessons:
   cavity whose layers are not thin.
 - Pick the 2π branch explicitly when unwrapping long lines.
 
+## Application settings
+
+`app_settings.py` keeps the settings of the program itself, not of a
+model, in a JSON file: `%APPDATA%\customcst\settings.json`, or
+`CUSTOMCST_SETTINGS` for tests.
+- `recent_files`: newest first, at most 10. The toolbar has a Recent menu;
+  missing files are greyed out, and the menu has "Remove missing" and
+  "Clear list".
+- `window`: the normal geometry plus `maximized`, written when the window
+  closes. It is restored on start; if that monitor is gone, the window is
+  centered on the primary one.
+- Start: `main.py` opens the given file, else the newest recent file that
+  still exists, else an empty window.
+- A damaged file gives the defaults and a status message. A bad window
+  entry is simply forgotten. Unknown keys are kept on save.
+- Checks: `checks/check_app_settings.py`.
+
+## Material library
+
+`project/materials.py` holds the dielectric presets.
+- Built-in presets come from the program: Default (εr 1), FR4 (4.3,
+  tan δ 0.02 at 3 GHz) and PTFE (2.1, tan δ 0.0002).
+- The project's library starts from them and is saved into the model's TOML
+  as `[materials.NAME]` tables, so a model keeps the values it was
+  computed with. A TOML preset overrides the built-in one of the same name.
+- A dielectric body has `material = "FR4"` and a copy of the values (the
+  solver reads only the body's values; on load the library wins), or
+  "Custom" with its own values. Files without the key load as Custom.
+- Editing a value of a preset body by hand makes it Custom. Editing a
+  preset updates every body that uses it.
+- Library edits (Project methods): add, duplicate (free name "X copy",
+  "X copy 2"), rename (the users follow, the order is kept), delete (only
+  when unused), set a value, reset a built-in one.
+  - Built-in presets can be edited and reset, not renamed or deleted:
+    they would come back from the program on the next load.
+  - "Custom" is a reserved name.
+- UI: the left dock has two tabs.
+  - "Project": the tree, with a Material row per dielectric (double click
+    picks a preset).
+  - "Materials": the library table (values, source: built-in / built-in,
+    edited / model, used by). Double click a cell to edit a value or a
+    name. Buttons: New, Duplicate, Delete, Reset built-in.
+- Checks: `checks/check_project_file.py`.
+
 ## Saved results
 
 `solver/result_file.py`: after a run, the results go next to the STEP

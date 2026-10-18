@@ -1,6 +1,7 @@
 # main.py
 #
-#   python main.py                         -> models/patch_2g4.step
+#   python main.py                         -> the last model opened (app_settings.py),
+#                                             or an empty window if there is none
 #   python main.py path/to/file.step       -> any STEP file
 #   python main.py file.step --screenshot out.png   (render, save, quit)
 
@@ -10,7 +11,9 @@ import sys
 from vispy import app
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_MODEL = os.path.join(HERE, "models", "patch_2g4.step")
+sys.path.insert(0, HERE)
+
+from app_settings import AppSettings                    # noqa: E402
 
 
 def main(argv):
@@ -21,7 +24,7 @@ def main(argv):
         argv = argv[:i] + argv[i + 2:]
 
     args = [a for a in argv if not a.startswith("--")]
-    path = args[0] if args else DEFAULT_MODEL
+    path = args[0] if args else AppSettings.load().last_existing()
 
     app.use_app("pyside6")
     vispy_app = app.use_app()
@@ -30,7 +33,10 @@ def main(argv):
     from view.main_window import MainWindow
 
     window = MainWindow(path)
-    window.show()
+    if screenshot:
+        window.show()                           # a fixed size for screenshots
+    else:
+        window.show_restored()                  # size / maximized as last closed
 
     if screenshot:
         from PySide6.QtCore import QTimer

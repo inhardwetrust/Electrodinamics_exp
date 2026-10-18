@@ -32,6 +32,13 @@ Context for future Claude sessions. Read this first, then `ARCHITECTURE.md`.
   `sys.stdout.reconfigure(encoding="utf-8")` (they print ε, Ω).
 - Never write into the user's project TOML from tests: copy the model into
   the scratchpad first.
+- Application settings (`app_settings.py`: recent files, window size and
+  maximized state) live in `%APPDATA%\customcst\settings.json`. Any test
+  that creates a MainWindow must set `CUSTOMCST_SETTINGS` to a scratch file
+  first, or it rewrites the user's recent list and window size.
+- `MainWindow.geometry` is the STEP model, and it hides
+  `QWidget.geometry()`. Call `QMainWindow.geometry(self)` for the window
+  rectangle.
 - 3D navigation (`geometry_view.TrackballCamera`, CAD-style like the
   middle-button orbit in SolidWorks or Inventor):
   - left drag rotates as a virtual trackball. The rotation is a free

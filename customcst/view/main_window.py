@@ -12,17 +12,20 @@
 import os
 
 import numpy as np
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QRect, Qt
+from PySide6.QtGui import QColor, QGuiApplication
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDockWidget, QFileDialog, QLabel,
-    QMainWindow, QMenu, QMessageBox, QSlider, QTabWidget, QToolBar, QTreeWidget,
-    QTreeWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QCheckBox, QComboBox, QDockWidget, QFileDialog, QHBoxLayout,
+    QHeaderView, QLabel, QPushButton, QToolButton,
+    QMainWindow, QMenu, QMessageBox, QSlider, QTableWidget, QTableWidgetItem, QTabWidget,
+    QToolBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
+from app_settings import AppSettings
 from geometry.step_io import read_step
 from discretize.materials import discretize
 from mesh.rectilinear import build_grid
+from project.materials import BUILTIN, CUSTOM, MATERIAL_PARAMS
 from project.object_types import OBJECT_TYPES
 from project.project_file import UP_AXES, Project, ProjectError
 from project.settings import SECTIONS
@@ -67,15 +70,19 @@ class MainWindow(QMainWindow):
         self.runner.finished.connect(self._sim_finished)
         self.runner.failed.connect(self._sim_failed)
         self.result = None
+        self.app_settings = AppSettings.load()
 
         self._build_toolbar()
         self._build_tree_panel()
         self._build_results_panel()
 
+        self.setWindowTitle("customcst")
+        if self.app_settings.error:
+            self.statusBar().showMessage(f"settings not read (defaults used): {self.app_settings.error}", 10000)
         if path:
             self.load(path)
         else:
-            self.setWindowTitle("customcst")
+            self.statusBar().showMessage("Open a STEP file (Open STEP or Recent)")
 
     # =====================================================
     # UI
@@ -87,6 +94,13 @@ class MainWindow(QMainWindow):
         self.addToolBar(bar)
 
         bar.addAction("Open STEP...", self._open_dialog)
+        self.recent_menu = QMenu(self)
+        self.recent_menu.aboutToShow.connect(self._fill_recent_menu)
+        recent = QToolButton()
+        recent.setText("Recent")
+        recent.setMenu(self.recent_menu)
+        recent.setPopupMode(QToolButton.InstantPopup)
+        bar.addWidget(recent)
         bar.addAction("Reload", self._reload)      # STEP + project file
         bar.addAction("Reset view", self.view.reset_view)
         bar.addSeparator()
@@ -174,11 +188,165 @@ class MainWindow(QMainWindow):
         layout.addWidget(hint)
         layout.addWidget(self.info, 1)
 
-        dock = QDockWidget("Project")
+        # Tabs of the left panel: the model tree and the material library.
+        self.side_tabs = QTabWidget()
+        self.side_tabs.setDocumentMode(True)
+        self.side_tabs.addTab(panel, "Project")
+        self.side_tabs.addTab(self._build_materials_panel(), "Materials")
+
+        dock = QDockWidget()
+        dock.setTitleBarWidget(QWidget())       # the tabs are the title
         dock.setFeatures(QDockWidget.DockWidgetMovable)
-        dock.setWidget(panel)
+        dock.setWidget(self.side_tabs)
         dock.setMinimumWidth(400)
         self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+
+    def _build_materials_panel(self):
+        dielectric = OBJECT_TYPES["dielectric"]
+        headers = ["Name"] + [
+            dielectric.param(p).label + (f", {dielectric.param(p).unit}" if dielectric.param(p).unit else "")
+            for p in MATERIAL_PARAMS
+        ] + ["Source", "Used by"]
+        table = QTableWidget(0, len(headers))
+        table.setHorizontalHeaderLabels(headers)
+        table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
+        table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SingleSelection)
+        table.verticalHeader().setVisible(False)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        table.horizontalHeader().setStretchLastSection(True)
+        table.itemChanged.connect(self._material_cell_changed)
+        table.itemSelectionChanged.connect(self._material_buttons)
+        self.materials_table = table
+
+        self.material_new = QPushButton("New")
+        self.material_new.setToolTip("A new preset with the dielectric defaults (εr 1)")
+        self.material_new.clicked.connect(self._material_add)
+        self.material_copy = QPushButton("Duplicate")
+        self.material_copy.clicked.connect(self._material_duplicate)
+        self.material_delete = QPushButton("Delete")
+        self.material_delete.setToolTip("Only presets that no body uses; built-in ones stay")
+        self.material_delete.clicked.connect(self._material_remove)
+        self.material_reset = QPushButton("Reset built-in")
+        self.material_reset.setToolTip("Back to the program's values (bodies follow)")
+        self.material_reset.clicked.connect(self._material_reset_values)
+        buttons = QHBoxLayout()
+        for button in (self.material_new, self.material_copy, self.material_delete, self.material_reset):
+            buttons.addWidget(button)
+        buttons.addStretch(1)
+
+        hint = QLabel(
+            "Dielectric presets of this model, saved in its .toml. Double click a value to "
+            "edit it (every body using the preset follows) or a name to rename it. Built-in "
+            "presets come from the program: they can be edited and reset, not renamed or "
+            "deleted. Assign a preset with a dielectric's Material row in the Project tab."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: gray")
+
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.addLayout(buttons)
+        layout.addWidget(table, 1)
+        layout.addWidget(hint)
+        self._material_buttons()
+        return panel
+
+    def _fill_materials(self, select=None):
+        """(Re)builds the library table; `select`: the preset to select."""
+        table = self.materials_table
+        if select is None:
+            select = self._selected_material()
+        library = self.project.materials if self.project else {}
+        editable = self.project is not None
+
+        table.blockSignals(True)
+        table.setRowCount(len(library))
+        for row, (name, values) in enumerate(library.items()):
+            builtin = name in BUILTIN
+            name_item = QTableWidgetItem(name)
+            name_item.setData(Qt.UserRole, name)
+            if builtin or not editable:
+                name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
+            table.setItem(row, 0, name_item)
+
+            for column, param in enumerate(MATERIAL_PARAMS, start=1):
+                item = QTableWidgetItem(_fmt_value(values[param]))
+                item.setData(Qt.UserRole, (name, param))
+                item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                if not editable:
+                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                table.setItem(row, column, item)
+
+            source = ("built-in" if builtin and BUILTIN[name] == values else
+                      "built-in, edited" if builtin else "model")
+            for column, text in ((len(MATERIAL_PARAMS) + 1, source),
+                                 (len(MATERIAL_PARAMS) + 2, ", ".join(self.project.material_users(name)) or "—")):
+                item = QTableWidgetItem(text)
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                item.setForeground(QColor("gray"))
+                table.setItem(row, column, item)
+
+            if name == select:
+                table.selectRow(row)
+        table.blockSignals(False)
+        self._material_buttons()
+
+    def _selected_material(self):
+        rows = self.materials_table.selectionModel().selectedRows() if self.materials_table.selectionModel() else []
+        if not rows:
+            return None
+        item = self.materials_table.item(rows[0].row(), 0)
+        return item.data(Qt.UserRole) if item else None
+
+    def _material_buttons(self):
+        name = self._selected_material()
+        editable = self.project is not None
+        self.material_new.setEnabled(editable)
+        self.material_copy.setEnabled(editable and name is not None)
+        self.material_delete.setEnabled(editable and name is not None and name not in BUILTIN
+                                        and not self.project.material_users(name))
+        self.material_reset.setEnabled(editable and name in BUILTIN
+                                       and self.project.materials[name] != BUILTIN[name])
+
+    def _material_edit(self, action, select=None):
+        """Runs a library edit; on success saves and refreshes everything that depends on it."""
+        try:
+            result = action()
+        except (ProjectError, ValueError) as error:
+            self.statusBar().showMessage(str(error), 6000)
+            self._fill_materials()          # revert the shown cell
+            return
+        self._after_edit()
+        self._fill_materials(select=result if select is None else select)
+
+    def _material_add(self):
+        self._material_edit(lambda: self.project.add_material(self.project.unique_material_name("New material")))
+
+    def _material_duplicate(self):
+        name = self._selected_material()
+        if name is not None:
+            self._material_edit(lambda: self.project.duplicate_material(name))
+
+    def _material_remove(self):
+        name = self._selected_material()
+        if name is not None:
+            self._material_edit(lambda: self.project.delete_material(name), select="")
+
+    def _material_reset_values(self):
+        name = self._selected_material()
+        if name is not None:
+            self._material_edit(lambda: self.project.reset_material(name), select=name)
+
+    def _material_cell_changed(self, item):
+        data = item.data(Qt.UserRole)
+        text = item.text().strip()
+        if isinstance(data, str):                               # the name column
+            self._material_edit(lambda: self.project.rename_material(data, text))
+        elif data is not None:
+            name, param = data
+            self._material_edit(
+                lambda: self.project.set_material_value(name, param, text.replace(",", ".")), select=name)
 
     def _build_results_panel(self):
         self.results = ResultsPanel()
@@ -256,6 +424,73 @@ class MainWindow(QMainWindow):
         if path:
             self.load(path)
 
+    # =====================================================
+    # Window size and state (app settings)
+    # =====================================================
+
+    def show_restored(self):
+        """Shows the window with the size, position and maximized state it was closed with."""
+        saved = self.app_settings.window
+        if saved is None:
+            self.show()
+            return
+        rect = QRect(saved["x"], saved["y"], saved["width"], saved["height"])
+        if QGuiApplication.screenAt(rect.center()) is None:
+            # That monitor is gone: same size (if it fits), centered on the primary one.
+            available = QGuiApplication.primaryScreen().availableGeometry()
+            rect.setSize(rect.size().boundedTo(available.size()))
+            rect.moveCenter(available.center())
+        self.setGeometry(rect)
+        if saved["maximized"]:
+            self.showMaximized()
+        else:
+            self.show()
+
+    def closeEvent(self, event):
+        # QMainWindow.geometry: self.geometry is the STEP model here, it hides the Qt method.
+        normal = self.normalGeometry() if self.isMaximized() else QMainWindow.geometry(self)
+        self.app_settings.window = {
+            "x": normal.x(), "y": normal.y(), "width": normal.width(), "height": normal.height(),
+            "maximized": self.isMaximized(),
+        }
+        self.app_settings.save()            # an error here must not keep the window open
+        super().closeEvent(event)
+
+    def _remember(self, path):
+        """The model goes to the top of the recent files (app settings)."""
+        self.app_settings.add_recent(path)
+        error = self.app_settings.save()
+        if error:
+            self.statusBar().showMessage(f"settings not saved: {error}", 10000)
+
+    def _fill_recent_menu(self):
+        menu = self.recent_menu
+        menu.clear()
+        files = self.app_settings.recent_files
+        if not files:
+            menu.addAction("(no recent files)").setEnabled(False)
+            return
+        for path in files:
+            exists = os.path.isfile(path)
+            text = f"{os.path.basename(path)}   —   {os.path.dirname(path)}"
+            action = menu.addAction(text if exists else f"{text}   (missing)")
+            action.setToolTip(path)
+            action.setEnabled(exists)
+            action.triggered.connect(lambda _=False, p=path: self.load(p))
+        menu.addSeparator()
+        menu.addAction("Remove missing", self._forget_missing)
+        menu.addAction("Clear list", self._clear_recent)
+
+    def _forget_missing(self):
+        for path in list(self.app_settings.recent_files):
+            if not os.path.isfile(path):
+                self.app_settings.remove_recent(path)
+        self.app_settings.save()
+
+    def _clear_recent(self):
+        self.app_settings.recent_files = []
+        self.app_settings.save()
+
     def _reload(self):
         if self.geometry:
             self.load(self.geometry.source)
@@ -295,7 +530,9 @@ class MainWindow(QMainWindow):
 
         self._refresh_model(center_slider=True)
         self._fill_tree()
+        self._fill_materials()
         self._load_result(path)
+        self._remember(path)
 
         lo, hi = geometry.bounds
         self.setWindowTitle(f"customcst - {os.path.basename(path)}  ({_fmt_mm(hi - lo)} mm)")
@@ -512,6 +749,15 @@ class MainWindow(QMainWindow):
             font.setBold(True)
             type_item.setFont(1, font)
 
+            if assignment.material is not None:
+                row = QTreeWidgetItem(type_item, ["Material", assignment.material, ""])
+                row.setData(0, Qt.UserRole, ("material", name, None))
+                row.setToolTip(1, "Double click to choose a preset (Materials tab)")
+                font = row.font(1)
+                font.setBold(True)
+                row.setFont(1, font)
+
+            preset = assignment.material not in (None, CUSTOM)
             for param in object_type.params:
                 row = QTreeWidgetItem(type_item, [
                     param.label, _fmt_value(assignment.values[param.name]), param.unit,
@@ -519,6 +765,9 @@ class MainWindow(QMainWindow):
                 row.setData(0, Qt.UserRole, ("param", name, param.name))
                 row.setFlags(row.flags() | Qt.ItemIsEditable)
                 row.setToolTip(1, "Double click to edit")
+                if preset and param.name in MATERIAL_PARAMS:
+                    row.setForeground(1, QColor("gray"))
+                    row.setToolTip(1, f"From {assignment.material}; editing makes it {CUSTOM}")
 
             if object_type.note:
                 self._note_row(type_item, name, object_type.note, "gray")
@@ -648,6 +897,7 @@ class MainWindow(QMainWindow):
         self._fill_section(self._top_item("section", "mesh"))
         self._resize_columns()
         self._show_summary()
+        self._fill_materials()
         self._update_result_status()
 
     # =====================================================
@@ -717,6 +967,9 @@ class MainWindow(QMainWindow):
 
     def _item_double_clicked(self, item, _column):
         role, owner, name = item.data(0, Qt.UserRole)
+        if role == "material" and self.project is not None:
+            self._material_menu(item, owner)
+            return
         if role not in ("param", "setting") or self.project is None:
             return
 
@@ -735,6 +988,28 @@ class MainWindow(QMainWindow):
             action.triggered.connect(lambda _=False, c=choice: item.setText(1, c))
         rect = self.tree.visualItemRect(item)
         menu.exec(self.tree.viewport().mapToGlobal(rect.bottomLeft()))
+
+    def _material_menu(self, item, body_name):
+        """Pick a dielectric's material: a preset of the library, or its own values."""
+        current = self.project.get(body_name).material
+        menu = QMenu(self)
+        for material in list(self.project.materials) + [CUSTOM]:
+            if material == CUSTOM:
+                menu.addSeparator()
+            action = menu.addAction(material)
+            action.setCheckable(True)
+            action.setChecked(material == current)
+            action.triggered.connect(lambda _=False, m=material: self._set_material(body_name, m))
+        rect = self.tree.visualItemRect(item)
+        menu.exec(self.tree.viewport().mapToGlobal(rect.bottomLeft()))
+
+    def _set_material(self, body_name, material):
+        try:
+            self.project.set_material(body_name, material)
+        except ProjectError as error:
+            self.statusBar().showMessage(str(error), 5000)
+            return
+        self._after_edit()
 
     def _item_changed(self, item, column):
         role, owner, param = item.data(0, Qt.UserRole)

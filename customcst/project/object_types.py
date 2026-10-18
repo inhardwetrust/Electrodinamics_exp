@@ -123,6 +123,7 @@ class Assignment:
 
     type: str
     values: dict = field(default_factory=dict)
+    material: Optional[str] = None      # dielectrics: preset name or materials.CUSTOM
 
     @classmethod
     def new(cls, type_name):
