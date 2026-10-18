@@ -42,6 +42,7 @@ class _Worker(QObject):
                 f, names, [p.resistance for p in ports],
                 f"FDTD, {self.f_min:g}-{self.f_max:g} GHz, grid {self.materials.grid.shape}",
             )
+            result.eps_eff = [getattr(getattr(p, "mode", None), "eps_eff", float("nan")) for p in ports]
 
             for k, active in enumerate(names):
                 if self.excite is not None and active not in self.excite:

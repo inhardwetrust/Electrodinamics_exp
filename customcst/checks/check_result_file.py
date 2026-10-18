@@ -49,6 +49,7 @@ def make_result(scale=1.0):
     result.info = ["port1: converged, 1000 steps", "Ω ε test"]
     result.params = {"simulation": {"f_min": 1.0, "f_max": 5.0}, "grid": "10 × 10 × 10", "vias": 3}
     result.elapsed = 83.4
+    result.eps_eff = [2.1, float("nan")]                 # a coax waveport, a lumped port
     return result
 
 
@@ -81,6 +82,7 @@ def main():
         check("fingerprint kept", back.fingerprint == fingerprint(project))
         check("run time kept", back.elapsed == 83.4 and format_duration(back.elapsed) == "1 min 23 s",
               format_duration(back.elapsed))
+        check("port lines kept", back.eps_eff[0] == 2.1 and np.isnan(back.eps_eff[1]), str(back.eps_eff))
         check("time formats", format_duration(12.34) == "12.3 s" and format_duration(3725) == "1 h 02 min"
               and format_duration(float("nan")) == "")
 

@@ -337,7 +337,17 @@ file next to the STEP: model.step -> `model.results/<save time>.npz`
   Z_in, the run's info lines, its name (renamable; "Run N" by default),
   the save time and the fingerprint of the inputs.
 - It also holds the wall-clock time the whole run took (all excited
-  ports; `elapsed`, NaN in older files), shown as the run's "time" row.
+  ports; `elapsed`, NaN in older files), shown as the run's "time" row,
+  and the eps_eff of each waveguide port's line (NaN for lumped ports).
+  Older files take it from the current port of the same name.
+- The snapshot lists the lumped elements (R, L, C).
+- Results > Reference plane (like CST's distance to reference plane):
+  each waveguide port's plane moves along its own line, + into the model.
+  The port's reference impedance is that line's Z0, so the move is a
+  pure phase: S'_jk = S_jk exp(j beta_j d_j) exp(j beta_k d_k). Used for
+  comparing with a VNA calibrated at another plane (an SMA's 9.6 mm of
+  coax turn the board's ~11 Ohm into ~190 + j135 Ohm at 5 GHz). The
+  readout and the Touchstone export use the moved planes.
 - It also holds a snapshot of the parameters it was computed with:
   [simulation] and [mesh] settings, the grid (cells and steps), the
   dielectric materials, the number of vias and the ports. The snapshot is

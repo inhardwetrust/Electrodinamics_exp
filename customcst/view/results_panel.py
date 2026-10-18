@@ -12,6 +12,14 @@
 #
 # The mouse wheel over the plot moves the marker (one point per notch,
 # ten with Ctrl).
+#
+# Reference planes (like CST's "distance to reference plane"): each
+# waveguide port's plane can be moved along its own line, + into the
+# structure (toward the DUT), - away from it. The port's reference
+# impedance is that line's Z0, so the move is exact for a lossless line:
+#   S'_jk = S_jk exp(j beta_j d_j) exp(j beta_k d_k),  beta = 2 pi f sqrt(eps_eff) / c0
+# (the reflection of a port turns by 2 beta d, |S| does not change).
+# Applies to every shown run (by port name), the readout and the export.
 
 import os
 
@@ -19,10 +27,11 @@ import numpy as np
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QLabel, QMessageBox,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel, QMessageBox,
     QPushButton, QSlider, QStackedWidget, QVBoxLayout, QWidget,
 )
 
+from project.settings import C0
 from solver import vna
 from view.plot import LinePlot
 from view.smith import SmithChart
@@ -37,6 +46,8 @@ class ResultsPanel(QWidget):
         self.default_dir = ""
         self._trace_boxes = {}          # (j, k) -> QCheckBox
         self._ports = 0                 # trace boxes are for this many ports
+        self.shifts = {}                # port name -> reference plane shift (mm, + = into the model)
+        self._shift_boxes = {}          # port name -> QDoubleSpinBox
 
         self.format_combo = QComboBox()
         self.format_combo.addItems(vna.FORMATS)
@@ -68,6 +79,9 @@ class ResultsPanel(QWidget):
         self.stack.addWidget(self.line_plot)
         self.stack.addWidget(self.smith)
 
+        self.shift_row = QHBoxLayout()
+        self.shift_row.setSpacing(6)
+
         self.marker_slider = QSlider(Qt.Horizontal)
         self.marker_slider.valueChanged.connect(lambda _: self._redraw())
         self.marker_label = QLabel()
@@ -91,6 +105,7 @@ class ResultsPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.addLayout(controls)
+        layout.addLayout(self.shift_row)
         layout.addWidget(self.stack, 1)
         layout.addLayout(marker_row)
         layout.addWidget(self.readout)
@@ -124,6 +139,7 @@ class ResultsPanel(QWidget):
             self._rebuild_trace_boxes(n)
         if self.runs and not any(jk in self.primary.s for jk in self._checked()):
             self._default_traces()
+        self._rebuild_shift_boxes()
 
         if self.runs:
             f = self.primary.frequencies
@@ -158,6 +174,59 @@ class ResultsPanel(QWidget):
                 self.trace_row.addWidget(box)
                 self._trace_boxes[j, k] = box
         self._ports = n
+
+    def _rebuild_shift_boxes(self):
+        """One spin box per waveguide port of the primary run (lumped ports have no line)."""
+        r = self.primary
+        names = [n for n, e in zip(r.ports, r.eps_eff) if np.isfinite(e)] if r else []
+        if names == list(self._shift_boxes):
+            return
+        while self.shift_row.count():
+            widget = self.shift_row.takeAt(0).widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._shift_boxes = {}
+        if not names:
+            return
+        label = QLabel("Reference plane:")
+        label.setToolTip("Move a waveguide port's reference plane along its own line "
+                         "(+ into the model, toward the DUT; - away from it). Changes the "
+                         "phase only: |S| and SWR stay. Like CST's distance to reference plane.")
+        self.shift_row.addWidget(label)
+        for name in names:
+            k = r.ports.index(name)
+            box = QDoubleSpinBox()
+            box.setRange(-1000.0, 1000.0)
+            box.setDecimals(2)
+            box.setSingleStep(0.5)
+            box.setSuffix(" mm")
+            box.setValue(self.shifts.get(name, 0.0))
+            box.setToolTip(f"port {k + 1} ({name}), line eps_eff {r.eps_eff[k]:.3f}: "
+                           "+ moves the plane into the model")
+            box.valueChanged.connect(lambda value, n=name: self._set_shift(n, value))
+            self.shift_row.addWidget(QLabel(f"{k + 1} {name}"))
+            self.shift_row.addWidget(box)
+            self._shift_boxes[name] = box
+        self.shift_row.addStretch(1)
+
+    def _set_shift(self, name, value):
+        self.shifts[name] = float(value)
+        self._redraw()
+
+    def _s(self, run, j, k):
+        """S_jk of a run with the reference planes moved (see the header)."""
+        s = run.s[j, k]
+        phase = 0.0
+        for p in (j, k):
+            d = self.shifts.get(run.ports[p], 0.0) * 1e-3
+            if d and np.isfinite(run.eps_eff[p]):
+                phase = phase + 2 * np.pi * run.frequencies * np.sqrt(run.eps_eff[p]) / C0 * d
+        return s * np.exp(1j * phase) if np.any(phase) else s
+
+    def _shift_note(self, run):
+        moved = [f"{name} {self.shifts[name]:+g} mm" for name, e in zip(run.ports, run.eps_eff)
+                 if self.shifts.get(name) and np.isfinite(e)]
+        return "reference planes moved: " + ", ".join(moved) if moved else ""
 
     def _default_traces(self):
         """Tick the column of the first excited port of the primary run (S11, S21 ...)."""
@@ -223,7 +292,7 @@ class ResultsPanel(QWidget):
                 m = _index_at(run.frequencies, fm)
                 for j, k in traces:
                     if (j, k) in run.s:
-                        items.append((label(f"S{j + 1}{k + 1}", run), run.s[j, k], self._color(j, k), dim, m))
+                        items.append((label(f"S{j + 1}{k + 1}", run), self._s(run, j, k), self._color(j, k), dim, m))
             self.smith.set_data(items)
         else:
             self.stack.setCurrentWidget(self.line_plot)
@@ -234,7 +303,7 @@ class ResultsPanel(QWidget):
                 for j, k in traces:
                     if (j, k) not in run.s:
                         continue
-                    s = run.s[j, k]
+                    s = self._s(run, j, k)
                     name = label(f"S{j + 1}{k + 1}", run)
                     color = self._color(j, k)
                     if fmt == "Z in":
@@ -277,12 +346,14 @@ class ResultsPanel(QWidget):
             for j, k in self._checked():
                 if (j, k) not in run.s:
                     continue
-                line = prefix + vna.marker_readout(fmt, run.s[j, k][m], run.frequencies[m],
+                s = self._s(run, j, k)
+                line = prefix + vna.marker_readout(fmt, s[m], run.frequencies[m],
                                                    run.resistances[j], j, k)
                 if fmt == "Group delay":
-                    line += f"  τg {vna.group_delay(run.s[j, k], run.frequencies)[m] * 1e9:.4f} ns"
+                    line += f"  τg {vna.group_delay(s, run.frequencies)[m] * 1e9:.4f} ns"
                 lines.append(line)
-        self.readout.setText("\n".join(lines) + note)
+        moved = self._shift_note(self.primary)
+        self.readout.setText("\n".join(lines) + note + (f"\n({moved})" if moved else ""))
 
     # =====================================================
     # Export
@@ -308,7 +379,10 @@ class ResultsPanel(QWidget):
         start = os.path.join(self.default_dir, f"{safe}.s{n}p")
         path, _ = QFileDialog.getSaveFileName(self, "Save Touchstone", start, f"Touchstone (*.s{n}p)")
         if path:
-            vna.write_touchstone(path, r.frequencies, r.s, r.ports, r.resistances[0], r.comment)
+            s = {jk: self._s(r, *jk) for jk in r.s}
+            moved = self._shift_note(r)
+            vna.write_touchstone(path, r.frequencies, s, r.ports, r.resistances[0],
+                                 r.comment + (f"; {moved}" if moved else ""))
 
 
 def _index_at(frequencies, f):

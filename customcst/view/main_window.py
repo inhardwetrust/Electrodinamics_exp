@@ -485,9 +485,13 @@ class MainWindow(QMainWindow):
                     f"εr {v['eps_r']:g}, tan δ {v['tan_d']:g}"
         ports = [f"{p.name} {p.resistance:.4g} Ω" for p in self.materials.ports] + \
                 [f"{w.name} {w.resistance:.4g} Ω (line)" for w in self.materials.waveports]
+        elements = [f"{e.name}: {e.topology} " + ", ".join(
+                        [f"R {e.r:g} Ω"] * (e.r > 0) + [f"L {e.l * 1e9:g} nH"] * (e.l > 0)
+                        + [f"C {e.c * 1e12:g} pF"] * (e.c > 0)) for e in self.materials.elements]
         excite = self.project.settings["simulation"]["excite"]
         return {
             "excite": "all ports" if excite == EXCITE_ALL else excite,
+            "elements": elements,
             "simulation": dict(self.project.settings["simulation"]),
             "mesh": dict(self.project.settings["mesh"]),
             "grid": f"{' × '.join(str(n) for n in grid.shape)} = {grid.cell_count:,}".replace(",", " ")
@@ -1096,8 +1100,22 @@ class MainWindow(QMainWindow):
         if errors:
             self.statusBar().showMessage("results not read: " + "; ".join(errors), 10000)
         self.shown = {self.runs[-1].path} if self.runs else set()
+        self._fill_port_lines(self.runs)
         self.results.default_dir = os.path.dirname(step_path)
         self._show_runs()
+
+    def _fill_port_lines(self, runs):
+        """
+        Runs saved before eps_eff was stored: take it from the current port
+        of the same name (a port's own line rarely changes with the rest of
+        the model; an outdated run is marked as such anyway).
+        """
+        if self.materials is None or not runs:
+            return
+        lines = {w.name: w.mode.eps_eff for w in self.materials.waveports}
+        for run in runs:
+            if all(np.isnan(e) for e in run.eps_eff):
+                run.eps_eff = [lines.get(name, float("nan")) for name in run.ports]
 
     def _show_runs(self):
         """Results tab and the Results list after a change of the runs or of their ticks."""
@@ -1188,6 +1206,7 @@ class MainWindow(QMainWindow):
             ("grid", p.get("grid", "")),
         ]
         rows += [(f"  {name}", text) for name, text in p.get("dielectrics", {}).items()]
+        rows += [("elements", "; ".join(p["elements"]) or "none")] if "elements" in p else []
         rows += [("vias", str(p.get("vias", 0))), ("ports", ", ".join(p.get("ports", []))),
                  ("excited", p.get("excite", "all ports"))]
         rows += took + [("run", line) for line in run.info]
