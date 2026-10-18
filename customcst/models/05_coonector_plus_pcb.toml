@@ -1,8 +1,8 @@
 # customcst project for 05_coonector_plus_pcb.stp
 
 [simulation]
-f_min = 1.0   # GHz
-f_max = 5.0   # GHz
+f_min = 5.0   # GHz
+f_max = 6.0   # GHz
 padding = 0.0   # mm
 
 [mesh]
@@ -54,6 +54,9 @@ eps_r = 4.3
 tan_d = 0.02
 f_ref = 3.0   # GHz
 mu_r = 1.0
+
+[bodies.waveguideport]
+type = "waveport"
 
 [view]
 up = "z"

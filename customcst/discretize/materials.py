@@ -257,8 +257,11 @@ def _discretize_waveport(result, port, snap):
         return
 
     u, v = [a for a in range(3) if a != port.axis]
-    mode = solve_port_mode(result, port.axis, index,
-                           circle=(port.center[u], port.center[v], port.radius))
+    if port.region is not None:                     # a box on a PCB edge
+        mode = solve_port_mode(result, port.axis, index, region=port.region)
+    else:                                           # a cylinder on a coax
+        mode = solve_port_mode(result, port.axis, index,
+                               circle=(port.center[u], port.center[v], port.radius))
     if not mode.ok:
         result.errors.append(f"{port.name}: {mode.errors[0]}")
         return

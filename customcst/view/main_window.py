@@ -32,7 +32,7 @@ from project.project_file import UP_AXES, Project, ProjectError
 from project.settings import SECTIONS
 from view.geometry_view import GeometryView
 from view.results_panel import ResultsPanel
-from solver.fdtd import END_DB
+from project.settings import accuracy_db
 from solver.result_file import delete_result, fingerprint, list_results, rename_result, save_result
 from view.sim_runner import SimulationRunner
 
@@ -53,6 +53,8 @@ def _fmt_point(values):
 
 
 def _fmt_value(value):
+    if isinstance(value, bool):
+        return "on" if value else "off"
     return value if isinstance(value, str) else f"{value:.6g}"
 
 
@@ -177,9 +179,10 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self.legend)   # the toolbar is full
 
         # Simulation progress: the field energy of the running port, full at
-        # its peak, empty at END_DB below it (where the run stops).
+        # its peak, empty at the accuracy level below it (where the run stops).
+        self._end_db = -40.0
         self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, int(-10 * END_DB))
+        self.progress_bar.setRange(0, int(-10 * self._end_db))
         self.progress_bar.setFixedWidth(220)
         self.progress_bar.setMaximumHeight(16)
         self.progress_bar.setTextVisible(True)
@@ -410,22 +413,24 @@ class MainWindow(QMainWindow):
         self.results.set_message("running...")
         self._n_ports = len(self.materials.ports) + len(self.materials.waveports)
         self._port_names = [p.name for p in self.materials.ports] + [w.name for w in self.materials.waveports]
+        self._end_db = accuracy_db(self.project.settings)
+        self.progress_bar.setRange(0, int(-10 * self._end_db))
         self.progress_bar.setValue(self.progress_bar.maximum())
         self.progress_bar.setFormat("starting...")
         self.progress_bar.setVisible(True)
-        self.runner.start(self.materials, sim["f_min"], sim["f_max"])
+        self.runner.start(self.materials, sim["f_min"], sim["f_max"], sim["trim_pulse"], self._end_db)
 
     def _sim_progress(self, port, t, level, pulse_duration):
         self.statusBar().showMessage(
             f"simulating, {port} excited: t = {t * 1e9:.2f} ns, energy {level:.1f} dB "
-            f"(stops at {END_DB:.0f} dB)")
+            f"(stops at {self._end_db:.0f} dB)")
         index = self._port_names.index(port) + 1 if port in self._port_names else 0
-        drop = min(max(-level, 0.0), -END_DB)
-        self.progress_bar.setValue(int(round(10 * (-END_DB - drop))))
+        drop = min(max(-level, 0.0), -self._end_db)
+        self.progress_bar.setValue(int(round(10 * (-self._end_db - drop))))
         if t < pulse_duration:          # still feeding: the energy cannot decay yet
             state = f"pulse {100 * t / pulse_duration:.0f} %"
         else:
-            state = f"{level:.0f} dB → {END_DB:.0f}"
+            state = f"{level:.0f} dB → {self._end_db:.0f}"
         self.progress_bar.setFormat(f"port {index}/{self._n_ports}   {state}")
 
     def _sim_done(self):
@@ -846,12 +851,18 @@ class MainWindow(QMainWindow):
         section = SECTIONS[name]
 
         for param in section.params:
-            row = QTreeWidgetItem(item, [
-                param.label, _fmt_value(self.project.settings[name][param.name]), param.unit,
-            ])
+            value = self.project.settings[name][param.name]
+            row = QTreeWidgetItem(item, [param.label, _fmt_value(value), param.unit])
             row.setData(0, Qt.UserRole, ("setting", name, param.name))
-            row.setFlags(row.flags() | Qt.ItemIsEditable)
-            row.setToolTip(1, "Double click to edit")
+            if param.boolean:                       # a check box, toggled with a click
+                row.setFlags(row.flags() | Qt.ItemIsUserCheckable)
+                row.setCheckState(1, Qt.Checked if value else Qt.Unchecked)
+            else:
+                row.setFlags(row.flags() | Qt.ItemIsEditable)
+                row.setToolTip(1, "Double click to edit")
+            if param.tooltip:
+                row.setToolTip(0, param.tooltip)
+                row.setToolTip(1, param.tooltip)
 
         if section.note:
             self._note_row(item, name, section.note, "gray")
@@ -1038,8 +1049,13 @@ class MainWindow(QMainWindow):
         rows = [
             ("plane", f"{AXES[port.axis]} = {port.plane / MM:.4g}", "mm"),
             ("line runs to", f"{'+' if port.direction > 0 else '−'}{AXES[port.axis]}", ""),
-            ("⌀", f"{2 * port.radius / MM:.4g}", "mm"),
         ]
+        if port.region is not None:
+            (u0, u1), (v0, v1) = port.region
+            u, v = [a for a in range(3) if a != port.axis]
+            rows.append(("rectangle", f"{AXES[u]} {(u1 - u0) / MM:.4g} × {AXES[v]} {(v1 - v0) / MM:.4g}", "mm"))
+        else:
+            rows.append(("⌀", f"{2 * port.radius / MM:.4g}", "mm"))
         discrete = [w for w in (self.materials.waveports if self.materials else []) if w.name == name]
         if discrete:
             mode = discrete[0].mode
@@ -1145,7 +1161,9 @@ class MainWindow(QMainWindow):
             return [("parameters", "not recorded (an older run)")] + [("run", line) for line in run.info]
         sim, mesh = p.get("simulation", {}), p.get("mesh", {})
         rows = [
-            ("band", f"{sim.get('f_min', '?'):g}–{sim.get('f_max', '?'):g} GHz, padding {sim.get('padding', 0):g} mm"),
+            ("band", f"{sim.get('f_min', '?'):g}–{sim.get('f_max', '?'):g} GHz, padding {sim.get('padding', 0):g} mm"
+                     + (", pulse tails trimmed" if sim.get("trim_pulse") else "")
+                     + f", accuracy {sim.get('accuracy', '-40')} dB"),
             ("mesh", f"cells/λ {mesh.get('cells_per_wavelength', 0):g}, per feature {mesh.get('cells_per_feature', 0):g}, "
                      f"ratio {mesh.get('max_ratio', 0):g}, min step {mesh.get('min_step', 0):g} mm"),
             ("grid", p.get("grid", "")),
@@ -1313,6 +1331,8 @@ class MainWindow(QMainWindow):
 
         param = (self.project.get(owner).object_type.param(name) if role == "param"
                  else SECTIONS[owner].param(name))
+        if param.boolean:
+            return                                  # the check box is the editor
         if not param.choices:
             self.tree.editItem(item, 1)
             return
@@ -1361,6 +1381,16 @@ class MainWindow(QMainWindow):
             return
 
         if role not in ("param", "setting") or column != 1:
+            return
+
+        if role == "setting" and SECTIONS[owner].param(param).boolean:
+            checked = item.checkState(1) == Qt.Checked
+            if checked != self.project.settings[owner][param]:
+                self.project.set_setting(owner, param, checked)
+                self.tree.blockSignals(True)
+                item.setText(1, _fmt_value(checked))
+                self.tree.blockSignals(False)
+                self._after_edit()
             return
 
         text = item.text(1).strip().replace(",", ".")

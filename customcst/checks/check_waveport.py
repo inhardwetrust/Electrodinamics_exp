@@ -13,8 +13,15 @@
 #     exact up to the grid's dispersion: S11, S21 vs the ABCD cascade;
 #   - reciprocity S12 = S21 (one run per port), symmetry, |S11|² + |S21|² = 1;
 #   - errors: a cone instead of a cylinder, a port with both caps on the model.
+# Box ports on PCB lines (lossless FR4 4.3, 1.6 mm, 30 mm long; boxes on
+# both board edges covering the board width and 8 mm of air above):
+#   - microstrip 3 mm and grounded coplanar 1 mm / 0.4 mm gaps (side
+#     grounds walled to the ground, as a dense via fence): plane,
+#     direction and rectangle; S11 < -30 dB, |S21| = 1 within 0.01, S21
+#     phase = the delay with the mode's eps_eff within 3 deg;
+#   - a box overlapping the board on two faces -> error.
 #
-#   python checks/check_waveport.py      (~1 min)
+#   python checks/check_waveport.py      (~1.5 min)
 
 import math
 import os
@@ -28,7 +35,9 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 import numpy as np                                                       # noqa: E402
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut                              # noqa: E402
-from OCP.BRepPrimAPI import BRepPrimAPI_MakeCone, BRepPrimAPI_MakeCylinder  # noqa: E402
+from OCP.BRepPrimAPI import (                                             # noqa: E402
+    BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCone, BRepPrimAPI_MakeCylinder,
+)
 from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt                                # noqa: E402
 
 from discretize.materials import discretize                              # noqa: E402
@@ -111,6 +120,75 @@ def section_mode(materials, mesh, x):
     return solve_port_mode(materials, 0, ix, circle=(0.0, 0.0, D_OUT / 2 * 1e-3))
 
 
+def box(x0, y0, z0, x1, y1, z1):
+    return BRepPrimAPI_MakeBox(gp_Pnt(x0, y0, z0), gp_Pnt(x1, y1, z1)).Shape()
+
+
+def pcb_line(folder, kind, port1=None):
+    """A 30 mm PCB line along x with box ports on both edges: (geometry, project)."""
+    bodies = [("sub", box(0, -10, 0, LENGTH, 10, 1.6), None), ("gnd", box(0, -10, -0.035, LENGTH, 10, 0), None)]
+    if kind == "microstrip":
+        bodies.append(("line", box(0, -1.5, 1.6, LENGTH, 1.5, 1.635), None))
+    else:
+        # Side grounds tied to the bottom ground by walls 0.5 mm from the gaps
+        # (the limit of a dense via fence): without them the floating side
+        # planes and the ground guide a parallel-plate wave that leaks ~1 %.
+        bodies += [("line", box(0, -0.5, 1.6, LENGTH, 0.5, 1.635), None),
+                   ("left", box(0, -10, 1.6, LENGTH, -0.9, 1.635), None),
+                   ("right", box(0, 0.9, 1.6, LENGTH, 10, 1.635), None),
+                   ("wall_l", box(0, -1.6, 0, LENGTH, -1.4, 1.6), None),
+                   ("wall_r", box(0, 1.4, 0, LENGTH, 1.6, 1.6), None)]
+    bodies += [("port1", port1 or box(-1, -10, -0.035, 0, 10, 8), None),
+               ("port2", box(LENGTH, -10, -0.035, LENGTH + 1, 10, 8), None)]
+    path = os.path.join(folder, f"{kind}.step")
+    write_step(path, bodies)
+    g = read_step(path)
+    p = Project(path)
+    for name in ("gnd", "line", "left", "right", "wall_l", "wall_r"):
+        if name in [b.name for b in g.bodies]:
+            p.set_type(g[name], "pec")
+    p.set_type(g["sub"], "dielectric")
+    p.set_value("sub", "eps_r", 4.3)                 # lossless: |S21| must be 1
+    for name in ("port1", "port2"):
+        p.set_type(g[name], "waveport")
+    p.set_setting("simulation", "f_min", 1.0)
+    p.set_setting("simulation", "f_max", 5.0)
+    p.set_setting("simulation", "padding", 5.0)
+    return g, p
+
+
+def box_ports(folder):
+    f = np.linspace(1e9, 5e9, 9)
+    for kind in ("microstrip", "coplanar"):
+        g, p = pcb_line(folder, kind)
+        waveports, mesh, m = build(g, p)
+        w1, w2 = waveports["port1"], waveports["port2"]
+        check(f"{kind}: box ports found", w1.ok and w2.ok and w1.shape == "rectangle"
+              and w1.axis == 0 and w1.direction == 1 and w2.direction == -1
+              and np.allclose(w1.region, ((-0.01, 0.01), (-0.035e-3, 0.008))), f"{w1.error or ''} {w1.region}")
+        check(f"{kind}: discretized", len(m.waveports) == 2 and not m.errors, m.errors)
+        if len(m.waveports) != 2:
+            continue
+        mode = m.waveports[0].mode
+        solver = FdtdSolver(m, 1.0, 5.0, active_port="port1")
+        solver.run()
+        column = s_column(solver, f)
+        s11, s21 = column["port1"], column["port2"]
+        delay = LENGTH * 1e-3 * math.sqrt(mode.eps_eff) / C0
+        phase = np.degrees(np.angle(s21 * np.exp(2j * np.pi * f * delay)))
+        check(f"{kind}: S11 < -30 dB", np.all(np.abs(s11) < 10 ** (-30 / 20)),
+              f"max {20 * np.log10(np.abs(s11).max()):.1f} dB (Z0 {mode.z0:.1f} Ω, eps_eff {mode.eps_eff:.3f})")
+        check(f"{kind}: |S21| = 1 within 0.01", np.all(np.abs(np.abs(s21) - 1) < 0.01),
+              f"{np.abs(s21).min():.4f} .. {np.abs(s21).max():.4f}")
+        check(f"{kind}: S21 phase = delay within 3°", np.all(np.abs(phase) < 3.0),
+              f"max {np.abs(phase).max():.2f}°")
+
+    # A box sunk into the board: two of its faces touch the model.
+    g, p = pcb_line(folder, "microstrip", port1=box(-1, -10, -0.035, 0.5, 10, 8))
+    bad = p.waveports(g)["port1"]
+    check("box overlapping the board -> error", not bad.ok, bad.error)
+
+
 def main():
     folder = tempfile.mkdtemp()
     try:
@@ -138,6 +216,27 @@ def main():
               f"{np.abs(s21).min():.4f} .. {np.abs(s21).max():.4f}")
         check("uniform: S21 phase = line delay within 3°", np.all(np.abs(phase) < 3.0),
               f"max {np.abs(phase).max():.2f}° at 10 GHz (grid dispersion)")
+
+        # Trimmed pulse tails (start / end at 1e-4 of the peak): same S, fewer steps.
+        full = FdtdSolver(m, 1.0, 10.0, active_port="port1")
+        full.run()
+        short = FdtdSolver(m, 1.0, 10.0, active_port="port1", trim_pulse=True)
+        short.run()
+        a, b = s_column(full, F), s_column(short, F)
+        diff = max(float(np.max(np.abs(a[n] - b[n]))) for n in a)
+        # The trimmed run stops right at the -40 dB energy level (the full one only
+        # after its long tail, at about -54 dB): what remains of the wave at
+        # port 2 is cut, 0.004 at the band edges. Run to -80 dB, the two agree
+        # within 3e-4: the trimming itself costs nothing.
+        check("trimmed pulse: same S within 0.005", diff < 0.005,
+              f"max |ΔS| {diff:.5f}; steps {short.step_index} instead of {full.step_index}")
+        check("trimmed pulse: fewer steps", short.step_index < full.step_index)
+        deep = FdtdSolver(m, 1.0, 10.0, active_port="port1", trim_pulse=True)
+        deep.run(end_db=-60.0)
+        c = s_column(deep, F)
+        diff = max(float(np.max(np.abs(a[n] - c[n]))) for n in a)
+        check("trimmed pulse, accuracy -60 dB: same S within 0.001", diff < 0.001,
+              f"max |ΔS| {diff:.5f}, {deep.step_index} steps")
 
         # --- dielectric step: 10 mm of eps_r 4.4 in the middle --------------
         path = os.path.join(folder, "step.step")
@@ -172,6 +271,8 @@ def main():
         # and the eps 4.4 section has ~20 cells per wavelength).
         check("step: lossless |S11|² + |S21|² = 1 within 0.015", np.all(np.abs(power - 1) < 0.015),
               f"{power.min():.4f} .. {power.max():.4f}")
+
+        box_ports(folder)
 
         # --- errors -----------------------------------------------------------
         path = os.path.join(folder, "bad.step")

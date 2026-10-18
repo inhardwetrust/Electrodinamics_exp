@@ -7,6 +7,8 @@
 #   f_min = 1.0                 # GHz
 #   f_max = 5.0                 # GHz
 #   padding = 0.0               # mm, air around the model; 0 = auto
+#   trim_pulse = false          # start / stop the pulse at 1e-4 of its peak, not 1e-7
+#   accuracy = "-40"            # dB: a port's run stops when the field energy fell this far
 #
 #   [mesh]
 #   cells_per_wavelength = 20   # at f_max, in each material
@@ -17,6 +19,8 @@
 from dataclasses import dataclass
 
 from project.object_types import Param
+
+ACCURACY_CHOICES = ("-30", "-40", "-50", "-60")     # dB, like CST's "Accuracy"
 
 C0 = 299_792_458.0          # m/s
 GHZ = 1e9
@@ -49,6 +53,16 @@ SECTIONS = {
                 Param("f_min", "f min", 1.0, minimum=1e-3, unit="GHz"),
                 Param("f_max", "f max", 5.0, minimum=1e-3, unit="GHz"),
                 Param("padding", "padding (0 = auto)", 0.0, minimum=0.0, unit="mm"),
+                Param("trim_pulse", "trim pulse tails", False, boolean=True,
+                      tooltip="Start and end the Gaussian pulse where it is 1e-4 of its peak "
+                              "(-80 dB in energy, center ± 3 τ) instead of 1e-7 (± 4 τ): "
+                              "about a quarter of the pulse length less to compute, the same "
+                              "result. Most useful for narrow bands (long pulses)."),
+                Param("accuracy", "accuracy", "-40", unit="dB", choices=ACCURACY_CHOICES,
+                      tooltip="A port's run stops when the field energy fell this far below "
+                              "its peak (after the pulse). -30: fast, S may drift by ~0.01 at "
+                              "the band edges; -40: the usual; -50 / -60: slower, for narrow "
+                              "bands and resonant structures."),
             ),
             note="auto padding = λ/4 in air at the center frequency",
         ),
@@ -71,6 +85,11 @@ def check_settings(settings):
     sim = settings["simulation"]
     if sim["f_max"] <= sim["f_min"]:
         raise ValueError("f max must be greater than f min")
+
+
+def accuracy_db(settings):
+    """The stop level of a run in dB (negative)."""
+    return float(settings["simulation"]["accuracy"])
 
 
 def padding_m(settings):

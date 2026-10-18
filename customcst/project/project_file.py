@@ -355,7 +355,7 @@ class Project:
             lines.append(f"[{name}]")
             for param in schema.params:
                 comment = f"   # {param.unit}" if param.unit else ""
-                lines.append(f"{param.name} = {self.settings[name][param.name]!r}{comment}")
+                lines.append(f"{param.name} = {_toml_value(self.settings[name][param.name])}{comment}")
             lines.append("")
 
         for name in sorted(self.assignments):
@@ -450,7 +450,9 @@ def _parse_holes(path, section):
 
 def _toml_value(value):
     """Numbers as repr, strings as basic (double-quoted) TOML strings."""
-    return json.dumps(value, ensure_ascii=False) if isinstance(value, str) else repr(value)
+    if isinstance(value, (str, bool)):          # TOML: "text", true / false
+        return json.dumps(value, ensure_ascii=False)
+    return repr(value)
 
 
 def _key(name):

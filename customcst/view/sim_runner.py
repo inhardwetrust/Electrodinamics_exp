@@ -22,9 +22,10 @@ class _Worker(QObject):
     finished = Signal(object)                # SimulationResult or None
     failed = Signal(str)
 
-    def __init__(self, materials, f_min, f_max):
+    def __init__(self, materials, f_min, f_max, trim_pulse=False, end_db=-40.0):
         super().__init__()
         self.materials, self.f_min, self.f_max = materials, f_min, f_max
+        self.trim_pulse, self.end_db = trim_pulse, end_db
         self._stop = False
 
     def stop(self):
@@ -41,14 +42,15 @@ class _Worker(QObject):
             )
 
             for k, active in enumerate(names):
-                solver = FdtdSolver(self.materials, self.f_min, self.f_max, active_port=active)
+                solver = FdtdSolver(self.materials, self.f_min, self.f_max, active_port=active,
+                                    trim_pulse=self.trim_pulse)
                 start = time.perf_counter()
 
                 def report(t, level, active=active, solver=solver):
                     self.progress.emit(active, t, level, solver.pulse.duration)
                     return not self._stop
 
-                status = solver.run(progress=report)
+                status = solver.run(end_db=self.end_db, progress=report)
                 if status == "stopped":
                     self.finished.emit(None)
                     return
@@ -81,11 +83,11 @@ class SimulationRunner(QObject):
     def running(self):
         return self._thread is not None
 
-    def start(self, materials, f_min, f_max):
+    def start(self, materials, f_min, f_max, trim_pulse=False, end_db=-40.0):
         if self.running:
             return
         self._thread = QThread()
-        self._worker = _Worker(materials, f_min, f_max)
+        self._worker = _Worker(materials, f_min, f_max, trim_pulse, end_db)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.progress.connect(self.progress)

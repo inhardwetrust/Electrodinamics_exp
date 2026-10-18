@@ -157,7 +157,8 @@ def solve_port_mode(materials, axis, index, region=None, circle=None):
         return mode
     if len(signal) != 1:
         mode.errors.append(
-            "no signal conductor inside the port" if not signal else
+            "no signal conductor inside the port: every conductor touches its border (make the "
+            "port larger than the signal trace, with the air around it)" if not signal else
             f"{len(signal)} separate signal conductors (multi-conductor ports not supported yet)"
         )
         return mode

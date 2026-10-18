@@ -25,6 +25,37 @@ Only level 0 knows about OpenCASCADE.
 | 5 | `monitors/` | Port V/I -> Z(f), S11; DFT field monitors at chosen frequencies; later far field | S-matrix, Z_in done (`solver/sparams.py`); field monitors next |
 | 6 | `view/` display | Compute grid -> uniform display grid -> slices, heatmaps, arrows (reuse pseudo_cst_3d layers) | geometry view done |
 
+## Plan (open items)
+
+1. **Wideband dielectric losses.**
+   - Today a dielectric's loss is a constant conductivity
+     σ = 2π f_ref ε0 εr tan δ, exact at f_ref only. The effective tan δ
+     falls as f_ref / f: FR4 fitted at 3 GHz loses half its tan δ at
+     6 GHz.
+   - Real laminates have an almost flat tan δ over decades, and εr falls
+     slightly with frequency (FR4: ~4.4 low, ~4.2 at 5-10 GHz). This is
+     the Djordjevic-Sarkar model.
+   - Plan: a dispersive dielectric in the FDTD, a sum of a few Debye terms
+     (auxiliary differential equations per edge), fitted to a flat tan δ
+     and the εr(f) slope over the band.
+   - The material presets get the model parameters (εr and tan δ at a
+     frequency, or wideband).
+   - Check: the effective εr and tan δ extracted from a simulated line
+     over 1-10 GHz.
+   - Until then: put f_ref in the middle of the band (a warning says when
+     it is outside).
+2. **Mesh: narrow gaps and curved faces.**
+   - The merge distance (thin copper collapses onto one line) and the
+     smallest cell are the same `min_step` today. With the automatic value
+     (≈ λ/200) a 0.4 mm coplanar gap gets 2-3 cells: Z0 53 Ω instead of
+     about 62 Ω.
+   - Plan: separate them, so thin copper still merges but gaps get
+     `cells_per_feature` cells.
+   - Fixpoints only from the planar CAD faces, not from tessellation
+     facets of cylinders (spurious "merged lines" with vias).
+3. **Field monitors** (level 5): DFT fields at chosen frequencies on the
+   display grid, then far field.
+
 ## Key decisions
 
 **Where the material values live (level 3).** Not "at grid points": each
@@ -243,6 +274,31 @@ model, in a JSON file: `%APPDATA%\customcst\settings.json`, or
     name. Buttons: New, Duplicate, Delete, Reset built-in.
 - Checks: `checks/check_project_file.py`.
 
+## Accuracy (stop level)
+
+`[simulation] accuracy`, one of "-30", "-40" (the default), "-50" or "-60"
+dB, like CST's "Accuracy". A port's run stops when the field energy fell
+that far below its peak, after the pulse.
+- The progress bar drains down to that level.
+- The level is shown in each run's parameters.
+- Coax check: the trimmed pulse at −60 dB agrees with the full one within
+  4·10⁻⁴, against 4·10⁻³ at −40 dB.
+
+## Trimmed pulse tails (option)
+
+`[simulation] trim_pulse = true`, the "trim pulse tails" check box. It
+starts and ends the Gaussian at center ± 3τ (envelope 1.2·10⁻⁴, −78 dB
+in energy) instead of ± 4τ (10⁻⁷).
+- About a quarter of the pulse is spared. That matters for narrow bands,
+  where the pulse is long.
+- Coax check: 3350 steps instead of 4150.
+- S differs by up to 0.004 at the band edges. That comes from the −40 dB
+  stop level, not from the trimming: the full pulse stops only after its
+  long tail (about −54 dB, a margin by accident), while the trimmed one
+  stops right at −40 dB. Run to −80 dB, the two agree within 3·10⁻⁴.
+- Boolean settings: `Param(boolean=True)` is a check box in the tree and
+  `true` / `false` in the TOML.
+
 ## Simulation progress
 
 A green bar in the status bar, visible while a simulation runs, shows the
@@ -318,6 +374,23 @@ line, outside the model (an extruded circle: easy to draw in SolidWorks).
 - Type `waveport` ("Waveguide port") has no parameters: the reference
   impedance is the line's own Z0.
 
+**Box ports (PCB lines)**: a box on the board edge, outside the model.
+- The port region is the rectangle of its touching face.
+- The touching face is the one of the two opposite faces whose inner
+  points touch the model (a 9 × 9 grid without the face borders). A box as
+  wide as the board touches the board's edges only with its borders, and
+  that is not contact.
+- The box must cover the line's field. The ground must reach its border:
+  the conductor touching the border is ground, the one inside is the
+  signal.
+- Checked on lossless FR4 30 mm lines (`check_waveport`):
+  - microstrip 3 mm: S11 < −48 dB, |S21| 0.995–1.000, phase within 2.2°;
+  - grounded coplanar 1 / 0.4 mm with the side grounds walled to the ground
+    (a dense via fence): S11 < −64 dB, |S21| 0.9997–1.0000.
+- Without the walls the coplanar line loses ~1 %. That is physics: the
+  floating side planes and the ground guide a parallel-plate wave that
+  leaks sideways, which is what a via fence prevents.
+
 **Mesh**: the port plane is the domain end on its side, with no padding.
 The materials are edge-replicated into the CPML, so the line runs on into
 the absorber, as if it were infinitely long.
@@ -376,8 +449,9 @@ Z0 of the staircased coax: 46.0 Ω at 4 cells per feature, 49.5 Ω at 8
 Performance: discretize casts rays along the grid lines
 (`geometry/raycast.py`, see Level 3). The coax went from 26 s to 0.9 s.
 
-Next: microstrip waveguide ports (a rectangular port body), then a real
-SMA STEP.
+Box ports for PCB lines are done (see above). The SMA + board model
+(`models/05_coonector_plus_pcb`) uses a cylinder port on the connector and
+a box port on the board edge.
 
 ## Lumped elements (R, L, C)
 

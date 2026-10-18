@@ -20,12 +20,24 @@ class Param:
     maximum: Optional[float] = None
     unit: str = ""
     choices: tuple = ()             # non-empty: the value is one of these strings
+    boolean: bool = False           # an on / off switch (a check box in the tree)
+    tooltip: str = ""
 
     def validate(self, value):
         """
-        A number within the limits (or one of `choices`), or ValueError
-        naming the parameter.
+        A number within the limits (or one of `choices`, or a bool), or
+        ValueError naming the parameter.
         """
+        if self.boolean:
+            if isinstance(value, bool):
+                return value
+            text = str(value).strip().lower()
+            if text in ("true", "on", "yes", "1"):
+                return True
+            if text in ("false", "off", "no", "0"):
+                return False
+            raise ValueError(f"{self.label}: expected true or false, got {value!r}")
+
         if self.choices:
             text = str(value).strip().lower()
             if text not in self.choices:
@@ -107,7 +119,7 @@ OBJECT_TYPES = {
         ),
         ObjectType(
             "waveport", "Waveguide port",
-            note="cylinder on the end face of a line, outside the model; Z0 = the line's own",
+            note="cylinder (coax) or box (PCB line) on the end face of a line, outside the model; Z0 = the line's own",
             allowed_kinds=("solid",),
         ),
     )

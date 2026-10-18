@@ -91,12 +91,18 @@ class Pulse:
     t0: float           # s
 
     @classmethod
-    def for_band(cls, f_min, f_max):
+    def for_band(cls, f_min, f_max, trim=False):
+        """
+        trim: start and end the pulse at center -+ 3 tau (envelope 1.2e-4 of
+        its peak, -78 dB in energy) instead of -+ 4 tau (1.1e-7): about a
+        quarter of the pulse length less to compute; the tails cut off are
+        below the -40 dB stop level anyway.
+        """
         f0 = 0.5 * (f_min + f_max)
         half_band = 0.5 * (f_max - f_min)
         # Spectrum of exp(-(t/tau)^2) ~ exp(-(pi f tau)^2): 0.1 at +-half_band.
         tau = math.sqrt(math.log(10.0)) / (math.pi * half_band)
-        return cls(f0, tau, 4.0 * tau)
+        return cls(f0, tau, (3.0 if trim else 4.0) * tau)
 
     def __call__(self, t):
         x = (t - self.t0) / self.tau
@@ -116,10 +122,10 @@ class PortRecord:
 
 class FdtdSolver:
     def __init__(self, materials, f_min_ghz, f_max_ghz, active_port=None,
-                 pml_cells=8, courant=0.95):
+                 pml_cells=8, courant=0.95, trim_pulse=False):
         self.materials = materials
         self.pml = int(pml_cells)
-        self.pulse = Pulse.for_band(f_min_ghz * GHZ, f_max_ghz * GHZ)
+        self.pulse = Pulse.for_band(f_min_ghz * GHZ, f_max_ghz * GHZ, trim=trim_pulse)
 
         names = [p.name for p in materials.ports] + [w.name for w in materials.waveports]
         if active_port is not None and active_port not in names:

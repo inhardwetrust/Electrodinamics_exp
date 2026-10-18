@@ -97,6 +97,28 @@ def main():
         check("old file without material -> Custom", partial.get("a").material == "Custom"
               and partial.get("a").values["eps_r"] == 2.0)
 
+        # --- a boolean setting (check box) -------------------------------------
+        flags = Project(step)
+        check("trim_pulse defaults to off", flags.settings["simulation"]["trim_pulse"] is False)
+        flags.set_setting("simulation", "trim_pulse", True)
+        flags.save()
+        text = open(flags.path, encoding="utf-8").read()
+        check("saved as TOML true", "trim_pulse = true" in text)
+        check("read back as True", Project.load(step).settings["simulation"]["trim_pulse"] is True)
+        ok, msg = raises(lambda: flags.set_setting("simulation", "trim_pulse", "maybe"), "true or false")
+        check("not a bool rejected", ok, msg)
+
+        # --- accuracy (a choice) -------------------------------------------------
+        from project.settings import accuracy_db
+        check("accuracy defaults to -40 dB", accuracy_db(Project(step).settings) == -40.0)
+        flags.set_setting("simulation", "accuracy", -60)       # a number is fine too
+        flags.save()
+        back = Project.load(step)
+        check("accuracy saved and read back", back.settings["simulation"]["accuracy"] == "-60"
+              and accuracy_db(back.settings) == -60.0 and 'accuracy = "-60"' in open(back.path, encoding="utf-8").read())
+        ok, msg = raises(lambda: flags.set_setting("simulation", "accuracy", "-35"), "one of")
+        check("accuracy outside the list rejected", ok, msg)
+
         # --- material library -------------------------------------------------
         lib = Project(step)
         check("built-in presets", {"Default", "FR4"} <= set(lib.materials), str(list(lib.materials)))
