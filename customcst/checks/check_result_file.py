@@ -28,7 +28,7 @@ from geometry.step_io import read_step                                   # noqa:
 from project.project_file import Project                                 # noqa: E402
 from solver.result_file import (                                         # noqa: E402
     SimulationResult, delete_result, fingerprint, legacy_path, list_results, read_result,
-    rename_result, results_dir, save_result, write_result,
+    format_duration, rename_result, results_dir, save_result, write_result,
 )
 
 FAILED = []
@@ -48,6 +48,7 @@ def make_result(scale=1.0):
     result.z_in["port1"] = 50 + 1j * f / 1e9
     result.info = ["port1: converged, 1000 steps", "Ω ε test"]
     result.params = {"simulation": {"f_min": 1.0, "f_max": 5.0}, "grid": "10 × 10 × 10", "vias": 3}
+    result.elapsed = 83.4
     return result
 
 
@@ -78,6 +79,10 @@ def main():
         check("name and params", back.name == "Run 1" and back.params == first.params,
               f"{back.name} {back.params}")
         check("fingerprint kept", back.fingerprint == fingerprint(project))
+        check("run time kept", back.elapsed == 83.4 and format_duration(back.elapsed) == "1 min 23 s",
+              format_duration(back.elapsed))
+        check("time formats", format_duration(12.34) == "12.3 s" and format_duration(3725) == "1 h 02 min"
+              and format_duration(float("nan")) == "")
 
         time.sleep(1.1)                              # a later save time
         second = make_result(scale=2.0)

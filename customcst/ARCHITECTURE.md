@@ -274,6 +274,22 @@ model, in a JSON file: `%APPDATA%\customcst\settings.json`, or
     name. Buttons: New, Duplicate, Delete, Reset built-in.
 - Checks: `checks/check_project_file.py`.
 
+## Excited ports
+
+`[simulation] excite` is "all" (the default: one run per port, the full
+S-matrix) or one port's name: a single run that gives that port's column
+of S.
+- Exciting port k gives S1k, S2k, ...: for a connector + board, S11 and
+  S21 in half the time.
+- The other ports still absorb as matched loads. A waveguide port is a
+  perfect one (the line runs into the CPML), a lumped port is its R.
+- The tree has an "excite" row; double click lists "all ports" and the
+  model's ports.
+- A name that is no longer a valid port stops Simulate with a message.
+- In Results the ticked traces default to the excited column.
+- The .sNp export refuses a partial matrix and says how to fix it.
+- The run's parameters list the excited port.
+
 ## Accuracy (stop level)
 
 `[simulation] accuracy`, one of "-30", "-40" (the default), "-50" or "-60"
@@ -320,6 +336,8 @@ file next to the STEP: model.step -> `model.results/<save time>.npz`
 - A run holds frequencies, ports, reference impedances, S[j, k, f],
   Z_in, the run's info lines, its name (renamable; "Run N" by default),
   the save time and the fingerprint of the inputs.
+- It also holds the wall-clock time the whole run took (all excited
+  ports; `elapsed`, NaN in older files), shown as the run's "time" row.
 - It also holds a snapshot of the parameters it was computed with:
   [simulation] and [mesh] settings, the grid (cells and steps), the
   dielectric materials, the number of vias and the ports. The snapshot is

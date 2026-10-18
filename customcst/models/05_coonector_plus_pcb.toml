@@ -4,6 +4,9 @@
 f_min = 5.0   # GHz
 f_max = 6.0   # GHz
 padding = 0.0   # mm
+trim_pulse = true
+accuracy = "-30"   # dB
+excite = "inport"
 
 [mesh]
 cells_per_wavelength = 20.0

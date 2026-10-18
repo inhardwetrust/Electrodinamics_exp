@@ -122,6 +122,8 @@ class ResultsPanel(QWidget):
         n = max((len(r.ports) for r in self.runs), default=0)
         if n != self._ports:
             self._rebuild_trace_boxes(n)
+        if self.runs and not any(jk in self.primary.s for jk in self._checked()):
+            self._default_traces()
 
         if self.runs:
             f = self.primary.frequencies
@@ -156,6 +158,14 @@ class ResultsPanel(QWidget):
                 self.trace_row.addWidget(box)
                 self._trace_boxes[j, k] = box
         self._ports = n
+
+    def _default_traces(self):
+        """Tick the column of the first excited port of the primary run (S11, S21 ...)."""
+        columns = sorted({k for _, k in self.primary.s})
+        for (j, k), box in self._trace_boxes.items():
+            box.blockSignals(True)
+            box.setChecked(bool(columns) and k == columns[0])
+            box.blockSignals(False)
 
     def _marker_frequency(self):
         if not self.runs:
@@ -287,6 +297,13 @@ class ResultsPanel(QWidget):
                                 "Ports have different R; Touchstone v1 needs one reference. "
                                 f"Writing with R = {r.resistances[0]:g} Ω.")
         n = len(r.ports)
+        missing = [f"S{j + 1}{k + 1}" for j in range(n) for k in range(n) if (j, k) not in r.s]
+        if missing:
+            QMessageBox.warning(self, "Touchstone",
+                                f"{r.name} has no {', '.join(missing)}: only some ports were excited. "
+                                "A .sNp file needs the full matrix: set Simulation > excite to all "
+                                "ports and run again.")
+            return
         safe = "".join(c if c.isalnum() or c in "-_ " else "_" for c in r.name).strip() or "result"
         start = os.path.join(self.default_dir, f"{safe}.s{n}p")
         path, _ = QFileDialog.getSaveFileName(self, "Save Touchstone", start, f"Touchstone (*.s{n}p)")

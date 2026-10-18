@@ -9,6 +9,7 @@
 #   padding = 0.0               # mm, air around the model; 0 = auto
 #   trim_pulse = false          # start / stop the pulse at 1e-4 of its peak, not 1e-7
 #   accuracy = "-40"            # dB: a port's run stops when the field energy fell this far
+#   excite = "all"              # "all" ports, one run each, or one port's name (one run)
 #
 #   [mesh]
 #   cells_per_wavelength = 20   # at f_max, in each material
@@ -21,6 +22,7 @@ from dataclasses import dataclass
 from project.object_types import Param
 
 ACCURACY_CHOICES = ("-30", "-40", "-50", "-60")     # dB, like CST's "Accuracy"
+EXCITE_ALL = "all"
 
 C0 = 299_792_458.0          # m/s
 GHZ = 1e9
@@ -63,6 +65,10 @@ SECTIONS = {
                               "its peak (after the pulse). -30: fast, S may drift by ~0.01 at "
                               "the band edges; -40: the usual; -50 / -60: slower, for narrow "
                               "bands and resonant structures."),
+                Param("excite", "excite", EXCITE_ALL, text=True,
+                      tooltip="Which ports are excited, one run each. All ports: the full "
+                              "S-matrix. One port: one run (faster), only its column of S "
+                              "(e.g. S11, S21); the other ports still absorb as matched loads."),
             ),
             note="auto padding = λ/4 in air at the center frequency",
         ),

@@ -119,6 +119,15 @@ def main():
         ok, msg = raises(lambda: flags.set_setting("simulation", "accuracy", "-35"), "one of")
         check("accuracy outside the list rejected", ok, msg)
 
+        # --- excite (a port name or "all") --------------------------------------
+        check("excite defaults to all", Project(step).settings["simulation"]["excite"] == "all")
+        flags.set_setting("simulation", "excite", "  port1 ")
+        flags.save()
+        check("excite saved and read back (trimmed)",
+              Project.load(step).settings["simulation"]["excite"] == "port1")
+        ok, msg = raises(lambda: flags.set_setting("simulation", "excite", "   "), "must not be empty")
+        check("empty excite rejected", ok, msg)
+
         # --- material library -------------------------------------------------
         lib = Project(step)
         check("built-in presets", {"Default", "FR4"} <= set(lib.materials), str(list(lib.materials)))

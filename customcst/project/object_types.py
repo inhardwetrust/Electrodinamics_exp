@@ -21,6 +21,7 @@ class Param:
     unit: str = ""
     choices: tuple = ()             # non-empty: the value is one of these strings
     boolean: bool = False           # an on / off switch (a check box in the tree)
+    text: bool = False              # free text (e.g. a body name), not empty
     tooltip: str = ""
 
     def validate(self, value):
@@ -28,6 +29,12 @@ class Param:
         A number within the limits (or one of `choices`, or a bool), or
         ValueError naming the parameter.
         """
+        if self.text:
+            text = str(value).strip()
+            if not text:
+                raise ValueError(f"{self.label}: must not be empty")
+            return text
+
         if self.boolean:
             if isinstance(value, bool):
                 return value

@@ -7,7 +7,8 @@
 #
 # A run file holds: frequencies (Hz), port names and reference impedances,
 # the S-matrix s[j, k, f], Z_in[k, f] (NaN where missing), the run's info
-# lines and comment, its name (the user can rename it), the save time, a
+# lines and comment, its name (the user can rename it), the save time, the
+# wall-clock time the whole run took, a
 # snapshot of the parameters it was computed with (JSON: settings, grid,
 # materials, vias, ports) and a fingerprint of the inputs.
 #
@@ -44,6 +45,19 @@ class SimulationResult:
         self.name = ""                  # shown in the Results list (renamable)
         self.params = {}                # what it was computed with (shown, not used)
         self.path = ""                  # its file, "" = not saved
+        self.elapsed = float("nan")     # wall-clock seconds of the whole run, NaN = unknown
+
+
+def format_duration(seconds):
+    """12.3 s, 4 min 05 s, 1 h 02 min; "" when unknown."""
+    if not np.isfinite(seconds):
+        return ""
+    if seconds < 60:
+        return f"{seconds:.1f} s"
+    minutes, s = divmod(int(round(seconds)), 60)
+    if minutes < 60:
+        return f"{minutes} min {s:02d} s"
+    return f"{minutes // 60} h {minutes % 60:02d} min"
 
 
 def results_dir(step_path):
@@ -115,6 +129,7 @@ def write_result(path, result):
         saved=np.array(result.saved),
         name=np.array(result.name),
         params=np.array(json.dumps(result.params, ensure_ascii=False)),
+        elapsed=np.array(float(result.elapsed)),
     )
     os.replace(temp, path)
     result.path = path
@@ -142,6 +157,8 @@ def read_result(path):
             result.name = str(data["name"])
         if "params" in data:
             result.params = json.loads(str(data["params"]))
+        if "elapsed" in data:
+            result.elapsed = float(data["elapsed"])
     result.path = path
     return result
 

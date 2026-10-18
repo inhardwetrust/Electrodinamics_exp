@@ -32,8 +32,9 @@ from project.project_file import UP_AXES, Project, ProjectError
 from project.settings import SECTIONS
 from view.geometry_view import GeometryView
 from view.results_panel import ResultsPanel
-from project.settings import accuracy_db
-from solver.result_file import delete_result, fingerprint, list_results, rename_result, save_result
+from project.settings import EXCITE_ALL, accuracy_db
+from solver.result_file import (delete_result, fingerprint, format_duration, list_results,
+                                rename_result, save_result)
 from view.sim_runner import SimulationRunner
 
 MM = 1e-3
@@ -55,6 +56,8 @@ def _fmt_point(values):
 def _fmt_value(value):
     if isinstance(value, bool):
         return "on" if value else "off"
+    if value == "all":                      # the excite setting
+        return "all ports"
     return value if isinstance(value, str) else f"{value:.6g}"
 
 
@@ -398,7 +401,17 @@ class MainWindow(QMainWindow):
             return self.materials.errors[0]
         if not self.materials.ports and not self.materials.waveports:
             return "no valid port"
+        excite = self.project.settings["simulation"]["excite"]
+        if excite != EXCITE_ALL and excite not in self._port_list():
+            return (f"the excited port {excite!r} is not a valid port of the model "
+                    f"(Simulation > excite: choose another one, or all ports)")
         return None
+
+    def _port_list(self):
+        """Names of the valid ports in S-matrix order (lumped, then waveguide)."""
+        if self.materials is None:
+            return []
+        return [p.name for p in self.materials.ports] + [w.name for w in self.materials.waveports]
 
     def _simulate(self):
         problem = self._simulation_problem()
@@ -411,14 +424,16 @@ class MainWindow(QMainWindow):
         self.simulate_action.setEnabled(False)
         self.stop_action.setEnabled(True)
         self.results.set_message("running...")
-        self._n_ports = len(self.materials.ports) + len(self.materials.waveports)
-        self._port_names = [p.name for p in self.materials.ports] + [w.name for w in self.materials.waveports]
+        excite = sim["excite"]
+        self._port_names = self._port_list() if excite == EXCITE_ALL else [excite]
+        self._n_ports = len(self._port_names)
         self._end_db = accuracy_db(self.project.settings)
         self.progress_bar.setRange(0, int(-10 * self._end_db))
         self.progress_bar.setValue(self.progress_bar.maximum())
         self.progress_bar.setFormat("starting...")
         self.progress_bar.setVisible(True)
-        self.runner.start(self.materials, sim["f_min"], sim["f_max"], sim["trim_pulse"], self._end_db)
+        self.runner.start(self.materials, sim["f_min"], sim["f_max"], sim["trim_pulse"], self._end_db,
+                          None if excite == EXCITE_ALL else [excite])
 
     def _sim_progress(self, port, t, level, pulse_duration):
         self.statusBar().showMessage(
@@ -448,7 +463,8 @@ class MainWindow(QMainWindow):
         result.params = self._run_params
         try:
             save_result(self.geometry.source, result)
-            self.statusBar().showMessage(f"simulation finished: {result.name}", 6000)
+            self.statusBar().showMessage(
+                f"simulation finished: {result.name}, {format_duration(result.elapsed)}", 6000)
         except OSError as error:
             result.name = result.name or "unsaved run"
             self.statusBar().showMessage(f"simulation finished, NOT saved: {error}", 10000)
@@ -469,7 +485,9 @@ class MainWindow(QMainWindow):
                     f"εr {v['eps_r']:g}, tan δ {v['tan_d']:g}"
         ports = [f"{p.name} {p.resistance:.4g} Ω" for p in self.materials.ports] + \
                 [f"{w.name} {w.resistance:.4g} Ω (line)" for w in self.materials.waveports]
+        excite = self.project.settings["simulation"]["excite"]
         return {
+            "excite": "all ports" if excite == EXCITE_ALL else excite,
             "simulation": dict(self.project.settings["simulation"]),
             "mesh": dict(self.project.settings["mesh"]),
             "grid": f"{' × '.join(str(n) for n in grid.shape)} = {grid.cell_count:,}".replace(",", " ")
@@ -1157,8 +1175,9 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _run_rows(run):
         p = run.params
+        took = [("time", format_duration(run.elapsed))] if format_duration(run.elapsed) else []
         if not p:
-            return [("parameters", "not recorded (an older run)")] + [("run", line) for line in run.info]
+            return [("parameters", "not recorded (an older run)")] + took + [("run", line) for line in run.info]
         sim, mesh = p.get("simulation", {}), p.get("mesh", {})
         rows = [
             ("band", f"{sim.get('f_min', '?'):g}–{sim.get('f_max', '?'):g} GHz, padding {sim.get('padding', 0):g} mm"
@@ -1169,8 +1188,9 @@ class MainWindow(QMainWindow):
             ("grid", p.get("grid", "")),
         ]
         rows += [(f"  {name}", text) for name, text in p.get("dielectrics", {}).items()]
-        rows += [("vias", str(p.get("vias", 0))), ("ports", ", ".join(p.get("ports", [])))]
-        rows += [("run", line) for line in run.info]
+        rows += [("vias", str(p.get("vias", 0))), ("ports", ", ".join(p.get("ports", []))),
+                 ("excited", p.get("excite", "all ports"))]
+        rows += took + [("run", line) for line in run.info]
         return rows
 
     def _run_by_key(self, key):
@@ -1333,6 +1353,9 @@ class MainWindow(QMainWindow):
                  else SECTIONS[owner].param(name))
         if param.boolean:
             return                                  # the check box is the editor
+        if role == "setting" and name == "excite":
+            self._excite_menu(item)
+            return
         if not param.choices:
             self.tree.editItem(item, 1)
             return
@@ -1346,6 +1369,27 @@ class MainWindow(QMainWindow):
             action.triggered.connect(lambda _=False, c=choice: item.setText(1, c))
         rect = self.tree.visualItemRect(item)
         menu.exec(self.tree.viewport().mapToGlobal(rect.bottomLeft()))
+
+    def _excite_menu(self, item):
+        """Simulation > excite: all ports, or one of the model's ports."""
+        current = self.project.settings["simulation"]["excite"]
+        menu = QMenu(self)
+        for value, text in [(EXCITE_ALL, "all ports (full S-matrix)")] + \
+                [(n, f"{n} only") for n in self._port_list()]:
+            action = menu.addAction(text)
+            action.setCheckable(True)
+            action.setChecked(value == current)
+            action.triggered.connect(lambda _=False, v=value: self._set_excite(v))
+        if current != EXCITE_ALL and current not in self._port_list():
+            menu.addSeparator()
+            menu.addAction(f"{current} (not a valid port now)").setEnabled(False)
+        rect = self.tree.visualItemRect(item)
+        menu.exec(self.tree.viewport().mapToGlobal(rect.bottomLeft()))
+
+    def _set_excite(self, value):
+        self.project.set_setting("simulation", "excite", value)
+        self._fill_section(self._top_item("section", "simulation"))
+        self._after_edit()
 
     def _material_menu(self, item, body_name):
         """Pick a dielectric's material: a preset of the library, or its own values."""

@@ -22,16 +22,18 @@ class _Worker(QObject):
     finished = Signal(object)                # SimulationResult or None
     failed = Signal(str)
 
-    def __init__(self, materials, f_min, f_max, trim_pulse=False, end_db=-40.0):
+    def __init__(self, materials, f_min, f_max, trim_pulse=False, end_db=-40.0, excite=None):
         super().__init__()
         self.materials, self.f_min, self.f_max = materials, f_min, f_max
         self.trim_pulse, self.end_db = trim_pulse, end_db
+        self.excite = excite            # port names to excite, None = all
         self._stop = False
 
     def stop(self):
         self._stop = True
 
     def run(self):
+        begin = time.perf_counter()
         try:
             ports = list(self.materials.ports) + list(self.materials.waveports)
             names = [p.name for p in ports]
@@ -42,6 +44,8 @@ class _Worker(QObject):
             )
 
             for k, active in enumerate(names):
+                if self.excite is not None and active not in self.excite:
+                    continue                    # not excited: its column of S stays empty
                 solver = FdtdSolver(self.materials, self.f_min, self.f_max, active_port=active,
                                     trim_pulse=self.trim_pulse)
                 start = time.perf_counter()
@@ -64,6 +68,7 @@ class _Worker(QObject):
                     f"{time.perf_counter() - start:.1f} s, {int(np.prod(solver.shape)):,} cells with PML"
                 )
 
+            result.elapsed = time.perf_counter() - begin
             self.finished.emit(result)
         except Exception as error:          # report anything to the UI
             self.failed.emit(f"{type(error).__name__}: {error}")
@@ -83,11 +88,11 @@ class SimulationRunner(QObject):
     def running(self):
         return self._thread is not None
 
-    def start(self, materials, f_min, f_max, trim_pulse=False, end_db=-40.0):
+    def start(self, materials, f_min, f_max, trim_pulse=False, end_db=-40.0, excite=None):
         if self.running:
             return
         self._thread = QThread()
-        self._worker = _Worker(materials, f_min, f_max, trim_pulse, end_db)
+        self._worker = _Worker(materials, f_min, f_max, trim_pulse, end_db, excite)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.progress.connect(self.progress)
