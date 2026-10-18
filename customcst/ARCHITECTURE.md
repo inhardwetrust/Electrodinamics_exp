@@ -274,6 +274,24 @@ model, in a JSON file: `%APPDATA%\customcst\settings.json`, or
     name. Buttons: New, Duplicate, Delete, Reset built-in.
 - Checks: `checks/check_project_file.py`.
 
+## Solver speed (numba kernels)
+
+`solver/fdtd_kernels.py`: the H and E updates (both curl terms, their
+CPML, the update) compiled with numba, one pass per field component, the
+outer index spread over the CPU cores; also the energy sum of the stop
+check.
+- CPML memory only in the absorbing layers: a slot map per axis (-1 =
+  outside) and psi with that axis compressed.
+- Same float32 arithmetic in the same order as the numpy path:
+  `check_kernels` finds every field value and port record identical.
+- Sources, lumped elements and port records stay in numpy (small).
+- Measured on a Ryzen 7 5825U (8 cores), model 07 (1.05 M cells with the
+  CPML): numpy 60 ms/step (18 M cells/s), kernels 7.3 ms/step (~140 M
+  cells/s), ~8x; the energy check 34 -> 1.6 ms.
+- Without numba, or with CUSTOMCST_NUMPY=1, the numpy path runs. The first
+  run compiles the kernels (a few seconds); numba caches them in
+  `solver/__pycache__`.
+
 ## Excited ports
 
 `[simulation] excite` is "all" (the default: one run per port, the full

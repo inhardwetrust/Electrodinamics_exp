@@ -61,4 +61,8 @@ Context for future Claude sessions. Read this first, then `ARCHITECTURE.md`.
   "3D View" (the VisPy canvas) and "Results" (ResultsPanel). After a run,
   the window switches to Results. The status bar stays at the bottom.
 - Only OCP code goes in `geometry/step_io.py`; everything above it is numpy.
+- The FDTD hot loop runs as numba kernels (`solver/fdtd_kernels.py`) when
+  numba is installed. `CUSTOMCST_NUMPY=1` forces the numpy path; after any
+  change to the update equations run `checks/check_kernels.py` (both paths
+  must stay bit-identical).
 - Git: never `git add .` at the repo root (see the pseudo_cst_3d notes).

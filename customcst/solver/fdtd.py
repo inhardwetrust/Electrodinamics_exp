@@ -65,6 +65,11 @@
 #   L: G = dt/2L, I_hist = G V(n) + I_L(n).
 #   series: Z = R + 2L/dt + dt/2C, V_hist = -(Z_L I + V_L) + (Z_C I + V_C),
 #           G = 1/Z, I_hist = -V_hist / Z.
+#
+# Speed: with numba installed the H and E updates (curls, CPML, update) run
+# as compiled kernels on all CPU cores (solver/fdtd_kernels.py), 4-8x the
+# numpy path; sources, lumped elements and port records stay in numpy.
+# CUSTOMCST_NUMPY=1 forces the numpy path.
 
 import math
 from dataclasses import dataclass, field
@@ -72,6 +77,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from project.settings import C0, GHZ
+from solver import fdtd_kernels as kernels
 
 EPS0 = 8.8541878128e-12
 MU0 = 4e-7 * math.pi
@@ -455,12 +461,34 @@ class FdtdSolver:
 
         self.cp_h = {}
         self.cp_e = {}
+        self._fast = kernels.AVAILABLE
+        if self._fast:
+            es = [(nx, ny + 1, nz + 1), (nx + 1, ny, nz + 1), (nx + 1, ny + 1, nz)]   # E shapes
+            for f in range(3):
+                for d in range(3):
+                    if d != f:
+                        self.cp_h[f, d] = self._compressed(d, centers[d], hs[f])
+                        self.cp_e[f, d] = self._compressed(d, nodes[d], es[f])
+            self._inv_d1 = [(1.0 / d).astype(np.float32) for d in self.d]
+            self._inv_dd1 = [(1.0 / dd).astype(np.float32) for dd in self.dd]
+            return
         for f in range(3):              # field component
             for d in range(3):          # derivative direction
                 if d == f:
                     continue
                 self.cp_h[f, d] = self._slabs(d, centers[d], hs[f])
                 self.cp_e[f, d] = self._slabs(d, nodes[d], e_interior_shape(f))
+
+    def _compressed(self, axis, coords, shape):
+        """(slot map, a, b, psi) for the kernels: psi only in the absorbing layers."""
+        a, b = self._profile(axis, coords)
+        active = a != 0.0
+        slots = np.full(len(coords), -1, dtype=np.int64)
+        slots[active] = np.arange(int(active.sum()))
+        pshape = list(shape)
+        pshape[axis] = max(int(active.sum()), 1)
+        return (slots, a.astype(np.float32), b.astype(np.float32),
+                np.zeros(pshape, dtype=np.float32))
 
     @staticmethod
     def _apply_cpml(derivative, slabs):
@@ -481,9 +509,13 @@ class FdtdSolver:
                   np.zeros((nx + 1, ny + 1, nz), f32)]
         self.h = [np.zeros((nx + 1, ny, nz), f32), np.zeros((nx, ny + 1, nz), f32),
                   np.zeros((nx, ny, nz + 1), f32)]
-        for slabs in list(self.cp_h.values()) + list(self.cp_e.values()):
-            for _, _, _, psi in slabs:
+        if self._fast:
+            for _, _, _, psi in list(self.cp_h.values()) + list(self.cp_e.values()):
                 psi[...] = 0.0
+        else:
+            for slabs in list(self.cp_h.values()) + list(self.cp_e.values()):
+                for _, _, _, psi in slabs:
+                    psi[...] = 0.0
         self.step_index = 0
         self.records = [PortRecord(r.name) for r in self.records]
         self._reset_elements()
@@ -509,6 +541,12 @@ class FdtdSolver:
 
     def _update_h(self):
         e, h = self.e, self.h
+        if self._fast:
+            inv, cp, db = self._inv_d1, self.cp_h, self.db
+            kernels.update_hx(h[0], e[1], e[2], db[0], inv[1], inv[2], *cp[0, 1], *cp[0, 2])
+            kernels.update_hy(h[1], e[2], e[0], db[1], inv[2], inv[0], *cp[1, 2], *cp[1, 0])
+            kernels.update_hz(h[2], e[0], e[1], db[2], inv[0], inv[1], *cp[2, 0], *cp[2, 1])
+            return
         # H_f -= Db (d E_w / d_v - d E_v / d_w) for (f, v, w) cyclic.
         for f, v, w in ((0, 1, 2), (1, 2, 0), (2, 0, 1)):
             d1 = self._diff(e[w], v, self.inv_d[v])
@@ -518,6 +556,24 @@ class FdtdSolver:
             h[f] -= self.db[f] * (d1 - d2)
 
     def _update_e(self):
+        e, h = self.e, self.h
+        if self._fast:
+            inv, cp, ca, cb = self._inv_dd1, self.cp_e, self.ca, self.cb
+            kernels.update_ex(e[0], h[1], h[2], ca[0], cb[0], inv[1], inv[2], *cp[0, 1], *cp[0, 2])
+            kernels.update_ey(e[1], h[2], h[0], ca[1], cb[1], inv[2], inv[0], *cp[1, 2], *cp[1, 0])
+            kernels.update_ez(e[2], h[0], h[1], ca[2], cb[2], inv[0], inv[1], *cp[2, 0], *cp[2, 1])
+        else:
+            self._update_e_numpy()
+
+        if self._sources:
+            vs = np.float32(self.pulse((self.step_index + 0.5) * self.dt))
+            for axis, index, coef in self._sources:
+                e[axis][index] -= coef * vs
+
+        if self._elements:
+            self._update_elements()
+
+    def _update_e_numpy(self):
         e, h = self.e, self.h
         # E_f = Ca E_f + Cb (d H_w / d_v - d H_v / d_w), interior edges only.
         for f, v, w in ((0, 1, 2), (1, 2, 0), (2, 0, 1)):
@@ -531,14 +587,6 @@ class FdtdSolver:
             target = e[f][interior]
             target *= self.ca[f][interior]
             target += self.cb[f][interior] * (d1 - d2)
-
-        if self._sources:
-            vs = np.float32(self.pulse((self.step_index + 0.5) * self.dt))
-            for axis, index, coef in self._sources:
-                e[axis][index] -= coef * vs
-
-        if self._elements:
-            self._update_elements()
 
     @staticmethod
     def _cut(f, d, other):
@@ -564,6 +612,11 @@ class FdtdSolver:
 
     def energy(self):
         """Total field energy (J) inside the meshed domain + PML."""
+        if self._fast:
+            if not hasattr(self, "_energy_weight"):
+                self._energy_weight = [self.eps[a] * self._e_volume(a) for a in range(3)]
+            we = sum(kernels.weighted_square_sum(self.e[a], self._energy_weight[a]) for a in range(3))
+            return 0.5 * we
         we = sum(np.sum(self.eps[a] * self.e[a].astype(np.float64) ** 2 * self._e_volume(a))
                  for a in range(3))
         return 0.5 * we      # electric part: enough for a decay criterion
