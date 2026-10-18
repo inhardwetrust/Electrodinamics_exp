@@ -2,3 +2,4 @@ OldVersions/
 screen*.png
 *.tmp
 *.npz
+*.results/

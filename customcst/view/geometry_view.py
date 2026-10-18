@@ -34,6 +34,8 @@ GHOST_ALPHA = 0.12          # bodies while the solver's materials are shown
 GHOST_GRAY = np.array([0.6, 0.6, 0.65])
 MESH_COLOR = (0.55, 0.8, 1.0, 0.55)
 PEC_EDGE_COLOR = (1.0, 0.95, 0.1, 1.0)            # bright yellow
+HOLE_COLOR = (0.2, 1.0, 1.0, 1.0)                  # bright cyan: highlighted holes
+VIA_COLOR = (0.95, 0.78, 0.25)                     # gold: vias assigned to holes
 PORT_EDGE_COLOR = (1.0, 0.2, 0.9, 1.0)            # magenta
 ELEMENT_EDGE_COLOR = (1.0, 1.0, 1.0, 1.0)         # white: no body or edge uses it
 ELEMENT_COLOR = (1.0, 1.0, 1.0, 1.0)
@@ -57,6 +59,20 @@ def _skip_redundant_qt_swap(canvas):
 
     if isinstance(canvas._backend, QOpenGLWidget):
         canvas._backend._vispy_swap_buffers = lambda: None
+
+
+def _perpendicular_basis(axis):
+    axis = np.asarray(axis, dtype=np.float64)
+    helper = np.array([1.0, 0.0, 0.0]) if abs(axis[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    e1 = np.cross(axis, helper)
+    e1 /= np.linalg.norm(e1)
+    return e1, np.cross(axis, e1)
+
+
+def _circle_segments(center, e1, e2, radius, n=48):
+    t = np.linspace(0, 2 * np.pi, n + 1)
+    points = center + radius * (np.cos(t)[:, None] * e1 + np.sin(t)[:, None] * e2)
+    return np.repeat(points, 2, axis=0)[1:-1]          # consecutive pairs
 
 
 def box_segments(lo, hi):
@@ -298,10 +314,17 @@ class GeometryView:
                                              width=1.5, parent=self.view.scene)
         self.domain_box.visible = False
         self.port_root = scene.Node(parent=self.view.scene)   # drawn last, on top
+        # Highlighted holes: their outline plus a halo ring (a 0.3 mm via is
+        # invisible at board scale), drawn through the bodies.
+        self.hole_lines = scene.visuals.Line(connect="segments", color=HOLE_COLOR, width=2.5,
+                                             parent=self.view.scene)
+        self.hole_lines.set_gl_state("translucent", depth_test=False)
+        self.hole_lines.visible = False
         self.box = scene.visuals.Line(connect="segments", color=BOX_COLOR, parent=self.view.scene)
         self.axes = scene.visuals.XYZAxis(width=3, parent=self.view.scene)
 
         self._bodies = {}
+        self._vias = []                 # _BodyVisual of the assigned vias (not STEP bodies)
         self._visible = {}
         self.selected = None
         self.xray = False
@@ -351,7 +374,7 @@ class GeometryView:
         direction = self.view.camera.transform.map(self._light_eye)[:3]
         direction = direction / max(np.linalg.norm(direction), 1e-12)
 
-        for visual in self._bodies.values():
+        for visual in list(self._bodies.values()) + self._vias:
             visual.mesh.shading_filter.light_dir = -direction
 
     # =====================================================
@@ -557,6 +580,40 @@ class GeometryView:
         self._visible[name] = bool(visible)
         self._restyle()
 
+    def set_vias(self, bodies):
+        """The PEC cylinders of the assigned vias (geometry.holes.via_body), as gold pins."""
+        for visual in self._vias:
+            visual.mesh.parent = None
+            visual.edges.parent = None
+        self._vias = []
+        for body in bodies:
+            visual = _BodyVisual(body, self.root)
+            visual.base_color = np.array(VIA_COLOR)
+            self._vias.append(visual)
+        self._restyle()
+        self._update_light()
+
+    def highlight_holes(self, holes):
+        """holes: geometry.holes.Hole list (empty: none)."""
+        if not holes:
+            self.hole_lines.visible = False
+            self.canvas.update()
+            return
+        size = float(np.max(self._bounds[1] - self._bounds[0])) or 1.0
+        segments = []
+        for hole in holes:
+            start, end = hole.start / SCENE_UNIT, hole.end / SCENE_UNIT
+            r = hole.radius / SCENE_UNIT
+            e1, e2 = _perpendicular_basis(hole.axis)
+            for center, radius in ((start, r), (end, r), (0.5 * (start + end), max(3 * r, 0.012 * size))):
+                segments.append(_circle_segments(center, e1, e2, radius))
+            for angle in np.linspace(0, 2 * np.pi, 4, endpoint=False):
+                offset = r * (np.cos(angle) * e1 + np.sin(angle) * e2)
+                segments.append(np.array([start + offset, end + offset]))
+        self.hole_lines.set_data(pos=np.concatenate(segments).astype(np.float32))
+        self.hole_lines.visible = True
+        self.canvas.update()
+
     def select(self, name):
         self.selected = name
         self._restyle()
@@ -592,4 +649,7 @@ class GeometryView:
                 show_edges=self.show_edges,
                 ghost=self.ghost,
             )
+        for visual in self._vias:
+            visual.set_style(visible=True, selected=False, xray=self.xray,
+                             show_edges=self.show_edges, ghost=self.ghost)
         self.canvas.update()

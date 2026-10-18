@@ -78,6 +78,8 @@ MU0 = 4e-7 * math.pi
 ETA0 = MU0 * C0
 
 PML_GRADING = 3
+END_DB = -40.0          # a run stops when the field energy fell this far below its peak ...
+MAX_PULSES = 30.0       # ... or after this many pulse lengths
 PML_SIGMA_FACTOR = 0.8
 PML_ALPHA_FACTOR = 0.05
 
@@ -571,13 +573,13 @@ class FdtdSolver:
             self._vol_cache[axis] = vol.astype(np.float64)
         return self._vol_cache[axis]
 
-    def run(self, max_time=None, end_db=-40.0, check_every=50, progress=None):
+    def run(self, max_time=None, end_db=END_DB, check_every=50, progress=None):
         """
         Steps until the energy fell end_db below its peak (after the pulse),
-        or max_time (s; default 30 pulse lengths). progress(t, level_db) is
-        called at each check; returning False stops the run.
+        or max_time (s; default MAX_PULSES pulse lengths). progress(t,
+        level_db) is called at each check; returning False stops the run.
         """
-        max_time = max_time or 30.0 * self.pulse.duration
+        max_time = max_time or MAX_PULSES * self.pulse.duration
         peak = 0.0
         while self.t < max_time:
             self.step(check_every)
@@ -635,3 +637,4 @@ def _dual(d):
     out[:-1] += 0.5 * d
     out[1:] += 0.5 * d
     return out
+

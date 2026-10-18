@@ -23,6 +23,11 @@
 # values are copied into the body, the library wins on load) or "Custom"
 # (its own values; also what a file without the key means).
 #
+#   [holes.diameters]   # through holes (geometry/holes.py) by drill, mm
+#   "0.4" = "via"       # "via": a PEC cylinder fills the hole; "none": open
+#   [holes.single]      # one hole by its center, mm; beats the diameter rule
+#   "-6,0,0.8" = "none"
+#
 #   [simulation] / [mesh]: project-wide settings, see settings.py
 #
 # Bodies without a section have no type yet. Sections whose body is missing
@@ -35,6 +40,10 @@ import os
 import tomllib
 
 from project.materials import BUILTIN, CUSTOM, MATERIAL_PARAMS, builtin_library
+
+HOLE_KINDS = ("via", "none")
+HOLE_DIAMETER_TOL_MM = 1e-4     # a rule's drill matches a hole within 0.1 um
+HOLE_CENTER_TOL_MM = 1e-3       # a single rule matches a hole center within 1 um
 from project.object_types import CONDUCTOR_TYPES, OBJECT_TYPES, Assignment
 from project.ports import port_geometry
 from project.waveports import waveport_geometry
@@ -52,11 +61,15 @@ def project_path(step_path):
 
 
 class Project:
-    def __init__(self, step_path, assignments=None, up="z", settings=None, materials=None):
+    def __init__(self, step_path, assignments=None, up="z", settings=None, materials=None,
+                 holes=None):
         self.step_path = os.fspath(step_path)
         self.assignments = dict(assignments or {})     # {body name: Assignment}
         self.up = up                                   # vertical axis for the view
         self.materials = builtin_library()             # {preset name: {param: value}}
+        # Hole rules: {drill mm: kind}, {(x, y, z) center mm: kind}.
+        self.hole_diameters = dict((holes or {}).get("diameters", {}))
+        self.hole_single = dict((holes or {}).get("single", {}))
         for name, values in (materials or {}).items():
             self.materials[name] = dict(values)
         self.settings = {name: section.defaults() for name, section in SECTIONS.items()}
@@ -238,6 +251,42 @@ class Project:
             if self.get(b.name) is not None and self.get(b.name).type == "waveport"
         }
 
+    # --- holes -----------------------------------------------------------------
+
+    def set_hole_diameter(self, diameter_mm, kind):
+        """Rule for every hole of this drill; kind None removes the rule."""
+        key = _drill_key(diameter_mm)
+        for existing in list(self.hole_diameters):
+            if abs(existing - key) < HOLE_DIAMETER_TOL_MM:
+                del self.hole_diameters[existing]
+        if kind is not None:
+            self.hole_diameters[key] = _hole_kind(kind)
+
+    def set_hole_single(self, center_mm, kind):
+        """Rule for one hole (by its center); kind None: back to the diameter rule."""
+        key = _center_key(center_mm)
+        for existing in list(self.hole_single):
+            if max(abs(a - b) for a, b in zip(existing, key)) < HOLE_CENTER_TOL_MM:
+                del self.hole_single[existing]
+        if kind is not None:
+            self.hole_single[key] = _hole_kind(kind)
+
+    def hole_rule(self, hole):
+        """(kind, source) of a geometry.holes.Hole: source "single", "diameter" or "" (none)."""
+        center = hole.center * 1e3
+        for key, kind in self.hole_single.items():
+            if max(abs(a - b) for a, b in zip(key, center)) < HOLE_CENTER_TOL_MM:
+                return kind, "single"
+        drill = hole.diameter * 1e3
+        for key, kind in self.hole_diameters.items():
+            if abs(key - drill) < HOLE_DIAMETER_TOL_MM:
+                return kind, "diameter"
+        return "none", ""
+
+    def vias(self, holes):
+        """The holes that are vias."""
+        return [h for h in holes if self.hole_rule(h)[0] == "via"]
+
     def orphans(self, geometry):
         names = {b.name for b in geometry.bodies}
         return sorted(n for n in self.assignments if n not in names)
@@ -260,7 +309,7 @@ class Project:
         except tomllib.TOMLDecodeError as error:
             raise ProjectError(f"{path}: {error}") from None
 
-        unknown = set(data) - {"bodies", "view", "materials"} - set(SECTIONS)
+        unknown = set(data) - {"bodies", "view", "materials", "holes"} - set(SECTIONS)
         if unknown:
             raise ProjectError(f"{path}: unknown top-level keys {sorted(unknown)}")
 
@@ -295,7 +344,8 @@ class Project:
         except ValueError as error:
             raise ProjectError(f"{path}: {error}") from None
 
-        return cls(step_path, assignments, up, settings, library)
+        holes = _parse_holes(path, data.get("holes", {}))
+        return cls(step_path, assignments, up, settings, library, holes)
 
     def save(self):
         """Writes atomically (temp file + replace): a crash never leaves half a file."""
@@ -324,6 +374,17 @@ class Project:
 
         lines += ["[view]", f'up = "{self.up}"', ""]
 
+        if self.hole_diameters:
+            lines.append("[holes.diameters]   # drill, mm")
+            for key in sorted(self.hole_diameters):
+                lines.append(f'"{_fmt_number(key)}" = "{self.hole_diameters[key]}"')
+            lines.append("")
+        if self.hole_single:
+            lines.append("[holes.single]   # hole center x,y,z, mm")
+            for key in sorted(self.hole_single):
+                lines.append(f'"{",".join(_fmt_number(v) for v in key)}" = "{self.hole_single[key]}"')
+            lines.append("")
+
         dielectric = OBJECT_TYPES["dielectric"]
         for name, values in self.materials.items():
             lines.append(f"[materials.{_key(name)}]")
@@ -337,6 +398,54 @@ class Project:
         with open(temp, "w", encoding="utf-8", newline="\n") as f:
             f.write("\n".join(lines))
         os.replace(temp, self.path)
+
+
+def _fmt_number(value):
+    """Shortest exact-enough text of a number in mm (um resolution kept)."""
+    text = f"{value:.4f}".rstrip("0").rstrip(".")
+    return "0" if text in ("-0", "") else text
+
+
+def _drill_key(diameter_mm):
+    return round(float(diameter_mm), 4)
+
+
+def _center_key(center_mm):
+    return tuple(round(float(v), 4) for v in center_mm)
+
+
+def _hole_kind(kind):
+    if kind not in HOLE_KINDS:
+        raise ProjectError(f"hole kind must be one of {HOLE_KINDS}, got {kind!r}")
+    return kind
+
+
+def _parse_holes(path, section):
+    where = f"{path}: [holes]"
+    if not isinstance(section, dict) or set(section) - {"diameters", "single"}:
+        raise ProjectError(f"{where}: expected the tables [holes.diameters] and [holes.single]")
+    out = {"diameters": {}, "single": {}}
+    for key, kind in section.get("diameters", {}).items():
+        try:
+            drill = float(key)
+        except ValueError:
+            raise ProjectError(f"{where}.diameters: {key!r} is not a diameter in mm") from None
+        if not drill > 0:
+            raise ProjectError(f"{where}.diameters: diameter {key!r} must be > 0")
+        if kind not in HOLE_KINDS:
+            raise ProjectError(f"{where}.diameters: {key!r} = {kind!r}, expected one of {HOLE_KINDS}")
+        out["diameters"][_drill_key(drill)] = kind
+    for key, kind in section.get("single", {}).items():
+        try:
+            center = [float(v) for v in key.split(",")]
+        except ValueError:
+            center = []
+        if len(center) != 3:
+            raise ProjectError(f"{where}.single: {key!r} is not a center \"x,y,z\" in mm")
+        if kind not in HOLE_KINDS:
+            raise ProjectError(f"{where}.single: {key!r} = {kind!r}, expected one of {HOLE_KINDS}")
+        out["single"][_center_key(center)] = kind
+    return out
 
 
 def _toml_value(value):

@@ -20,7 +20,12 @@
 #     only marked for display).
 #   - eps_r, sigma on E-edges: average over the (up to 4) cells around the
 #     edge, weighted by their share of the dual face (tangential E: the
-#     arithmetic mean is the right one).
+#     arithmetic mean is the right one). Cells inside a thick conductor are
+#     left out: the field there is zero, they hold no material of their
+#     own, and counting them as air pulled eps down on every free edge
+#     next to curved metal (a coax: eps_eff 2.065 instead of 2.1), so a
+#     via in a drilled hole and a via drawn over solid substrate differed.
+#     An edge with metal all around keeps the plain mean (it is PEC anyway).
 #   - mu_r on H-edges: harmonic mean of the 2 cells along the dual edge,
 #     weighted by the half steps (normal B is continuous).
 #   - PEC on E-edges: the edge midpoint is inside (or on) a conductor, OR a
@@ -134,11 +139,13 @@ def edge_shape(shape, axis):
     return tuple(n if a == axis else n + 1 for a, n in enumerate(shape))
 
 
-def discretize(mesh, geometry, project, ports=None, elements=None, waveports=None):
+def discretize(mesh, geometry, project, ports=None, elements=None, waveports=None, vias=()):
     """
     mesh: a MeshResult (its grid and the merge distance it used).
     ports / elements: {name: PortGeometry} of the port and lumped bodies.
     waveports: {name: WavePortGeometry}.
+    vias: PEC bodies of the assigned vias (geometry.holes.via_body), extra
+    conductors that are not bodies of the STEP file.
     """
     grid = mesh.grid
     lines = grid.lines
@@ -158,6 +165,10 @@ def discretize(mesh, geometry, project, ports=None, elements=None, waveports=Non
         elif assignment.type == "dielectric":
             dielectrics.append((body, assignment.values))
             names.append(body.name)
+
+    for body in vias:
+        conductors.append(body)
+        names.append(body.name)
 
     warnings = []
     f_min, f_max = (project.settings["simulation"][k] for k in ("f_min", "f_max"))
@@ -184,8 +195,11 @@ def discretize(mesh, geometry, project, ports=None, elements=None, waveports=Non
                 f"{f_min:g}-{f_max:g} GHz (losses scale as f ref / f)"
             )
 
+    in_metal = np.zeros(shape, dtype=bool)
     for body in conductors:
-        cell_body[_cells_inside(body, centers)] = names.index(body.name)
+        inside = _cells_inside(body, centers)
+        cell_body[inside] = names.index(body.name)
+        in_metal |= inside
 
     # --- E-edges: eps, sigma, PEC ------------------------------------------
     is_dielectric = np.zeros(shape)
@@ -194,9 +208,9 @@ def discretize(mesh, geometry, project, ports=None, elements=None, waveports=Non
 
     eps_r, sigma, pec, dielectric = [], [], [], []
     for axis in range(3):
-        eps_r.append(_edge_average(cell_eps, axis, h).astype(np.float32))
-        dielectric.append(_edge_average(is_dielectric, axis, h) > 0)
-        sigma.append(_edge_average(cell_sigma, axis, h).astype(np.float32))
+        eps_r.append(_edge_average(cell_eps, axis, h, in_metal).astype(np.float32))
+        dielectric.append(_edge_average(is_dielectric, axis, h, in_metal) > 0)
+        sigma.append(_edge_average(cell_sigma, axis, h, in_metal).astype(np.float32))
         pec.append(np.zeros(edge_shape(shape, axis), dtype=bool))
 
     for body in conductors:
@@ -300,11 +314,20 @@ def _close_metal(edges, shape):
         edges[axis] |= nodes[tuple(lo)] & nodes[tuple(hi)]
 
 
-def _edge_average(cell_values, axis, h):
+def _edge_average(cell_values, axis, h, skip=None):
     """
     Value on each E-edge along `axis`: weighted mean over the cells around
     it. Weight of a cell = its quarter of the dual face (h_u / 2 * h_v / 2).
+    skip: bool cells left out of the mean (thick metal); an edge with only
+    skipped cells around it takes the plain mean.
     """
+    if skip is not None and skip.any():
+        plain = _edge_average(cell_values, axis, h)
+        kept = _edge_average(np.where(skip, 0.0, cell_values), axis, h)
+        share = _edge_average((~skip).astype(float), axis, h)       # weight of the kept cells
+        with np.errstate(invalid="ignore", divide="ignore"):
+            return np.where(share > 1e-12, kept / np.maximum(share, 1e-300), plain)
+
     u, v = [a for a in range(3) if a != axis]
     wu = np.pad(h[u] / 2, 1)            # zero weight outside the domain
     wv = np.pad(h[v] / 2, 1)

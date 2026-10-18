@@ -12,16 +12,17 @@
 import os
 
 import numpy as np
-from PySide6.QtCore import QRect, Qt
+from PySide6.QtCore import QRect, Qt, QTimer
 from PySide6.QtGui import QColor, QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDockWidget, QFileDialog, QHBoxLayout,
-    QHeaderView, QLabel, QPushButton, QToolButton,
+    QHeaderView, QLabel, QProgressBar, QPushButton, QToolButton,
     QMainWindow, QMenu, QMessageBox, QSlider, QTableWidget, QTableWidgetItem, QTabWidget,
     QToolBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from app_settings import AppSettings
+from geometry.holes import find_holes, group_by_diameter, via_body
 from geometry.step_io import read_step
 from discretize.materials import discretize
 from mesh.rectilinear import build_grid
@@ -31,7 +32,8 @@ from project.project_file import UP_AXES, Project, ProjectError
 from project.settings import SECTIONS
 from view.geometry_view import GeometryView
 from view.results_panel import ResultsPanel
-from solver.result_file import fingerprint, load_result, result_path, save_result
+from solver.fdtd import END_DB
+from solver.result_file import delete_result, fingerprint, list_results, rename_result, save_result
 from view.sim_runner import SimulationRunner
 
 MM = 1e-3
@@ -40,6 +42,14 @@ AXES = "xyz"
 
 def _fmt_mm(values):
     return " x ".join(f"{v / MM:.3g}" for v in values)
+
+
+def _fmt_point(values):
+    """A point in mm: (x, y, z), to the micrometer, trailing zeros dropped."""
+    def one(v):
+        text = f"{v / MM:.3f}".rstrip("0").rstrip(".")
+        return "0" if text in ("-0", "") else text
+    return "(" + ", ".join(one(v) for v in values) + ")"
 
 
 def _fmt_value(value):
@@ -56,6 +66,8 @@ class MainWindow(QMainWindow):
         self.ports = {}             # {port body name: PortGeometry}
         self.elements = {}          # {lumped element body name: PortGeometry}
         self.waveports = {}         # {waveguide port body name: WavePortGeometry}
+        self.holes = []             # geometry.holes.Hole: open through holes of the model
+        self.via_bodies = []        # PEC cylinders of the holes assigned as vias
         self.mesh = None            # MeshResult
         self.materials = None       # MaterialGrid (solver's view)
         self._mesh_coordinate = None    # where the mesh plane is (m)
@@ -69,7 +81,8 @@ class MainWindow(QMainWindow):
         self.runner.progress.connect(self._sim_progress)
         self.runner.finished.connect(self._sim_finished)
         self.runner.failed.connect(self._sim_failed)
-        self.result = None
+        self.runs = []              # SimulationResult: all saved runs of the model, oldest first
+        self.shown = set()          # paths of the runs ticked in Project > Results
         self.app_settings = AppSettings.load()
 
         self._build_toolbar()
@@ -162,6 +175,20 @@ class MainWindow(QMainWindow):
         )
         self.legend.setVisible(False)
         self.statusBar().addPermanentWidget(self.legend)   # the toolbar is full
+
+        # Simulation progress: the field energy of the running port, full at
+        # its peak, empty at END_DB below it (where the run stops).
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, int(-10 * END_DB))
+        self.progress_bar.setFixedWidth(220)
+        self.progress_bar.setMaximumHeight(16)
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setStyleSheet(
+            "QProgressBar { border: 1px solid #999; border-radius: 3px; background: #eee; "
+            "text-align: center; font-size: 11px; }"
+            "QProgressBar::chunk { background-color: #3cb043; border-radius: 2px; }")
+        self.progress_bar.setVisible(False)
+        self.statusBar().addPermanentWidget(self.progress_bar)
 
     def _build_tree_panel(self):
         self.tree = QTreeWidget()
@@ -377,19 +404,34 @@ class MainWindow(QMainWindow):
             return
         sim = self.project.settings["simulation"]
         self._run_fingerprint = fingerprint(self.project)      # the inputs of this run
+        self._run_params = self._parameters_snapshot()
         self.simulate_action.setEnabled(False)
         self.stop_action.setEnabled(True)
         self.results.set_message("running...")
+        self._n_ports = len(self.materials.ports) + len(self.materials.waveports)
+        self._port_names = [p.name for p in self.materials.ports] + [w.name for w in self.materials.waveports]
+        self.progress_bar.setValue(self.progress_bar.maximum())
+        self.progress_bar.setFormat("starting...")
+        self.progress_bar.setVisible(True)
         self.runner.start(self.materials, sim["f_min"], sim["f_max"])
 
-    def _sim_progress(self, port, t, level):
+    def _sim_progress(self, port, t, level, pulse_duration):
         self.statusBar().showMessage(
             f"simulating, {port} excited: t = {t * 1e9:.2f} ns, energy {level:.1f} dB "
-            f"(stops at -40 dB)")
+            f"(stops at {END_DB:.0f} dB)")
+        index = self._port_names.index(port) + 1 if port in self._port_names else 0
+        drop = min(max(-level, 0.0), -END_DB)
+        self.progress_bar.setValue(int(round(10 * (-END_DB - drop))))
+        if t < pulse_duration:          # still feeding: the energy cannot decay yet
+            state = f"pulse {100 * t / pulse_duration:.0f} %"
+        else:
+            state = f"{level:.0f} dB → {END_DB:.0f}"
+        self.progress_bar.setFormat(f"port {index}/{self._n_ports}   {state}")
 
     def _sim_done(self):
         self.simulate_action.setEnabled(True)
         self.stop_action.setEnabled(False)
+        self.progress_bar.setVisible(False)
 
     def _sim_finished(self, result):
         self._sim_done()
@@ -397,17 +439,40 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("simulation stopped", 4000)
             self.results.set_message("stopped")
             return
-        self.result = result
         result.fingerprint = self._run_fingerprint
+        result.params = self._run_params
         try:
-            path = save_result(self.geometry.source, result)
-            self.statusBar().showMessage(f"simulation finished, saved to {os.path.basename(path)}", 6000)
+            save_result(self.geometry.source, result)
+            self.statusBar().showMessage(f"simulation finished: {result.name}", 6000)
         except OSError as error:
+            result.name = result.name or "unsaved run"
             self.statusBar().showMessage(f"simulation finished, NOT saved: {error}", 10000)
-        self.results.default_dir = os.path.dirname(self.geometry.source)
-        self.results.set_result(result)
-        self._update_result_status()
+        self.runs.append(result)
+        self.shown.add(result.path or id(result))
+        self._show_runs()
         self.tabs.setCurrentWidget(self.results)       # show what was computed
+
+    def _parameters_snapshot(self):
+        """What this run is computed with, for the Results list (display only)."""
+        grid = self.mesh.grid
+        steps = np.concatenate([grid.steps(a) for a in range(3)])
+        dielectrics = {}
+        for name, a in sorted(self.project.assignments.items()):
+            if a.type == "dielectric":
+                v = a.values
+                dielectrics[name] = (f"{a.material}: " if a.material else "") + \
+                    f"εr {v['eps_r']:g}, tan δ {v['tan_d']:g}"
+        ports = [f"{p.name} {p.resistance:.4g} Ω" for p in self.materials.ports] + \
+                [f"{w.name} {w.resistance:.4g} Ω (line)" for w in self.materials.waveports]
+        return {
+            "simulation": dict(self.project.settings["simulation"]),
+            "mesh": dict(self.project.settings["mesh"]),
+            "grid": f"{' × '.join(str(n) for n in grid.shape)} = {grid.cell_count:,}".replace(",", " ")
+                    + f" cells, step {steps.min() / MM:.3g}–{steps.max() / MM:.3g} mm",
+            "dielectrics": dielectrics,
+            "vias": len(self.via_bodies),
+            "ports": ports,
+        }
 
     def _sim_failed(self, message):
         self._sim_done()
@@ -515,6 +580,8 @@ class MainWindow(QMainWindow):
 
         self.geometry = geometry
         self.project = project
+        self.holes = find_holes(geometry)
+        self.view.highlight_holes([])
         self._mesh_coordinate = None
         self.view.set_geometry(geometry)
 
@@ -531,7 +598,7 @@ class MainWindow(QMainWindow):
         self._refresh_model(center_slider=True)
         self._fill_tree()
         self._fill_materials()
-        self._load_result(path)
+        self._load_runs(path)
         self._remember(path)
 
         lo, hi = geometry.bounds
@@ -550,12 +617,15 @@ class MainWindow(QMainWindow):
         types = {n: a.type for n, a in self.project.assignments.items()} if self.project else {}
         self.view.set_type_colors(types)
 
+        self.via_bodies = [via_body(h) for h in self.project.vias(self.holes)] if self.project else []
+        self.view.set_vias(self.via_bodies)
+
         columns = {**self.ports, **self.elements}       # bodies that need a line on their axis
-        self.mesh = (build_grid(self.geometry, self.project, columns, self.waveports)
+        self.mesh = (build_grid(self.geometry, self.project, columns, self.waveports, self.via_bodies)
                      if self.project else None)
         self.materials = (
             discretize(self.mesh, self.geometry, self.project, self.ports, self.elements,
-                       self.waveports)
+                       self.waveports, self.via_bodies)
             if self.mesh is not None and self.mesh.ok else None
         )
         self._configure_mesh_slider(center=center_slider)
@@ -642,6 +712,8 @@ class MainWindow(QMainWindow):
                 self.tree.addTopLevelItem(item)
                 self._fill_section(item)
 
+        self._fill_holes()
+
         for body in self.geometry.bodies:
             lo, hi = body.bounds
             item = QTreeWidgetItem([body.name, body.kind, _fmt_mm(hi - lo)])
@@ -654,6 +726,118 @@ class MainWindow(QMainWindow):
         self.tree.blockSignals(False)
         self._resize_columns()
         self._show_summary()
+
+    def _fill_holes(self):
+        """
+        The Holes section: open through holes, grouped by diameter, with their
+        via assignment. Rebuilt in place after an edit (expanded groups kept).
+        """
+        old = self._top_item("holes", None)
+        index, expanded = self.tree.topLevelItemCount(), set()
+        if old is not None:
+            index = self.tree.indexOfTopLevelItem(old)
+            expanded = {old.child(i).data(0, Qt.UserRole)[1] for i in range(old.childCount())
+                        if old.child(i).isExpanded()}
+            self.tree.takeTopLevelItem(index)
+        if not self.holes:
+            return
+
+        n_vias = len(self.project.vias(self.holes)) if self.project else 0
+        section = QTreeWidgetItem(["Holes", f"{len(self.holes)} through, {n_vias} via", ""])
+        section.setData(0, Qt.UserRole, ("holes", None, None))
+        section.setToolTip(0, "Open through holes found in the STEP. Select to highlight them, "
+                              "right click a diameter or a hole to make it a via.")
+        font = section.font(0)
+        font.setBold(True)
+        section.setFont(0, font)
+        self.tree.insertTopLevelItem(index, section)
+
+        gold = QColor("#c8961e")
+        for diameter, holes in group_by_diameter(self.holes).items():
+            kinds = [self.project.hole_rule(h) if self.project else ("none", "") for h in holes]
+            vias = sum(kind == "via" for kind, _ in kinds)
+            text = f"× {len(holes)}" + (f", {vias} via" if vias else "")
+            group = QTreeWidgetItem(section, [f"⌀ {diameter / MM:.3f}", text, "mm"])
+            group.setData(0, Qt.UserRole, ("hole_group", diameter, None))
+            if vias:
+                group.setForeground(1, gold)
+            for hole, (kind, source) in zip(holes, kinds):
+                label = hole.id + ("  via" if kind == "via" else "") + ("  *" if source == "single" else "")
+                row = QTreeWidgetItem(group, [label, _fmt_point(hole.center), ", ".join(hole.bodies)])
+                row.setData(0, Qt.UserRole, ("hole", hole.id, None))
+                row.setToolTip(0, "* = its own rule, not the diameter's")
+                row.setToolTip(1, "center, mm")
+                if kind == "via":
+                    row.setForeground(0, gold)
+            group.setExpanded(diameter in expanded or (old is None and len(holes) <= 5))
+        section.setExpanded(True)
+
+    def _hole_menu(self, item, role, key):
+        """Right click on a diameter group or a hole: make it a via, or not."""
+        menu = QMenu(self)
+        if role == "hole_group":
+            holes = group_by_diameter(self.holes).get(key, [])
+            drill = key / MM
+            current = next((k for d, k in self.project.hole_diameters.items() if abs(d - drill) < 1e-4), None)
+            for kind, text in (("via", f"Via: all ⌀ {drill:g} mm ({len(holes)})"),
+                               ("none", f"Not via: all ⌀ {drill:g} mm")):
+                action = menu.addAction(text)
+                action.setCheckable(True)
+                action.setChecked(current == kind)
+                action.triggered.connect(lambda _=False, k=kind: self._set_hole_rule(
+                    lambda: self.project.set_hole_diameter(drill, k)))
+            remove = menu.addAction("Remove the diameter rule")
+            remove.setEnabled(current is not None)
+            remove.triggered.connect(lambda: self._set_hole_rule(lambda: self.project.set_hole_diameter(drill, None)))
+        elif role == "hole":
+            hole = next(h for h in self.holes if h.id == key)
+            kind, source = self.project.hole_rule(hole)
+            center = hole.center / MM
+            for k, text in (("via", "Via"), ("none", "Not via")):
+                action = menu.addAction(text)
+                action.setCheckable(True)
+                action.setChecked(source == "single" and kind == k)
+                action.triggered.connect(lambda _=False, k=k: self._set_hole_rule(
+                    lambda: self.project.set_hole_single(center, k)))
+            back = menu.addAction(f"Use the ⌀ {hole.diameter / MM:g} mm rule")
+            back.setEnabled(source == "single")
+            back.triggered.connect(lambda: self._set_hole_rule(lambda: self.project.set_hole_single(center, None)))
+        else:
+            return
+        menu.exec(self.tree.viewport().mapToGlobal(self.tree.visualItemRect(item).bottomLeft()))
+
+    def _set_hole_rule(self, action):
+        try:
+            action()
+        except ProjectError as error:
+            self.statusBar().showMessage(str(error), 5000)
+            return
+        self._after_edit()
+
+    def _selected_holes(self, item):
+        """The holes a tree row stands for (section, group or one hole), or None."""
+        role, key, _ = item.data(0, Qt.UserRole)
+        if role == "holes":
+            return list(self.holes)
+        if role == "hole_group":
+            return group_by_diameter(self.holes).get(key, [])
+        if role == "hole":
+            return [h for h in self.holes if h.id == key]
+        return None
+
+    def _show_holes_info(self, holes):
+        if len(holes) == 1:
+            h = holes[0]
+            axis = "xyz"[h.axis_index] if h.axis_index is not None else _fmt_point(h.axis * MM)
+            lines = [f"<b>{h.id}</b>: through hole ⌀ {h.diameter / MM:.3f} mm",
+                     f"center: {_fmt_point(h.center)} mm",
+                     f"from {_fmt_point(h.start)} to {_fmt_point(h.end)} mm (axis {axis})",
+                     f"length: {h.length / MM:.4g} mm",
+                     f"through: {', '.join(h.bodies)}"]
+        else:
+            diameters = sorted({round(h.diameter / MM, 3) for h in holes})
+            lines = [f"<b>{len(holes)} holes</b>, ⌀ {', '.join(f'{d:g}' for d in diameters)} mm"]
+        self.info.setText("<br>".join(lines))
 
     def _fill_section(self, item):
         self.tree.blockSignals(True)
@@ -674,9 +858,17 @@ class MainWindow(QMainWindow):
 
         if name == "mesh":
             self._mesh_rows(item)
+        if name == "simulation":
+            results = QTreeWidgetItem(item, ["Results", "", ""])
+            results.setData(0, Qt.UserRole, ("results", None, None))
+            font = results.font(0)
+            font.setBold(True)
+            results.setFont(0, font)
 
         item.setExpanded(True)
         self.tree.blockSignals(False)
+        if name == "simulation":
+            self._fill_results()
 
     def _mesh_rows(self, item):
         mesh = self.mesh
@@ -699,10 +891,18 @@ class MainWindow(QMainWindow):
             row.setData(0, Qt.UserRole, ("info", "mesh", None))
             row.setForeground(1, QColor("#2a2"))
 
-        for axis, merged in enumerate(mesh.merged):
-            for kept, dropped in merged:
-                text = ", ".join(f"{d / MM:.4g}" for d in dropped)
-                self._note_row(item, "mesh", f"{AXES[axis]}: {text} → {kept / MM:.4g} mm (merged)", "#888")
+        count = sum(len(merged) for merged in mesh.merged)
+        if count:
+            # Collapsed: with curved bodies (vias) there can be dozens.
+            group = QTreeWidgetItem(item, [f"merged lines: {count}", "", ""])
+            group.setData(0, Qt.UserRole, ("info", "mesh", None))
+            group.setForeground(0, QColor("#888"))
+            group.setToolTip(0, "Fixpoints closer than the min step, joined into one grid line")
+            for axis, merged in enumerate(mesh.merged):
+                for kept, dropped in merged:
+                    text = ", ".join(f"{d / MM:.4g}" for d in dropped)
+                    self._note_row(group, "mesh", f"{AXES[axis]}: {text} → {kept / MM:.4g} mm", "#888")
+            group.setExpanded(False)
 
         for warning in mesh.warnings:
             self._note_row(item, "mesh", f"⚠ {warning}", "#c80")
@@ -853,32 +1053,159 @@ class MainWindow(QMainWindow):
     # Saved results
     # =====================================================
 
-    def _load_result(self, step_path):
-        """Shows the results saved next to the STEP file, if any."""
+    def _load_runs(self, step_path):
+        """The runs saved next to the STEP file; the newest one is shown."""
         try:
-            self.result = load_result(step_path)
-        except Exception as error:          # a damaged file must not block opening the model
-            self.result = None
-            self.statusBar().showMessage(f"{os.path.basename(result_path(step_path))}: {error}", 10000)
+            self.runs, errors = list_results(step_path)
+        except OSError as error:
+            self.runs, errors = [], [str(error)]
+        if errors:
+            self.statusBar().showMessage("results not read: " + "; ".join(errors), 10000)
+        self.shown = {self.runs[-1].path} if self.runs else set()
         self.results.default_dir = os.path.dirname(step_path)
-        self.results.set_result(self.result)
-        if self.result is None:
+        self._show_runs()
+
+    def _show_runs(self):
+        """Results tab and the Results list after a change of the runs or of their ticks."""
+        shown = [r for r in self.runs if (r.path or id(r)) in self.shown]
+        self.results.set_results(shown)
+        if not self.runs:
             self.results.set_message("no results yet: ▶ Simulate")
+        elif not shown:
+            self.results.set_message("no run ticked in Project > Simulation > Results")
         self._update_result_status()
+        self._fill_results()
+
+    def _is_current(self, run):
+        return self.project is not None and run.fingerprint == self._current_fingerprint()
+
+    def _current_fingerprint(self):
+        return fingerprint(self.project) if self.project is not None else None
 
     def _update_result_status(self):
-        """Saved / outdated line under the plot (the model may change after a run)."""
-        if self.result is None:
+        """Current / outdated line under the plot, for the newest shown run."""
+        run = self.results.primary
+        if run is None:
             self.results.set_status("")
             return
-        saved = f"saved {self.result.saved}" if self.result.saved else "not saved"
-        current = fingerprint(self.project) if self.project is not None else None
-        if current is not None and self.result.fingerprint == current:
-            self.results.set_status(f"{saved}; matches the current model and settings", "#2a2")
+        if self._is_current(run):
+            self.results.set_status(f"{run.name}: matches the current model and settings", "#2a2")
         else:
             self.results.set_status(
-                f"⚠ {saved}; OUTDATED: the STEP file, the body types or the settings changed "
+                f"⚠ {run.name}: OUTDATED: the STEP file, the body types or the settings changed "
                 f"since this run (▶ Simulate to update)", "#c80")
+
+    def _results_item(self):
+        section = self._top_item("section", "simulation")
+        if section is None:
+            return None
+        for i in range(section.childCount()):
+            if section.child(i).data(0, Qt.UserRole)[0] == "results":
+                return section.child(i)
+        return None
+
+    def _fill_results(self):
+        """Project > Simulation > Results: one row per run (tick = shown), its parameters inside."""
+        item = self._results_item()
+        if item is None:
+            return
+        self.tree.blockSignals(True)
+        expanded = {item.child(i).data(0, Qt.UserRole)[1] for i in range(item.childCount())
+                    if item.child(i).isExpanded()}
+        item.takeChildren()
+        item.setText(1, f"{len(self.runs)} run" + ("s" if len(self.runs) != 1 else ""))
+        current = self._current_fingerprint()
+        primary = self.results.primary
+        for run in reversed(self.runs):                 # newest on top
+            key = run.path or id(run)
+            ok = current is not None and run.fingerprint == current
+            row = QTreeWidgetItem(item, [run.name, run.saved, "current" if ok else "outdated"])
+            row.setData(0, Qt.UserRole, ("run", key, None))
+            row.setFlags(row.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEditable)
+            row.setCheckState(0, Qt.Checked if key in self.shown else Qt.Unchecked)
+            row.setForeground(2, QColor("#2a2" if ok else "#c80"))
+            row.setToolTip(0, "Tick to show it in Results (the newest ticked run in full color). "
+                              "Right click: rename, show only this, delete.")
+            if run is primary:
+                font = row.font(0)
+                font.setBold(True)
+                row.setFont(0, font)
+            for label, value in self._run_rows(run):
+                info = QTreeWidgetItem(row, [label, value, ""])
+                info.setData(0, Qt.UserRole, ("run_info", key, None))
+                info.setForeground(1, QColor("#666"))
+            row.setExpanded(key in expanded)
+        item.setExpanded(True)
+        self.tree.blockSignals(False)
+
+    @staticmethod
+    def _run_rows(run):
+        p = run.params
+        if not p:
+            return [("parameters", "not recorded (an older run)")] + [("run", line) for line in run.info]
+        sim, mesh = p.get("simulation", {}), p.get("mesh", {})
+        rows = [
+            ("band", f"{sim.get('f_min', '?'):g}–{sim.get('f_max', '?'):g} GHz, padding {sim.get('padding', 0):g} mm"),
+            ("mesh", f"cells/λ {mesh.get('cells_per_wavelength', 0):g}, per feature {mesh.get('cells_per_feature', 0):g}, "
+                     f"ratio {mesh.get('max_ratio', 0):g}, min step {mesh.get('min_step', 0):g} mm"),
+            ("grid", p.get("grid", "")),
+        ]
+        rows += [(f"  {name}", text) for name, text in p.get("dielectrics", {}).items()]
+        rows += [("vias", str(p.get("vias", 0))), ("ports", ", ".join(p.get("ports", [])))]
+        rows += [("run", line) for line in run.info]
+        return rows
+
+    def _run_by_key(self, key):
+        return next((r for r in self.runs if (r.path or id(r)) == key), None)
+
+    def _run_menu(self, item, key):
+        run = self._run_by_key(key)
+        if run is None:
+            return
+        menu = QMenu(self)
+        menu.addAction("Rename", lambda: self.tree.editItem(item, 0))
+        menu.addAction("Show only this", lambda: self._set_shown({key}))
+        menu.addAction("Show all", lambda: self._set_shown({r.path or id(r) for r in self.runs}))
+        menu.addSeparator()
+        menu.addAction("Delete…", lambda: self._delete_run(run))
+        menu.exec(self.tree.viewport().mapToGlobal(self.tree.visualItemRect(item).bottomLeft()))
+
+    def _set_shown(self, keys):
+        self.shown = set(keys)
+        QTimer.singleShot(0, self._show_runs)       # never rebuild the tree inside its own signal
+
+    def _delete_run(self, run):
+        answer = QMessageBox.question(
+            self, "Delete result",
+            f"Delete the result \"{run.name}\" ({run.saved})?\n\n{run.path}\n\nThis cannot be undone.")
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            delete_result(run)
+        except OSError as error:
+            QMessageBox.critical(self, "Delete result", str(error))
+            return
+        self.runs.remove(run)
+        self.shown.discard(run.path or id(run))
+        self.shown = {k for k in self.shown if self._run_by_key(k) is not None}
+        QTimer.singleShot(0, self._show_runs)
+
+    def _run_changed(self, item, key):
+        """A run row changed: its tick (shown or not) or its name (renamed in place)."""
+        run = self._run_by_key(key)
+        if run is None:
+            return
+        ticked = item.checkState(0) == Qt.Checked
+        if ticked != (key in self.shown):
+            self._set_shown(self.shown | {key} if ticked else self.shown - {key})
+            return
+        name = item.text(0).strip()
+        if name and name != run.name:
+            try:
+                rename_result(run, name)
+            except (OSError, ValueError) as error:
+                self.statusBar().showMessage(f"rename: {error}", 6000)
+        QTimer.singleShot(0, self._show_runs)
 
     def _top_item(self, role, owner):
         for i in range(self.tree.topLevelItemCount()):
@@ -895,10 +1222,12 @@ class MainWindow(QMainWindow):
         for body in self.geometry.bodies:
             self._fill_type(self._top_item("body", body.name))
         self._fill_section(self._top_item("section", "mesh"))
+        self._fill_holes()
         self._resize_columns()
         self._show_summary()
         self._fill_materials()
         self._update_result_status()
+        self._fill_results()                    # current / outdated marks
 
     # =====================================================
     # Editing
@@ -924,6 +1253,12 @@ class MainWindow(QMainWindow):
             return
 
         role, name, _ = item.data(0, Qt.UserRole)
+        if role in ("hole_group", "hole"):
+            self._hole_menu(item, role, name)
+            return
+        if role == "run":
+            self._run_menu(item, name)
+            return
         top = item
         while top.parent() is not None:
             top = top.parent()
@@ -969,6 +1304,9 @@ class MainWindow(QMainWindow):
         role, owner, name = item.data(0, Qt.UserRole)
         if role == "material" and self.project is not None:
             self._material_menu(item, owner)
+            return
+        if role == "run":
+            self.tree.editItem(item, 0)             # rename in place
             return
         if role not in ("param", "setting") or self.project is None:
             return
@@ -1016,6 +1354,10 @@ class MainWindow(QMainWindow):
 
         if role == "body" and column == 0:
             self.view.set_visible(owner, item.checkState(0) == Qt.Checked)
+            return
+
+        if role == "run" and column == 0:
+            self._run_changed(item, owner)
             return
 
         if role not in ("param", "setting") or column != 1:
@@ -1077,6 +1419,14 @@ class MainWindow(QMainWindow):
     def _current_changed(self, item, _previous):
         if item is None:
             self.view.select(None)
+            self.view.highlight_holes([])
+            return
+
+        holes = self._selected_holes(item)
+        self.view.highlight_holes(holes or [])
+        if holes is not None:
+            self.view.select(None)
+            self._show_holes_info(holes)
             return
 
         top = item

@@ -1,8 +1,8 @@
 # customcst project for 04_coonector_plus_pcb.stp
 
 [simulation]
-f_min = 1.0   # GHz
-f_max = 5.0   # GHz
+f_min = 4.0   # GHz
+f_max = 6.0   # GHz
 padding = 0.0   # mm
 
 [mesh]

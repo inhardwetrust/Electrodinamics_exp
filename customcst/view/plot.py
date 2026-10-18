@@ -2,6 +2,8 @@
 #
 # A small multi-series line plot drawn with QPainter (no plotting library):
 # grid, tick labels, legend, NaN gaps. Used for S-parameters and Z(f).
+# Each curve has its own x (runs may cover different bands) and may be
+# dimmed (an older run shown for comparison: thinner, faded).
 
 import math
 
@@ -11,6 +13,14 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
 
 COLORS = ["#ffb000", "#00c8ff", "#ff4fd8", "#7dff5a", "#ff6a3d", "#b18cff", "#ffffff", "#ffd27f"]
+DIM_ALPHA = 90          # 0..255: curves of older runs
+
+
+def color_of(index, dim=False):
+    color = QColor(COLORS[index % len(COLORS)])
+    if dim:
+        color.setAlpha(DIM_ALPHA)
+    return color
 
 
 def nice_ticks(lo, hi, count=6):
@@ -30,28 +40,23 @@ class LinePlot(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumHeight(220)
-        self._x = None
-        self._series = []          # [(label, y)]
+        self._curves = []          # [(label, x, y, color index, dim)]
         self.x_label = ""
         self.y_label = ""
         self.y_range = None
         self.marker_x = None
-        self.colors = None         # per-series color indices (default: order)
 
-    def set_data(self, x, series, x_label="", y_label="", y_range=None, marker_x=None, colors=None):
-        self._x = np.asarray(x, dtype=float)
-        self._series = [(label, np.asarray(y, dtype=float)) for label, y in series]
+    def set_data(self, curves, x_label="", y_label="", y_range=None, marker_x=None):
+        """curves: [(label, x, y, color index, dim)]; dim = an older run (faded)."""
+        self._curves = [(label, np.asarray(x, dtype=float), np.asarray(y, dtype=float), color, dim)
+                        for label, x, y, color, dim in curves]
         self.x_label, self.y_label, self.y_range = x_label, y_label, y_range
-        self.marker_x, self.colors = marker_x, colors
+        self.marker_x = marker_x
         self.update()
 
     def clear(self):
-        self._x, self._series = None, []
+        self._curves = []
         self.update()
-
-    def _color(self, n):
-        index = self.colors[n] if self.colors is not None else n
-        return COLORS[index % len(COLORS)]
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -65,14 +70,17 @@ class LinePlot(QWidget):
                       self.width() - self.MARGIN_LEFT - self.MARGIN_RIGHT,
                       self.height() - self.MARGIN_TOP - self.MARGIN_BOTTOM)
 
-        if self._x is None or not self._series:
+        if not self._curves:
             p.setPen(QColor("#777"))
-            p.drawText(plot, Qt.AlignCenter, "no results yet: press Simulate")
+            p.drawText(plot, Qt.AlignCenter, "no results shown: press Simulate, or tick a run in Project > Results")
             p.end()
             return
 
-        x0, x1 = float(self._x.min()), float(self._x.max())
-        values = np.concatenate([y[np.isfinite(y)] for _, y in self._series] or [np.zeros(1)])
+        x0 = min(float(x.min()) for _, x, _, _, _ in self._curves)
+        x1 = max(float(x.max()) for _, x, _, _, _ in self._curves)
+        if x1 <= x0:
+            x1 = x0 + 1.0
+        values = np.concatenate([y[np.isfinite(y)] for _, _, y, _, _ in self._curves] or [np.zeros(1)])
         if self.y_range is not None:
             y0, y1 = self.y_range
         else:
@@ -110,10 +118,11 @@ class LinePlot(QWidget):
 
         # Curves (NaN = gap), clipped to the plot.
         p.setClipRect(plot)
-        for n, (label, y) in enumerate(self._series):
+        # Dimmed (older) curves first, so the newest run is drawn on top.
+        for label, xs, y, color, dim in sorted(self._curves, key=lambda c: not c[4]):
             path = QPainterPath()
             pen_down = False
-            for xv, yv in zip(self._x, y):
+            for xv, yv in zip(xs, y):
                 if not np.isfinite(yv):
                     pen_down = False
                     continue
@@ -123,29 +132,31 @@ class LinePlot(QWidget):
                 else:
                     path.moveTo(point)
                     pen_down = True
-            p.setPen(QPen(QColor(self._color(n)), 1.8))
+            p.setPen(QPen(color_of(color, dim), 1.2 if dim else 1.8))
             p.drawPath(path)
 
         if self.marker_x is not None:
             a = px(self.marker_x, y0)
             p.setPen(QPen(QColor("#e8e8e8"), 1, Qt.DashLine))
             p.drawLine(QPointF(a.x(), plot.top()), QPointF(a.x(), plot.bottom()))
-            for n, (_, y) in enumerate(self._series):
-                yv = float(np.interp(self.marker_x, self._x, y))
+            for _, xs, y, color, dim in self._curves:
+                if not xs[0] <= self.marker_x <= xs[-1]:
+                    continue
+                yv = float(np.interp(self.marker_x, xs, y))
                 if np.isfinite(yv):
-                    p.setBrush(QColor(self._color(n)))
+                    p.setBrush(color_of(color, dim))
                     p.setPen(Qt.NoPen)
-                    p.drawEllipse(px(self.marker_x, yv), 3.5, 3.5)
+                    p.drawEllipse(px(self.marker_x, yv), 2.5 if dim else 3.5, 2.5 if dim else 3.5)
             p.setBrush(Qt.NoBrush)
         p.setClipping(False)
 
         # Legend.
         x, y = plot.right() - 8, plot.top() + 6
-        for n, (label, _) in enumerate(self._series):
+        for label, _, _, color, dim in self._curves:
             width = p.fontMetrics().horizontalAdvance(label) + 26
-            p.setPen(QPen(QColor(self._color(n)), 2.5))
+            p.setPen(QPen(color_of(color, dim), 2.5))
             p.drawLine(QPointF(x - width, y + 7), QPointF(x - width + 16, y + 7))
-            p.setPen(QColor("#d8dce2"))
+            p.setPen(QColor("#8a8f98") if dim else QColor("#d8dce2"))
             p.drawText(QRectF(x - width + 20, y, width - 20, 14), Qt.AlignLeft | Qt.AlignVCenter, label)
             y += 15
         p.end()

@@ -9,7 +9,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
 
-from view.plot import COLORS
+from view.plot import color_of
 
 R_CIRCLES = (0.0, 0.2, 0.5, 1.0, 2.0, 5.0)
 X_ARCS = (0.2, 0.5, 1.0, 2.0, 5.0)
@@ -19,12 +19,11 @@ class SmithChart(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumHeight(240)
-        self._traces = []          # [(label, gamma array, color index)]
-        self._marker = None        # index into the arrays
+        self._traces = []          # [(label, gamma array, color index, dim, marker index or None)]
 
-    def set_data(self, traces, marker=None):
+    def set_data(self, traces):
+        """traces: [(label, gamma, color index, dim, marker index or None)]."""
         self._traces = list(traces)
-        self._marker = marker
         self.update()
 
     def paintEvent(self, event):
@@ -71,23 +70,23 @@ class SmithChart(QWidget):
             p.drawText(QRectF(px(complex(g, 0)).x() + 2, cy + 1, 30, 12), Qt.AlignLeft, f"{r:g}")
 
         # Traces and marker dots.
-        for label, gamma, color in self._traces:
+        for label, gamma, color, dim, marker in sorted(self._traces, key=lambda t: not t[3]):
             path = QPainterPath()
             for n, g in enumerate(gamma):
                 (path.lineTo if n else path.moveTo)(px(g))
-            p.setPen(QPen(QColor(COLORS[color % len(COLORS)]), 1.8))
+            p.setPen(QPen(color_of(color, dim), 1.2 if dim else 1.8))
             p.drawPath(path)
-            if self._marker is not None and 0 <= self._marker < len(gamma):
-                p.setBrush(QColor(COLORS[color % len(COLORS)]))
-                p.drawEllipse(px(gamma[self._marker]), 4, 4)
+            if marker is not None and 0 <= marker < len(gamma):
+                p.setBrush(color_of(color, dim))
+                p.drawEllipse(px(gamma[marker]), 3 if dim else 4, 3 if dim else 4)
                 p.setBrush(Qt.NoBrush)
 
         # Legend (top left).
         y = 6
-        for label, _, color in self._traces:
-            p.setPen(QPen(QColor(COLORS[color % len(COLORS)]), 2.5))
+        for label, _, color, dim, _ in self._traces:
+            p.setPen(QPen(color_of(color, dim), 2.5))
             p.drawLine(QPointF(8, y + 7), QPointF(24, y + 7))
-            p.setPen(QColor("#d8dce2"))
-            p.drawText(QRectF(28, y, 120, 14), Qt.AlignLeft | Qt.AlignVCenter, label)
+            p.setPen(QColor("#8a8f98") if dim else QColor("#d8dce2"))
+            p.drawText(QRectF(28, y, 260, 14), Qt.AlignLeft | Qt.AlignVCenter, label)
             y += 15
         p.end()

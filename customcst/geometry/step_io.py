@@ -18,10 +18,10 @@ import os
 import numpy as np
 
 from OCP.BRep import BRep_Tool
-from OCP.BRepAdaptor import BRepAdaptor_Curve
+from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
 from OCP.BRepMesh import BRepMesh_IncrementalMesh
 from OCP.GCPnts import GCPnts_TangentialDeflection
-from OCP.GeomAbs import GeomAbs_Circle
+from OCP.GeomAbs import GeomAbs_Circle, GeomAbs_Cylinder
 from OCP.IFSelect import IFSelect_RetDone
 from OCP.Quantity import Quantity_Color, Quantity_TOC_RGB
 from OCP.STEPCAFControl import STEPCAFControl_Reader, STEPCAFControl_Writer
@@ -35,6 +35,7 @@ from OCP.TopAbs import (
 from OCP.TopExp import TopExp_Explorer
 from OCP.TopLoc import TopLoc_Location
 from OCP.TopoDS import TopoDS
+from OCP.gp import gp_Pnt, gp_Vec
 from OCP.XCAFDoc import XCAFDoc_ColorType, XCAFDoc_DocumentTool, XCAFDoc_ShapeTool
 from OCP.XCAFPrs import (
     XCAFPrs_DocumentExplorer, XCAFPrs_DocumentExplorerFlags_OnlyLeafNodes,
@@ -238,6 +239,8 @@ def _make_body(name, kind, shape, color, deflection_mm, angular_deflection):
     edges = _edge_segments(shape, deflection_mm, angular_deflection)
     circles = _circles(shape)
     circles[:, [0, 1, 2, 6]] *= MM
+    holes = _holes(shape) if kind == "solid" else np.zeros((0, 8))
+    holes[:, [0, 1, 2, 6, 7]] *= MM
 
     return Body(
         name=name,
@@ -247,6 +250,7 @@ def _make_body(name, kind, shape, color, deflection_mm, angular_deflection):
         normals=normals,
         edges=edges * MM,
         circles=circles,
+        holes=holes,
         color=color,
         shape=shape,
     )
@@ -277,6 +281,72 @@ def _circles(shape):
     key = np.round(rows[:, [0, 1, 2, 6]] / 1e-6).astype(np.int64)
     _, keep = np.unique(key, axis=0, return_index=True)
     return rows[np.sort(keep)]
+
+
+def _holes(shape):
+    """
+    Cylindrical holes of a solid, (H, 8) rows: start point on the axis (3),
+    unit axis (3), radius, length; in mm.
+    A hole face is a cylinder whose outward normal (out of the material)
+    points TOWARD its axis; a pin or a boss points away. CAD often splits a
+    cylinder into two half faces: faces on the same axis line with the same
+    radius and axial range are joined, and only a full turn is a hole.
+    """
+    parts = []          # (point on axis at v0, axis, radius, v-length, angular span)
+    explorer = TopExp_Explorer(shape, TopAbs_FACE)
+    while explorer.More():
+        # Use the face before explorer.Next() (OCP 8: temporaries from
+        # Current() may dangle, see CLAUDE.md).
+        face = TopoDS.Face(explorer.Current())
+        surface = BRepAdaptor_Surface(face, True)
+        orientation = face.Orientation()
+        explorer.Next()
+        if surface.GetType() != GeomAbs_Cylinder:
+            continue
+
+        cylinder = surface.Cylinder()
+        axis = cylinder.Axis()
+        loc, d = axis.Location(), axis.Direction()
+        u0, u1 = surface.FirstUParameter(), surface.LastUParameter()
+        v0, v1 = surface.FirstVParameter(), surface.LastVParameter()
+
+        point, du, dv = gp_Pnt(), gp_Vec(), gp_Vec()
+        surface.D1(0.5 * (u0 + u1), 0.5 * (v0 + v1), point, du, dv)
+        normal = du.Crossed(dv)
+        if orientation == TopAbs_REVERSED:
+            normal.Reverse()
+        p = np.array([point.X(), point.Y(), point.Z()])
+        o = np.array([loc.X(), loc.Y(), loc.Z()])
+        a = np.array([d.X(), d.Y(), d.Z()])
+        toward_axis = (o + a * np.dot(p - o, a)) - p
+        if np.dot([normal.X(), normal.Y(), normal.Z()], toward_axis) <= 0:
+            continue                                    # convex: a pin, not a hole
+
+        lo, hi = sorted((v0, v1))
+        parts.append((o + a * lo, a, cylinder.Radius(), hi - lo, abs(u1 - u0)))
+
+    holes = []
+    used = [False] * len(parts)
+    for i, (start, a, r, length, span) in enumerate(parts):
+        if used[i]:
+            continue
+        used[i] = True
+        total = span
+        for j in range(i + 1, len(parts)):
+            s2, a2, r2, l2, span2 = parts[j]
+            if used[j] or abs(r2 - r) > 1e-6 * max(r, 1.0) or abs(abs(np.dot(a, a2)) - 1) > 1e-9:
+                continue
+            # The same axis line and the same axial range (start points may
+            # differ only by the direction convention of the second face).
+            ends = (s2, s2 + a2 * l2)
+            if (np.linalg.norm(np.cross(s2 - start, a)) < 1e-6 and abs(l2 - length) < 1e-6
+                    and min(np.linalg.norm(e - start) for e in ends) < 1e-6):
+                used[j] = True
+                total += span2
+        if total >= 2 * np.pi * (1 - 1e-6):
+            holes.append((*start, *a, r, length))
+
+    return np.array(holes, dtype=np.float64).reshape(-1, 8)
 
 
 def _triangles(shape):

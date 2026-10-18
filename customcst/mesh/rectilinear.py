@@ -84,12 +84,13 @@ class MeshResult:
         return self.grid is not None
 
 
-def build_grid(geometry, project, ports=None, waveports=None):
+def build_grid(geometry, project, ports=None, waveports=None, vias=()):
     """
     MeshResult for the project's typed bodies; untyped bodies are ignored.
     ports: {name: PortGeometry} of everything that needs a grid line on its
     axis (ports and lumped elements).
     waveports: {name: WavePortGeometry}: their planes end the domain.
+    vias: PEC bodies of the assigned vias (geometry.holes.via_body).
     """
     result = MeshResult()
     mesh = project.settings["mesh"]
@@ -106,6 +107,8 @@ def build_grid(geometry, project, ports=None, waveports=None):
         elif assignment.type == "dielectric":
             v = assignment.values
             materials.append((body, math.sqrt(v["eps_r"] * v["mu_r"])))
+
+    materials += [(body, None) for body in vias]
 
     if untyped:
         result.warnings.append(f"ignored (no type): {', '.join(untyped)}")

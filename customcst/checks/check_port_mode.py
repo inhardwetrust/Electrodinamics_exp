@@ -4,8 +4,8 @@
 # cross-section (pin 1.27 mm, PTFE 2.1, outer 4.25 / 5.0 mm):
 #   - Z0 vs 60 / sqrt(eps_r) ln(D / d) = 50.0 Ohm (staircased circles:
 #     within 1 % at ~70 x 70 nodes across the port);
-#   - eps_eff ~ eps_r (a homogeneous TEM line), slightly low because edges
-#     touching the metal average with the metal's (air) cells;
+#   - eps_eff = eps_r (a homogeneous TEM line; metal cells are left out of
+#     the edge eps mean, so the edges next to the pin keep eps_r);
 #   - the mode field: E is radial and falls as 1/r between the conductors;
 #   - errors: no ground in the region, two signal conductors.
 # Also guards the thin-body PEC rule: an edge just outside a THICK curved
@@ -83,7 +83,7 @@ def main():
         check("coax mode solved", mode.ok, "; ".join(mode.errors))
         check("coax Z0 within 1 % of 60/sqrt(er) ln(D/d)", abs(mode.z0 / z_theory - 1) < 0.01,
               f"{mode.z0:.3f} vs {z_theory:.3f} Ohm, {mesh.grid.shape[1]} x {mesh.grid.shape[2]} cells")
-        check("coax eps_eff ~ eps_r (within 3 %)", abs(mode.eps_eff / EPS_R - 1) < 0.03,
+        check("coax eps_eff = eps_r (within 0.1 %)", abs(mode.eps_eff / EPS_R - 1) < 0.001,
               f"{mode.eps_eff:.4f}")
 
         # E along +y on the y axis between the conductors (z = 0 line): ~ 1/r.

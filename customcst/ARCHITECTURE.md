@@ -133,6 +133,72 @@ Lessons:
   cavity whose layers are not thin.
 - Pick the 2π branch explicitly when unwrapping long lines.
 
+## Holes and vias
+
+**Body holes** (`step_io._holes`, exact CAD faces): cylindrical faces whose
+outward normal (out of the material) points toward the axis.
+- Half faces on the same axis, radius and range are joined.
+- Only a full turn counts.
+- Stored per solid in `Body.holes`, (H, 8): start, axis, radius, length.
+
+**Model holes** (`geometry/holes.py find_holes`, numpy):
+- A body hole counts when it is:
+  - through: no material of its body just beyond either end, on the axis;
+  - open: the middle of its axis is inside no other solid. So a connector
+    bore with its dielectric, or a coax shield, is not a hole.
+- Holes of different bodies on one axis line, with the same radius and
+  touching ranges, are one hole: the drill through FR4 and both coppers.
+- A different radius stays separate: a ground clearance (antipad) must not
+  touch the via.
+- Ids are H1, H2 ..., by diameter, then position.
+
+**UI**:
+- a "Holes" section in the tree, with groups by diameter and one row per
+  hole (center in mm, the bodies it passes);
+- selecting the section, a group or a hole draws the outlines plus a halo
+  ring in cyan, through the bodies. The info panel shows the details.
+
+**Why holes in the substrate do not matter**: a via drawn in a drilled hole
+and a via over solid substrate give identical solver materials, because
+metal cells are left out of the edge εr mean (`check_discretize`).
+
+Checks: `checks/check_holes.py` uses a built board:
+- vias through FR4 and both coppers;
+- a via through an antipad;
+- a mounting hole;
+- a blind pocket and a filled hole, which are excluded;
+- a hole made of two half faces.
+
+None of the user's models has an open hole.
+
+**Vias**: holes are assigned in the project TOML.
+- `[holes.diameters]` holds rules by drill in mm (`"0.4" = "via"`).
+- `[holes.single]` holds rules by center in mm (`"-3,0,0.8" = "none"`).
+  They beat the diameter rule.
+- Kinds are "via" or "none"; without a rule a hole stays open.
+- Matching tolerances: 0.1 µm for a drill, 1 µm for a center.
+- `Project.vias(holes)` gives the assigned holes. `holes.via_body(hole)`
+  builds the closed 48-gon PEC cylinder that fills one.
+- These cylinders are extra conductors in `build_grid(..., vias)` and
+  `discretize(..., vias)`. The STEP bodies stay untouched.
+- The results fingerprint includes the hole rules.
+
+UI:
+- right click on a diameter group: "Via: all ⌀ …", "Not via", "Remove
+  the diameter rule";
+- right click on a hole: "Via", "Not via", "Use the ⌀ … rule";
+- the tree shows the counts, "via" on via rows (gold) and "*" for a
+  hole's own rule;
+- vias are drawn as gold pins.
+
+`checks/check_vias.py` covers:
+- the rules, their round trip, bad rules and the fingerprint;
+- a PEC column through each via, with excluded and mounting holes open;
+- top and ground stay apart through an antipad via, and are joined by a
+  via through the ground (3D connectivity of the PEC edge graph);
+- recognized vias against the same vias drawn as PEC cylinders: identical
+  PEC edges (0 of 3478 differ).
+
 ## Application settings
 
 `app_settings.py` keeps the settings of the program itself, not of a
@@ -177,21 +243,63 @@ model, in a JSON file: `%APPDATA%\customcst\settings.json`, or
     name. Buttons: New, Duplicate, Delete, Reset built-in.
 - Checks: `checks/check_project_file.py`.
 
-## Saved results
+## Simulation progress
 
-`solver/result_file.py`: after a run, the results go next to the STEP
-file (model.step -> model.npz, numpy without pickle, written atomically).
-- Contents: frequencies, ports, reference impedances, S[j, k, f], Z_in,
-  the run's info lines, the save time and a fingerprint of the inputs.
+A green bar in the status bar, visible while a simulation runs, shows the
+field energy of the running port.
+- It is full at the energy's peak and empty at END_DB = −40 dB below it,
+  which is where `FdtdSolver.run` stops (or at MAX_PULSES = 30 pulse
+  lengths).
+- Text: "port 1/2  pulse 45 %" while the pulse is still on (the energy
+  cannot decay yet), then "−23 dB → −40".
+- An estimated "percent done" was tried and dropped. The end time is not
+  known: a matched line decays during the pulse, a resonator rings long
+  after it. The energy is the real criterion.
+
+## Saved results (runs)
+
+`solver/result_file.py` stores every finished simulation as its own run
+file next to the STEP: model.step -> `model.results/<save time>.npz`
+(numpy without pickle, written atomically).
+- A run holds frequencies, ports, reference impedances, S[j, k, f],
+  Z_in, the run's info lines, its name (renamable; "Run N" by default),
+  the save time and the fingerprint of the inputs.
+- It also holds a snapshot of the parameters it was computed with:
+  [simulation] and [mesh] settings, the grid (cells and steps), the
+  dielectric materials, the number of vias and the ports. The snapshot is
+  for display only.
+- An older single `model.npz` moves into the folder as a run when the
+  results are listed. A damaged file is skipped and reported.
 - The fingerprint is SHA-256 of the STEP bytes plus the body types,
-  parameters and [simulation] / [mesh] settings (not [view]).
-- Opening the model loads the results. When the fingerprint no longer
-  matches (after an edit, or a new STEP), they are still shown, with an
-  "OUTDATED" line under the plot. Undoing the edit makes them current
-  again.
-- `*.npz` is git-ignored: results are derived data.
-- `checks/check_result_file.py` covers the round trip and what does and
-  does not change the fingerprint.
+  parameters, hole rules and [simulation] / [mesh] settings (not [view]).
+- `*.npz` and `*.results/` are git-ignored: results are derived data.
+
+UI:
+- Project > Simulation > Results has one row per run, newest on top.
+  - A tick shows the run in the Results tab.
+  - The row shows the name, the save time and "current" or "outdated"
+    (fingerprint against the current model).
+  - The run's parameters are listed inside the row.
+  - Double click or "Rename" renames the run. The menu also has "Show only
+    this", "Show all" and "Delete…" (with a confirmation).
+- On opening a model, the newest run is shown. A new run is ticked
+  automatically; the other ticks stay.
+- The Results tab draws every ticked run.
+  - The newest ticked run is the primary one: full color; the marker, the
+    status line and the .sNp export follow it.
+  - Older runs are dimmed and named in the legend ("S11 · Run 1"). The
+    readout lists them at the marker frequency.
+  - Runs may differ in band and ports: each curve keeps its own
+    frequencies.
+- The mouse wheel over the plot or the Smith chart moves the marker: one
+  point per notch, ten with Ctrl.
+
+Checks: `checks/check_result_file.py` covers:
+- the round trip;
+- several runs, rename and delete;
+- a damaged file;
+- the legacy import;
+- what changes the fingerprint.
 
 ## Waveguide ports
 
@@ -258,8 +366,12 @@ pin, PTFE and a 4.25 / 5.0 mm shield, 30 mm long, 1–10 GHz:
   - |S11|² + |S21|² = 1 within 0.4 % in band (−1.2 % at the band edge);
 - errors: a cone instead of a cylinder; a port inside the model.
 
-Z0 of the staircased coax: 46.1 Ω at 4 cells per feature, 49.95 Ω at 8
-(theory 50.01 Ω).
+Z0 of the staircased coax: 46.0 Ω at 4 cells per feature, 49.5 Ω at 8
+(theory 50.01 Ω). εeff = 2.1000 exactly.
+- Metal cells are left out of the edge εr mean (see Level 3).
+- Before that fix, εeff was 2.065. The 49.95 Ω measured then at 8 cells per
+  feature was partly an error cancelling the staircase error, not
+  accuracy.
 
 Performance: discretize casts rays along the grid lines
 (`geometry/raycast.py`, see Level 3). The coax went from 26 s to 0.9 s.

@@ -29,6 +29,10 @@ class Body:
     circles    (C, 7) float64 exact circular CAD edges, one row per circle:
                center (3, m), unit axis (3), radius (m). Used to read ports
                (the ends of a cone / cylinder).
+    holes      (H, 8) float64 cylindrical holes of a solid (concave
+               cylinder faces closing a full turn): start point on the axis
+               (3, m), unit axis (3), radius (m), length along the axis (m).
+               See geometry/holes.py.
     color      RGB in 0..1 from the STEP file, or None
     shape      OCP TopoDS_Shape in millimeters, or None
     """
@@ -40,6 +44,7 @@ class Body:
     normals: np.ndarray
     edges: np.ndarray
     circles: np.ndarray = None
+    holes: np.ndarray = None
     color: Optional[Color] = None
     shape: object = field(default=None, repr=False)
 
@@ -53,6 +58,8 @@ class Body:
         self.edges = np.asarray(self.edges, dtype=np.float64).reshape(-1, 2, 3)
         circles = np.zeros((0, 7)) if self.circles is None else self.circles
         self.circles = np.asarray(circles, dtype=np.float64).reshape(-1, 7)
+        holes = np.zeros((0, 8)) if self.holes is None else self.holes
+        self.holes = np.asarray(holes, dtype=np.float64).reshape(-1, 8)
 
     @property
     def bounds(self):

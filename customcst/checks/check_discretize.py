@@ -54,6 +54,52 @@ def index_of(lines, value):
     return i
 
 
+def via_in_hole_vs_solid(folder):
+    """
+    A via (PEC cylinder through FR4 and both copper layers) in a drilled
+    hole and the same via over solid substrate: metal cells are left out of
+    the edge eps mean, so both must give the same solver materials.
+    """
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+
+    def cylinder(r, z0, z1):
+        return BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, z0), gp_Dir(0, 0, 1)), r, z1 - z0).Shape()
+
+    results = []
+    for drilled in (True, False):
+        substrate = box(-5, -5, 0, 5, 5, 1.6)
+        if drilled:
+            substrate = BRepAlgoAPI_Cut(substrate, cylinder(0.3, -1, 3)).Shape()
+        path = os.path.join(folder, f"via_{drilled}.step")
+        write_step(path, [("substrate", substrate, None),
+                          ("gnd", box(-5, -5, -0.035, 5, 5, 0), None),
+                          ("top", box(-5, -5, 1.6, 5, 5, 1.635), None),
+                          ("via", cylinder(0.3, -0.035, 1.635), None)])
+        g = read_step(path, linear_deflection=2e-6)
+        project = Project(path)
+        for name in ("gnd", "top", "via"):
+            project.set_type(g[name], "pec")
+        project.set_type(g["substrate"], "dielectric")
+        project.set_value("substrate", "eps_r", 4.3)
+        project.set_setting("simulation", "padding", 1.0)
+        mesh = build_grid(g, project, {})
+        results.append((mesh, discretize(mesh, g, project)))
+
+    (mesh_a, a), (mesh_b, b) = results
+    # Up to rounding: the hole and the via are tessellated separately.
+    same_grid = all(len(la) == len(lb) and np.allclose(la, lb, rtol=0, atol=1e-9)
+                    for la, lb in zip(mesh_a.grid.lines, mesh_b.grid.lines))
+    check("via: drilled and solid substrate give the same grid", same_grid)
+    if not same_grid:
+        return
+    pec_diff = sum(int(np.sum(pa != pb)) for pa, pb in zip(a.pec, b.pec))
+    check("via: same PEC edges", pec_diff == 0, f"{pec_diff} differ")
+    free = [~(pa | pb) for pa, pb in zip(a.pec, b.pec)]
+    worst = max(float(np.max(np.abs(ea - eb)[f], initial=0.0)) for ea, eb, f in zip(a.eps_r, b.eps_r, free))
+    check("via: same eps on every free edge", worst < 1e-5, f"max |Δεr| = {worst:.2e}")
+
+
 def main():
     folder = tempfile.mkdtemp()
     try:
@@ -163,6 +209,8 @@ def main():
         sheet = mb.pec[0][index_of(xb, -25 * MM):index_of(xb, 25 * MM),
                           index_of(yb, -15 * MM):index_of(yb, 15 * MM) + 1, kb2]
         check("large tolerance: ground is still a full sheet", sheet.all())
+
+        via_in_hole_vs_solid(folder)
     finally:
         shutil.rmtree(folder)
 

@@ -10,14 +10,15 @@ import numpy as np
 from PySide6.QtCore import QObject, QThread, Signal
 
 from solver.fdtd import FdtdSolver
-from solver.result_file import SimulationResult
+from solver.result_file import SimulationResult  # noqa: F401  (re-exported for callers)
 from solver.sparams import input_impedance, s_column
 
 FREQUENCY_POINTS = 401
 
 
 class _Worker(QObject):
-    progress = Signal(str, float, float)     # port, t (s), energy level (dB)
+    # port, t (s), energy level (dB below its peak), pulse length (s)
+    progress = Signal(str, float, float, float)
     finished = Signal(object)                # SimulationResult or None
     failed = Signal(str)
 
@@ -43,8 +44,8 @@ class _Worker(QObject):
                 solver = FdtdSolver(self.materials, self.f_min, self.f_max, active_port=active)
                 start = time.perf_counter()
 
-                def report(t, level, active=active):
-                    self.progress.emit(active, t, level)
+                def report(t, level, active=active, solver=solver):
+                    self.progress.emit(active, t, level, solver.pulse.duration)
                     return not self._stop
 
                 status = solver.run(progress=report)
@@ -67,7 +68,7 @@ class _Worker(QObject):
 
 
 class SimulationRunner(QObject):
-    progress = Signal(str, float, float)
+    progress = Signal(str, float, float, float)
     finished = Signal(object)
     failed = Signal(str)
 
