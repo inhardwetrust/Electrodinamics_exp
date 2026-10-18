@@ -179,8 +179,9 @@ def in_or_on_grid(body, axis, coords, delta):
 
 def crossings_on_grid(body, axis, coords, half_length, delta, all_offsets=False):
     """
-    Int array: crossings of the segment [s - half_length, s + half_length]
-    along `axis` through every grid point (s = the point's coordinate).
+    Int array: crossings of the segment [s - below, s + above] along `axis`
+    through every grid point (s = the point's coordinate). half_length: a
+    number (below = above), or (below, above) as 1D arrays along `axis`.
     all_offsets: the most crossings over the four offset line sets, so a
     segment through the very border of a sheet counts as crossing it.
     """
@@ -188,8 +189,12 @@ def crossings_on_grid(body, axis, coords, half_length, delta, all_offsets=False)
     u, v = [a for a in range(3) if a != axis]
     ids, ia = grid_ids(axis, len(coords[u]), len(coords[v]), len(coords[axis]))
     s = np.asarray(coords[axis])[ia] * np.ones(shape)
+    if np.isscalar(half_length):
+        below = above = half_length
+    else:
+        below, above = (np.asarray(h)[ia] * np.ones(shape) for h in half_length)
     result = np.zeros(shape, dtype=np.int64)
     for ou, ov in (OFFSETS if all_offsets else OFFSETS[:1]):
         hits = LineHits(body, axis, coords[u], coords[v], (delta * ou, delta * ov))
-        result = np.maximum(result, hits.count_between(ids, s - half_length, s + half_length))
+        result = np.maximum(result, hits.count_between(ids, s - below, s + above))
     return result

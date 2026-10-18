@@ -19,7 +19,14 @@
 #     grounds walled to the ground, as a dense via fence): plane,
 #     direction and rectangle; S11 < -30 dB, |S21| = 1 within 0.01, S21
 #     phase = the delay with the mode's eps_eff within 3 deg;
-#   - a box overlapping the board on two faces -> error.
+#   - a box overlapping the board on two faces -> error;
+#   - a box on the end of a thin board (0.2 mm + copper, 6 mm of air below
+#     the copper): found (an even 9 x 9 sample grid on its faces missed
+#     the board);
+#   - microstrip with a small box at one end (10 x 4 mm, the line's field
+#     runs past it): the mode is solved on the whole plane, so both ports
+#     see the same line: S12 = S21 within 0.002 dB, |S|² of each column
+#     <= 1 (cut at the box, port 2's V I was 5-9 % low: S12 +0.2 dB).
 #
 #   python checks/check_waveport.py      (~1.5 min)
 
@@ -124,7 +131,7 @@ def box(x0, y0, z0, x1, y1, z1):
     return BRepPrimAPI_MakeBox(gp_Pnt(x0, y0, z0), gp_Pnt(x1, y1, z1)).Shape()
 
 
-def pcb_line(folder, kind, port1=None):
+def pcb_line(folder, kind, port1=None, port2=None):
     """A 30 mm PCB line along x with box ports on both edges: (geometry, project)."""
     bodies = [("sub", box(0, -10, 0, LENGTH, 10, 1.6), None), ("gnd", box(0, -10, -0.035, LENGTH, 10, 0), None)]
     if kind == "microstrip":
@@ -139,7 +146,7 @@ def pcb_line(folder, kind, port1=None):
                    ("wall_l", box(0, -1.6, 0, LENGTH, -1.4, 1.6), None),
                    ("wall_r", box(0, 1.4, 0, LENGTH, 1.6, 1.6), None)]
     bodies += [("port1", port1 or box(-1, -10, -0.035, 0, 10, 8), None),
-               ("port2", box(LENGTH, -10, -0.035, LENGTH + 1, 10, 8), None)]
+               ("port2", port2 or box(LENGTH, -10, -0.035, LENGTH + 1, 10, 8), None)]
     path = os.path.join(folder, f"{kind}.step")
     write_step(path, bodies)
     g = read_step(path)
@@ -187,6 +194,40 @@ def box_ports(folder):
     g, p = pcb_line(folder, "microstrip", port1=box(-1, -10, -0.035, 0.5, 10, 8))
     bad = p.waveports(g)["port1"]
     check("box overlapping the board -> error", not bad.ok, bad.error)
+
+    # A box on a thin board: the board is only 0.27 mm of the box's 6.3 mm.
+    path = os.path.join(folder, "thin.step")
+    write_step(path, [("sub", box(-8, -5.5, 0, 8, 5.5, 0.2), None),
+                      ("gnd", box(-8, -5.5, 0.2, 8, 5.5, 0.235), None),
+                      ("line", box(-0.5, -5.5, -0.035, 0.5, 5.5, 0), None),
+                      ("port", box(-8, 5.5, -6.035, 8, 6.5, 0.235), None)])
+    g = read_step(path)
+    p = Project(path)
+    for name in ("gnd", "line"):
+        p.set_type(g[name], "pec")
+    p.set_type(g["sub"], "dielectric")
+    p.set_type(g["port"], "waveport")
+    thin = p.waveports(g)["port"]
+    check("box on a thin board found", thin.ok and thin.shape == "rectangle" and thin.axis == 1
+          and thin.direction == -1, thin.error or "")
+
+    # Ports of different sizes on one line: reciprocity and passivity.
+    g, p = pcb_line(folder, "microstrip", port2=box(LENGTH, -5, -0.035, LENGTH + 1, 5, 4))
+    _, _, m = build(g, p)
+    z = [w.mode.z0 for w in m.waveports]
+    check("small box: same line, same Z0", abs(z[0] - z[1]) < 0.01 * z[0], f"{z[0]:.2f} / {z[1]:.2f} Ω")
+    s = {}
+    for k, active in enumerate(("port1", "port2")):
+        solver = FdtdSolver(m, 1.0, 5.0, active_port=active)
+        solver.run()
+        column = s_column(solver, f)
+        s[0, k], s[1, k] = column["port1"], column["port2"]
+    ratio = 20 * np.log10(np.abs(s[0, 1] / s[1, 0]))
+    check("small box: S12 = S21 within 0.002 dB", np.all(np.abs(ratio) < 0.002),
+          f"max {np.abs(ratio).max():.4f} dB")
+    power = [np.abs(s[0, k]) ** 2 + np.abs(s[1, k]) ** 2 for k in (0, 1)]
+    check("small box: |S11|² + |S21|² <= 1 for both columns", all(np.all(c < 1.001) for c in power),
+          f"max {max(c.max() for c in power):.4f}")
 
 
 def main():

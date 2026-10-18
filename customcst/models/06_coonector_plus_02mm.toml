@@ -1,0 +1,82 @@
+# customcst project for 06_coonector_plus_02mm.stp
+
+[simulation]
+f_min = 1.0   # GHz
+f_max = 5.0   # GHz
+padding = 0.0   # mm
+trim_pulse = true
+accuracy = "-30"   # dB
+excite = "all"
+
+[mesh]
+cells_per_wavelength = 20.0
+cells_per_feature = 4.0
+max_ratio = 1.3
+min_step = 0.0   # mm
+
+[bodies.connector_dielectric]
+type = "dielectric"
+material = "PTFE"
+eps_r = 2.1
+tan_d = 0.0002
+f_ref = 10.0   # GHz
+mu_r = 1.0
+
+[bodies.connector_outer]
+type = "pec"
+
+[bodies.connector_wire]
+type = "pec"
+
+[bodies.gnd]
+type = "pec"
+
+[bodies.inport]
+type = "waveport"
+
+[bodies.pcb_topmetall]
+type = "pec"
+
+[bodies.pcb_topmetall_2]
+type = "pec"
+
+[bodies.pcb_topmetall_3]
+type = "pec"
+
+[bodies.solder]
+type = "pec"
+
+[bodies.substrate]
+type = "dielectric"
+material = "FR4"
+eps_r = 4.3
+tan_d = 0.02
+f_ref = 3.0   # GHz
+mu_r = 1.0
+
+[bodies.waveguideport]
+type = "waveport"
+
+[view]
+up = "z"
+
+[holes.diameters]   # drill, mm
+"0.3" = "via"
+
+[materials.Default]
+eps_r = 1.0
+tan_d = 0.0
+f_ref = 10.0   # GHz
+mu_r = 1.0
+
+[materials.FR4]
+eps_r = 4.3
+tan_d = 0.02
+f_ref = 3.0   # GHz
+mu_r = 1.0
+
+[materials.PTFE]
+eps_r = 2.1
+tan_d = 0.0002
+f_ref = 10.0   # GHz
+mu_r = 1.0

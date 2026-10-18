@@ -34,7 +34,12 @@
 #     it crosses the surface at least twice (enters and leaves within the
 #     segment); for a sheet (no inside) one crossing is enough.
 #     tolerance ~ the mesh min_step, so a thin body whose faces were merged
-#     onto the edge's grid plane becomes a sheet of PEC edges there.
+#     onto the edge's grid plane becomes a sheet of PEC edges there. The
+#     reach is also kept under half the neighbouring cells: cells can be
+#     finer than min_step (a 0.2 mm board split in two 0.1 mm cells with a
+#     0.14 mm tolerance), and a segment reaching past the next grid line
+#     caught the copper and the ground plane from there: the whole board
+#     became metal. Each thin body belongs to its nearest grid line only.
 #     A single crossing of a THICK body's surface does not count: an edge
 #     just outside a curved conductor must stay free, or every curved
 #     conductor would grow by the tolerance (a coax pin got 0.2 mm fatter,
@@ -281,7 +286,9 @@ def _edges_in_metal(body, lines, axis, tolerance):
     needed = 1 if body.kind == "sheet" else 2               # through a thin solid: in + out
     for across in range(3):
         if across != axis:
-            hit |= crossings_on_grid(body, across, coords, tolerance, delta,
+            gaps = 0.4999 * np.diff(lines[across])
+            reach = (np.minimum(tolerance, np.r_[np.inf, gaps]), np.minimum(tolerance, np.r_[gaps, np.inf]))
+            hit |= crossings_on_grid(body, across, coords, reach, delta,
                                      all_offsets=body.kind == "sheet") >= needed
     return hit
 

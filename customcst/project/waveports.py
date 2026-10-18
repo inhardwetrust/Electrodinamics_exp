@@ -112,9 +112,8 @@ def _box_port(body, materials):
         u, v = [a for a in range(3) if a != axis]
         # Inner points only: a box as wide as the board touches the board's
         # edges with the borders of its side faces, which is not contact.
-        t = (np.arange(FACE_SAMPLES) + 0.5) / FACE_SAMPLES
-        gu = lo[u] + t * (hi[u] - lo[u])
-        gv = lo[v] + t * (hi[v] - lo[v])
+        gu = _face_samples(lo[u], hi[u], [m.bounds for m in materials], u)
+        gv = _face_samples(lo[v], hi[v], [m.bounds for m in materials], v)
         uu, vv = np.meshgrid(gu, gv, indexing="ij")
         touching = []
         for coordinate in (lo[axis], hi[axis]):
@@ -139,6 +138,20 @@ def _box_port(body, materials):
     result.center = 0.5 * (lo + hi)
     result.center[axis] = inner
     return _place(result, axis, inner, outer, materials, tolerance)
+
+
+def _face_samples(lo, hi, bounds, axis):
+    """
+    Sample coordinates strictly inside (lo, hi) along one side of a box
+    face: the midpoints between the model's body bounds (and an even
+    FACE_SAMPLES split), so a thin board or copper layer between two bounds
+    always gets a point (an even 9 x 9 grid missed a 0.2 mm board).
+    """
+    cuts = [lo, hi] + list(lo + (np.arange(1, FACE_SAMPLES) / FACE_SAMPLES) * (hi - lo))
+    for b_lo, b_hi in bounds:
+        cuts += [c for c in (b_lo[axis], b_hi[axis]) if lo < c < hi]
+    cuts = np.unique(cuts)
+    return 0.5 * (cuts[1:] + cuts[:-1])
 
 
 def _place(result, axis, inner, outer, materials, tolerance):

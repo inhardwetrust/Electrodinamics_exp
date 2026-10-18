@@ -14,7 +14,8 @@
 #     are neighbours, including diagonal ones, form one conductor (a thin
 #     staircased tube breaks into pieces that only touch diagonally). The
 #     conductor touching the port region's border is ground, the single
-#     other conductor is the signal;
+#     other conductor inside the region is the signal, conductors wholly
+#     outside it float;
 #   - potentials: the pieces touching the border are at 0 V, the largest
 #     piece of the signal at 1 V. Other pieces float (unknown potential,
 #     zero net charge): the FDTD grid joins nothing across a diagonal, so a
@@ -22,7 +23,15 @@
 #   - each free in-plane edge is a conductance g = eps_r * dual width /
 #     length (eps_r of the discretized edge): the discrete Laplacian of the
 #     FDTD grid;
-#   - nodes outside the port region are left out (natural boundary).
+#   - a box port (region) is solved on the whole plane: the region picks
+#     the conductors, but the line's field does not stop at the box (the
+#     FR4 between side grounds and the ground plane runs to the board's
+#     edge, the fringe field spreads into the air). Cut at the box, the
+#     mode misses that part: V I of the port then gave 5-9 % less than
+#     the Poynting flux and S12 != S21 by ~0.4 dB. The plane's edge is a
+#     natural boundary (the padding to the absorber);
+#   - a circle port (coax) is solved inside the circle only (the shield
+#     closes it; nodes outside are left out).
 # Results (per unit length, for 1 V):
 #   C' = eps0 sum g (dphi)^2,  C0' the same with eps_r = 1,
 #   Z0 = 1 / (c0 sqrt(C' C0')),  eps_eff = C' / C0',
@@ -81,8 +90,10 @@ class _Edges:
 def solve_port_mode(materials, axis, index, region=None, circle=None):
     """
     region: ((u0, u1), (v0, v1)) in meters on the plane (u, v = the other
-    two axes in increasing order), the port face's extent; or
-    circle: (center_u, center_v, radius) in meters; None = the whole plane.
+    two axes in increasing order), the port face's extent: it picks the
+    conductors, the mode is solved on the whole plane; or
+    circle: (center_u, center_v, radius) in meters, solved inside it only;
+    None = the whole plane, ground = conductors on the plane's edge.
     """
     lines = materials.grid.lines
     u_axis, v_axis = [a for a in range(3) if a != axis]
@@ -100,13 +111,15 @@ def solve_port_mode(materials, axis, index, region=None, circle=None):
     # Nodes of the region.
     uu, vv = np.meshgrid(lu, lv, indexing="ij")
     inside = np.ones(uu.shape, dtype=bool)
+    box = inside                                    # nodes that pick the conductors
     if region is not None:
         (u0, u1), (v0, v1) = region
         tol = 1e-9
-        inside = (uu >= u0 - tol) & (uu <= u1 + tol) & (vv >= v0 - tol) & (vv <= v1 + tol)
+        box = (uu >= u0 - tol) & (uu <= u1 + tol) & (vv >= v0 - tol) & (vv <= v1 + tol)
     if circle is not None:
         cu, cv, radius = circle
         inside &= (uu - cu) ** 2 + (vv - cv) ** 2 <= (radius * (1 + 1e-6) + 1e-9) ** 2
+        box = inside
     node_id = -np.ones(uu.shape, dtype=np.int64)
     node_id[inside] = np.arange(np.count_nonzero(inside))
     n = int(inside.sum())
@@ -148,9 +161,9 @@ def solve_port_mode(materials, axis, index, region=None, circle=None):
     label_grid, _ = label(metal_grid, structure=np.ones((3, 3), dtype=int))
     conductor = label_grid[inside]
 
-    border = on_metal & ~_interior(inside)[inside]
+    border = on_metal & (box & ~_interior(box))[inside]
     ground = set(conductor[border])
-    signal = sorted(set(conductor[on_metal]) - ground)
+    signal = sorted(set(conductor[on_metal & box[inside]]) - ground)
 
     if not ground:
         mode.errors.append("no conductor touches the port border (no ground / outer conductor)")

@@ -7,7 +7,11 @@
 #     its faces, 1 in air; mu = 1; sigma from tan d at f_ref;
 #   - ports: a column of edges along z between the sheets, touching PEC at
 #     both ends, direction from - to +;
-#   - a lossless model gives sigma = 0 everywhere.
+#   - a lossless model gives sigma = 0 everywhere;
+#   - a thin board (0.2 mm FR4, auto min_step ~0.14 mm, so its cells are
+#     finer than the merge tolerance): copper and ground stay sheets on
+#     their own grid lines, no edge inside the board is PEC (the thin-body
+#     test reached across a cell and filled the board with metal).
 #
 #   python checks/check_discretize.py
 
@@ -98,6 +102,39 @@ def via_in_hole_vs_solid(folder):
     free = [~(pa | pb) for pa, pb in zip(a.pec, b.pec)]
     worst = max(float(np.max(np.abs(ea - eb)[f], initial=0.0)) for ea, eb, f in zip(a.eps_r, b.eps_r, free))
     check("via: same eps on every free edge", worst < 1e-5, f"max |Δεr| = {worst:.2e}")
+
+
+def thin_board(folder):
+    path = os.path.join(folder, "thin.step")
+    write_step(path, [("substrate", box(-8, -5, 0, 8, 5, 0.2), None),
+                      ("gnd", box(-8, -5, 0.2, 8, 5, 0.235), None),
+                      ("line", box(-0.5, -5, -0.035, 0.5, 5, 0), None)])
+    g = read_step(path)
+    project = Project(path)
+    for name in ("gnd", "line"):
+        project.set_type(g[name], "pec")
+    project.set_type(g["substrate"], "dielectric")
+    project.set_value("substrate", "eps_r", 4.3)
+    project.set_setting("simulation", "f_max", 5.0)
+    mesh = build_grid(g, project, {})
+    m = discretize(mesh, g, project)
+    z = mesh.grid.lines[2]
+    inner = (z > 0.01 * MM) & (z < 0.19 * MM)
+    check("thin board: a grid line inside the board, cells under the tolerance",
+          inner.any() and np.diff(z[(z > -0.01 * MM) & (z < 0.21 * MM)]).min() < 0.99 * mesh.min_step,
+          f"z {np.round(z[(z > -0.1 * MM) & (z < 0.3 * MM)] / MM, 3)} mm, min_step {mesh.min_step / MM:.3f} mm")
+    pec_inside = int(m.pec[0][:, :, inner].sum() + m.pec[1][:, :, inner].sum())
+    zc = 0.5 * (z[1:] + z[:-1])
+    pec_inside += int(m.pec[2][:, :, (zc > 0.0) & (zc < 0.2 * MM)].sum())
+    check("thin board: no PEC edge inside the board", pec_inside == 0, f"{pec_inside} PEC edges")
+    x, y = mesh.grid.lines[0], mesh.grid.lines[1]
+    kg, kl = int(np.argmin(np.abs(z - 0.2 * MM))), int(np.argmin(np.abs(z)))
+    ix = slice(index_of(x, -8 * MM), index_of(x, 8 * MM))
+    iy = slice(index_of(y, -5 * MM), index_of(y, 5 * MM) + 1)
+    strip = slice(index_of(x, -0.5 * MM), index_of(x, 0.5 * MM))
+    check("thin board: ground and strip are still sheets",
+          m.pec[0][ix, iy, kg].all() and m.pec[0][strip, iy, kl].all()
+          and not m.pec[0][index_of(x, 0.5 * MM) + 1:, iy, kl].any())
 
 
 def main():
@@ -211,6 +248,7 @@ def main():
         check("large tolerance: ground is still a full sheet", sheet.all())
 
         via_in_hole_vs_solid(folder)
+        thin_board(folder)
     finally:
         shutil.rmtree(folder)
 

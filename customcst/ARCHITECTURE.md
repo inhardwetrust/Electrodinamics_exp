@@ -395,12 +395,21 @@ line, outside the model (an extruded circle: easy to draw in SolidWorks).
 **Box ports (PCB lines)**: a box on the board edge, outside the model.
 - The port region is the rectangle of its touching face.
 - The touching face is the one of the two opposite faces whose inner
-  points touch the model (a 9 × 9 grid without the face borders). A box as
-  wide as the board touches the board's edges only with its borders, and
-  that is not contact.
-- The box must cover the line's field. The ground must reach its border:
-  the conductor touching the border is ground, the one inside is the
-  signal.
+  points touch the model. The points lie between the model's body bounds
+  (and an even 9 × 9 split), never on the face borders: a box as wide as
+  the board touches the board's edges only with its borders, which is not
+  contact, and a thin board (0.2 mm) still gets a point (an even grid
+  alone missed it).
+- The box picks the conductors. The ground must reach its border: the
+  conductor touching the border is ground, the one inside is the signal,
+  conductors wholly outside float.
+- The mode is solved on the whole plane of the domain, not only inside the
+  box: the line's field runs past the box (the FR4 between the side
+  grounds and the ground plane reaches the board's edge). Cut at the box,
+  V I of the port missed 5-9 % of the Poynting flux, and a model with a
+  coax port and a box port gave S12 - S21 = +0.4 dB (S12 above 0 dB).
+  Checked: two boxes of different sizes on one microstrip give the same
+  Z0 and S12 = S21.
 - Checked on lossless FR4 30 mm lines (`check_waveport`):
   - microstrip 3 mm: S11 < −48 dB, |S21| 0.995–1.000, phase within 2.2°;
   - grounded coplanar 1 / 0.4 mm with the side grounds walled to the ground
