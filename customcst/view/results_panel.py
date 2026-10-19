@@ -20,6 +20,13 @@
 #   S'_jk = S_jk exp(j beta_j d_j) exp(j beta_k d_k),  beta = 2 pi f sqrt(eps_eff) / c0
 # (the reflection of a port turns by 2 beta d, |S| does not change).
 # Applies to every shown run (by port name), the readout and the export.
+#
+# Normalize to (like a VNA's port impedance or CST's "normalize to fixed
+# impedance"): every port's reference becomes one R (50 Ohm by default)
+# instead of its own line's Z0 (solver/vna.py renormalize), after the
+# reference planes are moved. Compares with a 50 Ohm VNA when the model's
+# coax is not exactly 50 Ohm. A multi-port run needs its full S matrix
+# (all ports excited); otherwise it stays at the ports' own Z0.
 
 import os
 
@@ -48,6 +55,7 @@ class ResultsPanel(QWidget):
         self._ports = 0                 # trace boxes are for this many ports
         self.shifts = {}                # port name -> reference plane shift (mm, + = into the model)
         self._shift_boxes = {}          # port name -> QDoubleSpinBox
+        self._cache = {}                # id(run) -> (key, s dict, references, note)
 
         self.format_combo = QComboBox()
         self.format_combo.addItems(vna.FORMATS)
@@ -68,6 +76,19 @@ class ResultsPanel(QWidget):
         controls.addWidget(QLabel("Traces:"))
         controls.addLayout(self.trace_row)
         controls.addStretch(1)
+        self.normalize_check = QCheckBox("Normalize to")
+        self.normalize_check.setToolTip("Refer S to one impedance for all ports (like a VNA), "
+                                        "instead of each port's own line Z0")
+        self.normalize_check.toggled.connect(lambda _: self._redraw())
+        self.normalize_box = QDoubleSpinBox()
+        self.normalize_box.setRange(0.1, 10000.0)
+        self.normalize_box.setDecimals(1)
+        self.normalize_box.setValue(50.0)
+        self.normalize_box.setSuffix(" Ω")
+        self.normalize_box.valueChanged.connect(lambda _: self._redraw())
+        controls.addWidget(self.normalize_check)
+        controls.addWidget(self.normalize_box)
+        controls.addSpacing(12)
         controls.addWidget(self.save_button)
 
         self.line_plot = LinePlot()
@@ -213,7 +234,7 @@ class ResultsPanel(QWidget):
         self.shifts[name] = float(value)
         self._redraw()
 
-    def _s(self, run, j, k):
+    def _moved(self, run, j, k):
         """S_jk of a run with the reference planes moved (see the header)."""
         s = run.s[j, k]
         phase = 0.0
@@ -223,10 +244,39 @@ class ResultsPanel(QWidget):
                 phase = phase + 2 * np.pi * run.frequencies * np.sqrt(run.eps_eff[p]) / C0 * d
         return s * np.exp(1j * phase) if np.any(phase) else s
 
-    def _shift_note(self, run):
+    def _shown(self, run):
+        """(S dict, port references in Ohm, note): planes moved, then normalized (see the header)."""
+        r_new = self.normalize_box.value() if self.normalize_check.isChecked() else None
+        key = (tuple(sorted(self.shifts.items())), r_new)
+        cached = self._cache.get(id(run))
+        if cached is not None and cached[0] == key and cached[1] is run:
+            return cached[2:]
+        s = {jk: self._moved(run, *jk) for jk in run.s}
+        references = list(run.resistances)
+        notes = []
         moved = [f"{name} {self.shifts[name]:+g} mm" for name, e in zip(run.ports, run.eps_eff)
                  if self.shifts.get(name) and np.isfinite(e)]
-        return "reference planes moved: " + ", ".join(moved) if moved else ""
+        if moved:
+            notes.append("reference planes moved: " + ", ".join(moved))
+        if r_new is not None and not np.allclose(references, r_new):
+            n = len(run.ports)
+            if all((j, k) in s for j in range(n) for k in range(n)):
+                s = vna.renormalize(s, references, r_new)
+                references = [r_new] * n
+                notes.append(f"normalized to {r_new:g} Ω")
+            else:
+                notes.append(f"not normalized to {r_new:g} Ω: needs the full S matrix (excite all ports)")
+        self._cache[id(run)] = (key, run, s, references, "; ".join(notes))
+        return s, references, "; ".join(notes)
+
+    def _s(self, run, j, k):
+        return self._shown(run)[0][j, k]
+
+    def _reference(self, run, j):
+        return self._shown(run)[1][j]
+
+    def _shift_note(self, run):
+        return self._shown(run)[2]
 
     def _default_traces(self):
         """Tick the column of the first excited port of the primary run (S11, S21 ...)."""
@@ -307,7 +357,7 @@ class ResultsPanel(QWidget):
                     name = label(f"S{j + 1}{k + 1}", run)
                     color = self._color(j, k)
                     if fmt == "Z in":
-                        z = vna.gamma_to_z(s, run.resistances[j])
+                        z = vna.gamma_to_z(s, self._reference(run, j))
                         curves += [(label(f"Re Z{j + 1}", run), f / 1e9, z.real, color, dim),
                                    (label(f"Im Z{j + 1}", run), f / 1e9, z.imag, color + 4, dim)]
                         continue
@@ -348,7 +398,7 @@ class ResultsPanel(QWidget):
                     continue
                 s = self._s(run, j, k)
                 line = prefix + vna.marker_readout(fmt, s[m], run.frequencies[m],
-                                                   run.resistances[j], j, k)
+                                                   self._reference(run, j), j, k)
                 if fmt == "Group delay":
                     line += f"  τg {vna.group_delay(s, run.frequencies)[m] * 1e9:.4f} ns"
                 lines.append(line)
@@ -363,10 +413,12 @@ class ResultsPanel(QWidget):
         r = self.primary
         if r is None:
             return
-        if len(set(r.resistances)) > 1:
+        references = self._shown(r)[1]
+        if len(set(references)) > 1:
             QMessageBox.warning(self, "Touchstone",
-                                "Ports have different R; Touchstone v1 needs one reference. "
-                                f"Writing with R = {r.resistances[0]:g} Ω.")
+                                "Ports have different R; Touchstone v1 needs one reference "
+                                "(tick Normalize to). "
+                                f"Writing with R = {references[0]:g} Ω.")
         n = len(r.ports)
         missing = [f"S{j + 1}{k + 1}" for j in range(n) for k in range(n) if (j, k) not in r.s]
         if missing:
@@ -381,7 +433,7 @@ class ResultsPanel(QWidget):
         if path:
             s = {jk: self._s(r, *jk) for jk in r.s}
             moved = self._shift_note(r)
-            vna.write_touchstone(path, r.frequencies, s, r.ports, r.resistances[0],
+            vna.write_touchstone(path, r.frequencies, s, r.ports, references[0],
                                  r.comment + (f"; {moved}" if moved else ""))
 
 

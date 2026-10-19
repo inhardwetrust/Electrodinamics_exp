@@ -16,7 +16,7 @@ from PySide6.QtCore import QRect, Qt, QTimer
 from PySide6.QtGui import QColor, QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDockWidget, QFileDialog, QHBoxLayout,
-    QHeaderView, QLabel, QProgressBar, QPushButton, QToolButton,
+    QApplication, QHeaderView, QLabel, QProgressBar, QPushButton, QToolButton,
     QMainWindow, QMenu, QMessageBox, QSlider, QTableWidget, QTableWidgetItem, QTabWidget,
     QToolBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
@@ -31,11 +31,13 @@ from project.object_types import OBJECT_TYPES
 from project.project_file import UP_AXES, Project, ProjectError
 from project.settings import SECTIONS
 from view.geometry_view import GeometryView
+from view.profile_window import ProfileWindow
 from view.results_panel import ResultsPanel
 from project.settings import EXCITE_ALL, accuracy_db
 from solver.result_file import (delete_result, fingerprint, format_duration, list_results,
                                 rename_result, save_result)
 from view.sim_runner import SimulationRunner
+from solver.line_profile import impedance_profile, line_impedance
 
 MM = 1e-3
 AXES = "xyz"
@@ -76,6 +78,7 @@ class MainWindow(QMainWindow):
         self.mesh = None            # MeshResult
         self.materials = None       # MaterialGrid (solver's view)
         self._mesh_coordinate = None    # where the mesh plane is (m)
+        self.profile_window = None      # Z0 profile (ProfileWindow), made on first use
         self.view = GeometryView()
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
@@ -182,6 +185,19 @@ class MainWindow(QMainWindow):
         self.mesh_label = QLabel()
         self.mesh_label.setMinimumWidth(90)
         bar.addWidget(self.mesh_label)
+
+        # Line impedance: Z0 of the cross-section at the plane, or along its axis.
+        self.z0_button = QToolButton()
+        self.z0_button.setText("Z₀")
+        self.z0_button.setToolTip("Z0 of the line at the plane (its grid cross-section); "
+                                  "the arrow: Z0 profile along the plane's axis")
+        self.z0_button.setPopupMode(QToolButton.MenuButtonPopup)
+        self.z0_button.clicked.connect(self._z0_here)
+        z0_menu = QMenu(self)
+        z0_menu.addAction("Z₀ at the plane", self._z0_here)
+        z0_menu.addAction("Z₀ profile along the axis…", self._z0_profile)
+        self.z0_button.setMenu(z0_menu)
+        bar.addWidget(self.z0_button)
 
         self.legend = QLabel(
             "  <span style='color:#ccc;background:#222'>&nbsp;"
@@ -669,6 +685,8 @@ class MainWindow(QMainWindow):
         )
         self._configure_mesh_slider(center=center_slider)
         self._show_mesh_plane()
+        if self.profile_window is not None and self.profile_window.isVisible():
+            self.profile_window.mark_outdated()
 
     def _configure_mesh_slider(self, center=False):
         if self.mesh is None or not self.mesh.ok:
@@ -692,6 +710,9 @@ class MainWindow(QMainWindow):
     def _mesh_slider_moved(self, index):
         if self.mesh is not None and self.mesh.ok:
             self._mesh_coordinate = self.mesh.grid.lines[self.mesh_axis.currentIndex()][index]
+            window = self.profile_window
+            if window is not None and window.profile is not None                     and window.profile.axis == self.mesh_axis.currentIndex():
+                window.set_marker(self._mesh_coordinate)
         self._show_mesh_plane()
 
     def _mesh_axis_changed(self, _index):
@@ -727,6 +748,61 @@ class MainWindow(QMainWindow):
             self.view.set_material_plane(None)
         self.view.set_domain(self.mesh.grid.bounds)
         self.mesh_label.setText(f" {AXES[axis]} = {coordinate / MM:.3f} mm")
+
+    # =====================================================
+    # Line impedance (solver/line_profile.py)
+    # =====================================================
+
+    def _z0_ready(self):
+        if self.materials is None or self.geometry is None:
+            self.statusBar().showMessage("Z0: no mesh yet", 5000)
+            return False
+        return True
+
+    def _z0_here(self):
+        if not self._z0_ready():
+            return
+        axis = self.mesh_axis.currentIndex()
+        s = line_impedance(self.materials, axis, self.mesh_slider.value(), self.geometry.bounds)
+        where = f"{AXES[axis]} = {s.coordinate / MM:.3f} mm"
+        self.statusBar().showMessage(f"Z0 at {where}: {s.z0:.1f} Ω, eps_eff {s.eps_eff:.3f}" if not s.error
+                                     else f"Z0 at {where}: {s.error}", 15000)
+
+    def _z0_profile(self):
+        if not self._z0_ready():
+            return
+        axis = self.mesh_axis.currentIndex()
+
+        def progress(done, total):
+            self.statusBar().showMessage(f"Z0 profile along {AXES[axis]}: section {done} / {total}")
+            QApplication.processEvents()
+
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            profile = impedance_profile(self.materials, axis, self.geometry.bounds, progress)
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.statusBar().showMessage(f"Z0 profile along {AXES[axis]}: {len(profile.sections)} sections", 5000)
+        if self.profile_window is None:
+            self.profile_window = ProfileWindow(self)
+            self.profile_window.coordinate_picked.connect(self._profile_picked)
+        self.profile_window.set_profile(profile, AXES[axis])
+        if self._mesh_coordinate is not None:
+            self.profile_window.set_marker(self._mesh_coordinate)
+        self.profile_window.show()
+        self.profile_window.raise_()
+
+    def _profile_picked(self, coordinate):
+        """The profile's marker moved: put the plane there (and make it visible)."""
+        axis = self.profile_window.profile.axis
+        if self.mesh is None or not self.mesh.ok:
+            return
+        if self.mesh_axis.currentIndex() != axis:
+            self.mesh_axis.setCurrentIndex(axis)
+        if not (self.mesh_check.isChecked() or self.materials_check.isChecked()
+                or self.section_check.isChecked()):
+            self.materials_check.setChecked(True)
+        self.mesh_slider.setValue(int(np.argmin(np.abs(self.mesh.grid.lines[axis] - coordinate))))
 
     def _show_section(self):
         """Section view at the plane of the slider (the model's middle without a mesh)."""

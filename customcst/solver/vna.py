@@ -47,6 +47,27 @@ def z_to_gamma(z, r_ref):
     return (z - r_ref) / (z + r_ref)
 
 
+def renormalize(s, r_old, r_new):
+    """
+    S-matrix referred to new (real) port impedances, like a VNA's port
+    impedance setting or CST's "normalize to fixed impedance".
+    s: {(j, k): (F,) array}, the full n x n matrix; r_old: (n,) Ohm; r_new: Ohm.
+    Power waves (Kurokawa), real references:
+      G_i = (r_new - r_old_i) / (r_new + r_old_i),  A_i = 2 sqrt(r_new r_old_i) / (r_new + r_old_i)
+      S' = A^-1 (S - G) (I - G S)^-1 A
+    Returns the same dict layout.
+    """
+    r_old = np.asarray(r_old, dtype=float)
+    n = len(r_old)
+    m = np.stack([np.stack([np.asarray(s[j, k]) for k in range(n)], axis=-1) for j in range(n)], axis=-2)
+    g = (r_new - r_old) / (r_new + r_old)
+    a = 2.0 * np.sqrt(r_new * r_old) / (r_new + r_old)
+    eye = np.eye(n)
+    out = (m - np.diag(g)) @ np.linalg.inv(eye - g[:, None] * m)          # G S: row i times g_i
+    out = out * a[None, :] / a[:, None]                                    # A^-1 (...) A
+    return {(j, k): out[:, j, k] for j in range(n) for k in range(n)}
+
+
 def reactance_element(x, frequency):
     """'L = 1.23 nH' for X > 0, 'C = 4.56 pF' for X < 0 (series equivalent)."""
     w = 2.0 * math.pi * frequency

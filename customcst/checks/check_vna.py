@@ -5,7 +5,10 @@
 #     Z = R/2 -> Gamma = -1/3, SWR = 2; gamma_to_z inverts z_to_gamma;
 #   - a series inductor / capacitor shows up as L / C at the marker;
 #   - group delay of an ideal delay line exp(-j w tau) is tau;
-#   - Touchstone round trip (2-port, RI) is exact to the printed digits.
+#   - Touchstone round trip (2-port, RI) is exact to the printed digits;
+#   - renormalize: a 3-port S built from a Z matrix at mixed references
+#     (46.2 / 50 / 30 Ohm) turns into the S of the same Z matrix at 50 Ohm;
+#     a 1-port load keeps its Z; the same reference changes nothing.
 #
 #   python checks/check_vna.py
 
@@ -22,7 +25,7 @@ import numpy as np                                                    # noqa: E4
 
 from solver.vna import (                                              # noqa: E402
     gamma_to_z, group_delay, marker_readout, read_touchstone_2port,
-    reactance_element, swr, write_touchstone, z_to_gamma,
+    reactance_element, renormalize, swr, write_touchstone, z_to_gamma,
 )
 
 FAILED = []
@@ -67,6 +70,27 @@ def main():
     ok = np.allclose(f2, freqs) and all(np.allclose(s2[k], s[k], atol=1e-8) for k in s)
     check("Touchstone 2-port round trip (S11 S21 S12 S22 order)", ok)
     os.remove(path)
+
+    def z_to_s(z, refs):                       # (F, n, n) Z -> S, real references
+        q = np.sqrt(np.asarray(refs, dtype=float))
+        zn = z / q[:, None] / q[None, :]
+        eye = np.eye(len(refs))
+        return (zn - eye) @ np.linalg.inv(zn + eye)
+
+    rng = np.random.default_rng(1)
+    z = rng.normal(size=(5, 3, 3)) * 30 + 1j * rng.normal(size=(5, 3, 3)) * 30
+    z = z + np.swapaxes(z, 1, 2) + 80 * np.eye(3)
+    refs = [46.2, 50.0, 30.0]
+    old, new = z_to_s(z, refs), z_to_s(z, [50.0] * 3)
+    s3 = renormalize({(j, k): old[:, j, k] for j in range(3) for k in range(3)}, refs, 50.0)
+    err = max(np.abs(s3[j, k] - new[:, j, k]).max() for j in range(3) for k in range(3))
+    check("renormalize 3-port (46.2 / 50 / 30 Ω -> 50 Ω) = S of the same Z at 50 Ω", err < 1e-12, f"err {err:.1e}")
+    load = 37.1 - 1.7j
+    s1 = renormalize({(0, 0): np.array([z_to_gamma(load, 46.2)])}, [46.2], 50.0)[0, 0][0]
+    check("renormalize 1-port: the load's Z stays", abs(gamma_to_z(s1, 50.0) - load) < 1e-9,
+          f"Γ50 = {abs(s1):.4f}, Z = {complex(gamma_to_z(s1, 50.0)):.2f}")
+    same = renormalize(s, [50.0, 50.0], 50.0)
+    check("renormalize to the same reference changes nothing", all(np.allclose(same[k], s[k]) for k in s))
 
     print("FAILED: " + ", ".join(FAILED) if FAILED else "all checks passed")
     return 1 if FAILED else 0

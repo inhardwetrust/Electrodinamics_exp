@@ -295,6 +295,31 @@ For checking a geometry inside the program instead of the CAD tool.
 - `check_section`: fill colors at known points, a plane on a face, the
   outline's length and coordinate.
 
+## Line impedance (Z0 at a plane, Z0 profile)
+
+Toolbar > Z₀ (`solver/line_profile.py`, `view/profile_window.py`): the
+waveguide port's 2D quasi-TEM solver run on any grid cross-section, like
+CST's 2D port solver or a TDR picture.
+- Click: Z0 and eps_eff at the mesh plane, in the status bar. The arrow
+  menu: the profile along the plane's axis, every grid line inside the
+  model (~2 s for 90 sections of the SMA + 4-layer board), in a tool
+  window: Z0 curve, a 50 Ohm guide, a marker tied to the mesh slider both
+  ways (the wheel over the plot moves the 3D plane).
+- The model's extent on the plane picks the conductors: what reaches its
+  side is ground, the one other conductor is the signal. Where nothing
+  reaches the side (a connector's shell beyond the board), the metal's own
+  extent on the plane is used instead.
+- It is the impedance of a uniform line with that cross-section: exact on
+  uniform stretches, indicative on tapers and steps, not the input
+  impedance. Sections with no signal or several (a lumped element beside
+  the trace) are gaps with the reason.
+- Model 08 showed with it: pin over the board 50 Ohm, the 1 -> 0.3 mm
+  taper over the L2 window 60-70 Ohm, the 0.3 mm line 48 Ohm (the grid
+  put one gap at 0.2 instead of 0.25 mm), the model's coax 46.2 Ohm.
+- `check_line_profile`: coax in a wider block (the fallback), Z0 within
+  1.5 % of 60/sqrt(eps) ln(D/d), eps_eff, no-signal sections, one plane
+  = the profile.
+
 ## Solver speed (numba kernels)
 
 `solver/fdtd_kernels.py`: the H and E updates (both curl terms, their
@@ -387,6 +412,13 @@ file next to the STEP: model.step -> `model.results/<save time>.npz`
   comparing with a VNA calibrated at another plane (an SMA's 9.6 mm of
   coax turn the board's ~11 Ohm into ~190 + j135 Ohm at 5 GHz). The
   readout and the Touchstone export use the moved planes.
+- Results > Normalize to (like a VNA's port impedance, CST's "normalize
+  to fixed impedance"): S referred to one R for all ports (50 Ohm by
+  default) instead of each port's own Z0, after the planes are moved:
+  power-wave renormalization (solver/vna.py renormalize,
+  S' = A^-1 (S - G)(I - G S)^-1 A). A model coax of 46.2 Ohm (PTFE
+  4.0 mm instead of SMA's 4.22) shows -19.1 dB at its own Z0 but
+  -16.5 dB against 50 Ohm. A multi-port run needs its full S matrix.
 - It also holds a snapshot of the parameters it was computed with:
   [simulation] and [mesh] settings, the grid (cells and steps), the
   dielectric materials, the number of vias and the ports. The snapshot is
