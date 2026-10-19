@@ -7,11 +7,20 @@
 # Sheets have no inside, so they are drawn two-sided: a reversed copy of the
 # triangles with its own vertices (shared vertices would average the two
 # normals to zero).
+#
+# Section view (set_section): every body (and via) is clipped by a plane
+# normal to an axis (a VisPy PlanesClipper per visual, in the body's own
+# coordinates), and the cut face is drawn: a fill image of the bodies on
+# the plane plus their exact outline (view/section.py), the outline a hair
+# in front of the fill so it wins the depth test.
 
 import numpy as np
 
 from vispy import scene
 from vispy.util import keys, transforms
+from vispy.visuals.filters.clipping_planes import PlanesClipper
+
+from view.section import section_fill, section_outline
 
 SCENE_UNIT = 1e-3      # one scene unit = 1 mm
 
@@ -42,6 +51,7 @@ ELEMENT_COLOR = (1.0, 1.0, 1.0, 1.0)
 DIELECTRIC_LOW = np.array([0.2, 0.45, 0.75])      # eps_r = 1: dim blue
 DIELECTRIC_HIGH = np.array([0.3, 0.95, 1.0])      # eps_r >= 10: bright cyan
 DOMAIN_COLOR = (0.35, 0.65, 1.0, 1.0)
+SECTION_OUTLINE_DARKEN = 0.55     # outline color = body color times this
 PORT_OK_COLOR = (0.2, 1.0, 0.35, 1.0)
 PORT_ERROR_COLOR = (1.0, 0.25, 0.2, 1.0)
 
@@ -257,6 +267,15 @@ class _BodyVisual:
             pos=(body.edges / SCENE_UNIT).reshape(-1, 3).astype(np.float32),
             connect="segments", color=EDGE_COLOR, width=1.0, parent=parent,
         )
+        # Section view: one clipper per visual (a filter belongs to one visual).
+        self.clippers = [PlanesClipper(coord_system="visual") for _ in range(2)]
+        self.mesh.attach(self.clippers[0])
+        self.edges.attach(self.clippers[1])
+
+    def set_clip(self, planes):
+        """planes: (n, 2, 3) float32 [position, normal] in mm; (0, 2, 3) = none."""
+        for clipper in self.clippers:
+            clipper.clipping_planes = planes
 
     def set_style(self, visible, selected, xray, show_edges, ghost=False):
         self.mesh.visible = visible
@@ -297,6 +316,10 @@ class GeometryView:
 
         self.view = self.canvas.central_widget.add_view()
         self.view.camera = TrackballCamera(fov=30, elevation=25, azimuth=-50)
+        # Near / far planes at distance / sqrt(d) and * sqrt(d). VisPy's
+        # default d = 1e6 left too little depth precision: 15 um copper on
+        # FR4 flickered through (z-fighting). 200 keeps the whole model.
+        self.view.camera.depth_value = 200.0
         self._init_space_pan()
 
         self.root = scene.Node(parent=self.view.scene)
@@ -322,6 +345,15 @@ class GeometryView:
         self.hole_lines.visible = False
         self.box = scene.visuals.Line(connect="segments", color=BOX_COLOR, parent=self.view.scene)
         self.axes = scene.visuals.XYZAxis(width=3, parent=self.view.scene)
+        # Section view: the cut face (fill image) and its outline.
+        self.section_image = scene.visuals.Image(np.zeros((1, 1, 4), np.float32), interpolation="nearest",
+                                                 parent=self.root)
+        self.section_image.set_gl_state("translucent", depth_test=True, cull_face=False)
+        self.section_image.visible = False
+        self.section_lines = scene.visuals.Line(connect="segments", width=2.0, parent=self.root)
+        self.section_lines.visible = False
+        self._section = None            # (axis, coordinate m, keep_below) or None
+        self._types = {}
 
         self._bodies = {}
         self._vias = []                 # _BodyVisual of the assigned vias (not STEP bodies)
@@ -399,6 +431,7 @@ class GeometryView:
 
         self._restyle()
         self._update_light()
+        self._apply_section()
         self.reset_view()
 
     def set_up(self, axis):
@@ -579,6 +612,75 @@ class GeometryView:
     def set_visible(self, name, visible):
         self._visible[name] = bool(visible)
         self._restyle()
+        self._apply_section()
+
+    # =====================================================
+    # Section view
+    # =====================================================
+
+    def set_section(self, axis=None, coordinate=None, keep_below=True):
+        """
+        Cut the model by the plane normal to `axis` at `coordinate` (m) and
+        keep the half below it (keep_below=False: above); axis=None: whole.
+        """
+        self._section = None if axis is None else (int(axis), float(coordinate), bool(keep_below))
+        self._apply_section()
+
+    def _apply_section(self):
+        visuals = list(self._bodies.values()) + self._vias
+        if self._section is None:
+            for visual in visuals:
+                visual.set_clip(np.zeros((0, 2, 3), np.float32))
+            self.section_image.visible = self.section_lines.visible = False
+            self.canvas.update()
+            return
+
+        axis, coordinate, keep_below = self._section
+        position = np.zeros(3)
+        position[axis] = coordinate / SCENE_UNIT
+        normal = np.zeros(3)
+        normal[axis] = -1.0 if keep_below else 1.0
+        planes = np.array([[position, normal]], dtype=np.float32)
+        for visual in visuals:
+            visual.set_clip(planes)
+
+        # Dielectrics first, conductors (and the rest) over them, vias last.
+        shown = [(v.body, v.base_color) for name, v in self._bodies.items() if self._visible.get(name)]
+        shown.sort(key=lambda item: 0 if self._types.get(item[0].name) == "dielectric" else 1)
+        shown += [(v.body, v.base_color) for v in self._vias]
+
+        lo, hi = (np.asarray(b) * SCENE_UNIT for b in self._bounds)
+        image, (u0, u1), (v0, v1) = section_fill(shown, axis, coordinate, lo, hi, keep_below)
+        u, v = [a for a in range(3) if a != axis]
+        nv, nu = image.shape[:2]
+        matrix = np.zeros((4, 4))
+        matrix[0, u] = (u1 - u0) / nu / SCENE_UNIT
+        matrix[1, v] = (v1 - v0) / nv / SCENE_UNIT
+        matrix[2, axis] = 1.0
+        matrix[3, u], matrix[3, v], matrix[3, axis] = u0 / SCENE_UNIT, v0 / SCENE_UNIT, coordinate / SCENE_UNIT
+        matrix[3, 3] = 1.0
+        self.section_image.set_data(image)
+        self.section_image.transform = scene.transforms.MatrixTransform(matrix)
+        self.section_image.visible = True
+
+        segments, colors = [], []
+        for body, color in shown:
+            s = section_outline(body, axis, coordinate)
+            if len(s):
+                segments.append(s.reshape(-1, 3))
+                rgba = (*(SECTION_OUTLINE_DARKEN * np.asarray(color)), 1.0)
+                colors.append(np.tile(rgba, (len(s) * 2, 1)))
+        if segments:
+            pos = np.concatenate(segments) / SCENE_UNIT
+            # A hair toward the removed half: in front of the fill for the depth test.
+            size = float(np.max(self._bounds[1] - self._bounds[0])) or 1.0
+            pos[:, axis] += (1e-4 * size) * (1.0 if keep_below else -1.0)
+            self.section_lines.set_data(pos=pos.astype(np.float32),
+                                        color=np.concatenate(colors).astype(np.float32))
+            self.section_lines.visible = True
+        else:
+            self.section_lines.visible = False
+        self.canvas.update()
 
     def set_vias(self, bodies):
         """The PEC cylinders of the assigned vias (geometry.holes.via_body), as gold pins."""
@@ -592,6 +694,7 @@ class GeometryView:
             self._vias.append(visual)
         self._restyle()
         self._update_light()
+        self._apply_section()
 
     def highlight_holes(self, holes):
         """holes: geometry.holes.Hole list (empty: none)."""
@@ -620,6 +723,7 @@ class GeometryView:
 
     def set_type_colors(self, types):
         """types: {body name: object type name}; only bodies without a CAD color."""
+        self._types = dict(types)
         for name, visual in self._bodies.items():
             if not visual.cad_color:
                 color = TYPE_COLORS.get(types.get(name)) or DEFAULT_COLORS[visual.body.kind]

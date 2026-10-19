@@ -277,6 +277,24 @@ model, in a JSON file: `%APPDATA%\customcst\settings.json`, or
     name. Buttons: New, Duplicate, Delete, Reset built-in.
 - Checks: `checks/check_project_file.py`.
 
+## Section view
+
+Toolbar > Section: the model is cut by the plane of the mesh slider
+(plane ⊥ X / Y / Z, the same axis and position), ⇅ keeps the other half.
+For checking a geometry inside the program instead of the CAD tool.
+- Every body and via is clipped by a VisPy PlanesClipper (one per visual,
+  in the body's own coordinates).
+- The cut face: a fill image of the bodies on the plane (ray casting along
+  an in-plane axis, `view/section.py`; sampled a hair inside the kept half,
+  so a plane on a face shows the kept side's body; dielectrics painted
+  first, conductors over them, vias last) and the exact outline of each
+  body's triangles crossing the plane (a 15 um layer stays visible though
+  it is far below a pixel). ~80 ms for a whole SMA + board model.
+- The camera's depth range is 1:200 (VisPy's 1:1e6 made 15 um copper on
+  FR4 flicker through).
+- `check_section`: fill colors at known points, a plane on a face, the
+  outline's length and coordinate.
+
 ## Solver speed (numba kernels)
 
 `solver/fdtd_kernels.py`: the H and E updates (both curl terms, their

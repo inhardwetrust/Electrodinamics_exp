@@ -156,6 +156,18 @@ class MainWindow(QMainWindow):
         self.materials_check.toggled.connect(lambda _: self._show_mesh_plane())
         bar.addWidget(self.materials_check)
 
+        self.section_check = QCheckBox("Section")
+        self.section_check.setToolTip("Cut the model by the plane (axis and position on the right) "
+                                      "to check the geometry inside")
+        self.section_check.toggled.connect(lambda _: self._show_mesh_plane())
+        bar.addWidget(self.section_check)
+        self.section_flip = QToolButton()
+        self.section_flip.setText("⇅")
+        self.section_flip.setCheckable(True)
+        self.section_flip.setToolTip("Section: keep the other half")
+        self.section_flip.toggled.connect(lambda _: self._show_mesh_plane())
+        bar.addWidget(self.section_flip)
+
         bar.addWidget(QLabel(" plane ⊥ "))
         self.mesh_axis = QComboBox()
         self.mesh_axis.addItems([a.upper() for a in AXES])
@@ -687,6 +699,10 @@ class MainWindow(QMainWindow):
         self._show_mesh_plane()
 
     def _show_mesh_plane(self):
+        self._show_grid_plane()
+        self._show_section()            # after: it may write the plane's label too
+
+    def _show_grid_plane(self):
         # "Mesh" and "Materials" each show the plane; either alone works.
         ok = self.mesh is not None and self.mesh.ok
         show_mesh, show_materials = self.mesh_check.isChecked(), self.materials_check.isChecked()
@@ -710,6 +726,19 @@ class MainWindow(QMainWindow):
         else:
             self.view.set_material_plane(None)
         self.view.set_domain(self.mesh.grid.bounds)
+        self.mesh_label.setText(f" {AXES[axis]} = {coordinate / MM:.3f} mm")
+
+    def _show_section(self):
+        """Section view at the plane of the slider (the model's middle without a mesh)."""
+        if not self.section_check.isChecked() or self.geometry is None:
+            self.view.set_section(None)
+            return
+        axis = self.mesh_axis.currentIndex()
+        coordinate = self._mesh_coordinate
+        if coordinate is None or self.mesh is None or not self.mesh.ok:
+            lo, hi = self.geometry.bounds
+            coordinate = 0.5 * (lo + hi)[axis]
+        self.view.set_section(axis, coordinate, keep_below=not self.section_flip.isChecked())
         self.mesh_label.setText(f" {AXES[axis]} = {coordinate / MM:.3f} mm")
 
     # =====================================================
