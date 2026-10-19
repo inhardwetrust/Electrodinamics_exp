@@ -10,9 +10,12 @@
 #   - metal nodes: touched by a PEC in-plane E-edge, or carrying a PEC edge
 #     along the line. Pieces: metal nodes joined by in-plane PEC edges are
 #     at one potential (E = 0 along those edges);
-#   - conductors (which body is ground, which is signal): metal nodes that
-#     are neighbours, including diagonal ones, form one conductor (a thin
-#     staircased tube breaks into pieces that only touch diagonally). The
+#   - conductors (which body is ground, which is signal): pieces joined
+#     where their metal nodes touch only across a cell's diagonal form one
+#     conductor (a thin staircased tube breaks into pieces that only touch
+#     diagonally). Side by side across a free edge they stay apart: that is
+#     a one-cell gap the FDTD grid sees (a narrow coplanar gap, a strip one
+#     cell above its ground). The
 #     conductor touching the port region's border is ground, the single
 #     other conductor inside the region is the signal, conductors wholly
 #     outside it float;
@@ -41,7 +44,6 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import scipy.sparse as sp
-from scipy.ndimage import label
 from scipy.sparse.csgraph import connected_components
 from scipy.sparse.linalg import spsolve
 
@@ -153,13 +155,11 @@ def solve_port_mode(materials, axis, index, region=None, circle=None):
             axial |= along[tuple(take)]
     on_metal |= axial[inside]
 
-    # Pieces (joined by PEC edges) and conductors (8-connected metal).
+    # Pieces (joined by PEC edges) and conductors (pieces joined where their
+    # metal nodes touch diagonally).
     graph = sp.coo_matrix((np.ones(len(pa)), (pa, pb)), shape=(n, n))
     _, piece = connected_components(graph, directed=False)
-    metal_grid = np.zeros(uu.shape, dtype=bool)
-    metal_grid[inside] = on_metal
-    label_grid, _ = label(metal_grid, structure=np.ones((3, 3), dtype=int))
-    conductor = label_grid[inside]
+    conductor = _conductors(node_id, on_metal, pa, pb, n)
 
     border = on_metal & (box & ~_interior(box))[inside]
     ground = set(conductor[border])
@@ -240,6 +240,29 @@ def _dual(d):
     out[:-1] += 0.5 * d
     out[1:] += 0.5 * d
     return out
+
+
+def _conductors(node_id, on_metal, pa, pb, n):
+    """
+    Conductor label per node: metal nodes joined by PEC edges, or touching
+    only across a cell's diagonal (the cell's other two corners free: a
+    staircased tube's pieces). Two metal nodes side by side with a FREE
+    edge between them stay apart: that edge is a real gap in the FDTD grid
+    (a one-cell coplanar gap). Nor does a diagonal join them when a third
+    corner is metal (a strip one cell above a ground plane): joining those
+    shorted the signal to the ground.
+    """
+    metal = np.zeros(node_id.shape, dtype=bool)
+    metal[node_id >= 0] = on_metal[node_id[node_id >= 0]]
+    m00, m11 = metal[:-1, :-1], metal[1:, 1:]
+    m10, m01 = metal[1:, :-1], metal[:-1, 1:]
+    main = m00 & m11 & ~m10 & ~m01                  # (i, j) - (i + 1, j + 1)
+    anti = m10 & m01 & ~m00 & ~m11                  # (i + 1, j) - (i, j + 1)
+    a = np.concatenate([pa, node_id[:-1, :-1][main], node_id[1:, :-1][anti]])
+    b = np.concatenate([pb, node_id[1:, 1:][main], node_id[:-1, 1:][anti]])
+    graph = sp.coo_matrix((np.ones(len(a)), (a, b)), shape=(n, n))
+    _, labels = connected_components(graph, directed=False)
+    return np.where(on_metal, labels + 1, 0)
 
 
 def _interior(inside):

@@ -21,7 +21,7 @@ from OCP.BRep import BRep_Tool
 from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
 from OCP.BRepMesh import BRepMesh_IncrementalMesh
 from OCP.GCPnts import GCPnts_TangentialDeflection
-from OCP.GeomAbs import GeomAbs_Circle, GeomAbs_Cylinder
+from OCP.GeomAbs import GeomAbs_Circle, GeomAbs_Cylinder, GeomAbs_Plane
 from OCP.IFSelect import IFSelect_RetDone
 from OCP.Quantity import Quantity_Color, Quantity_TOC_RGB
 from OCP.STEPCAFControl import STEPCAFControl_Reader, STEPCAFControl_Writer
@@ -234,7 +234,7 @@ def _deflection_mm(leaves, linear_deflection):
 def _make_body(name, kind, shape, color, deflection_mm, angular_deflection):
     BRepMesh_IncrementalMesh(shape, deflection_mm, False, angular_deflection, True)
 
-    vertices, triangles = _triangles(shape)
+    vertices, triangles, planar = _triangles(shape)
     normals = _vertex_normals(vertices, triangles)
     edges = _edge_segments(shape, deflection_mm, angular_deflection)
     circles = _circles(shape)
@@ -251,6 +251,7 @@ def _make_body(name, kind, shape, color, deflection_mm, angular_deflection):
         edges=edges * MM,
         circles=circles,
         holes=holes,
+        planar=planar,
         color=color,
         shape=shape,
     )
@@ -350,9 +351,14 @@ def _holes(shape):
 
 
 def _triangles(shape):
-    """Per-face triangulations merged; vertices are NOT shared between faces."""
+    """
+    Per-face triangulations merged; vertices are NOT shared between faces.
+    Returns (vertices, triangles, planar): planar marks the triangles of
+    planar CAD faces.
+    """
     vertex_blocks = []
     triangle_blocks = []
+    planar_blocks = []
     offset = 0
 
     explorer = TopExp_Explorer(shape, TopAbs_FACE)
@@ -360,6 +366,7 @@ def _triangles(shape):
         face = TopoDS.Face(explorer.Current())
         location = TopLoc_Location()
         tri = BRep_Tool.Triangulation_s(face, location)
+        is_plane = BRepAdaptor_Surface(face, True).GetType() == GeomAbs_Plane
         explorer.Next()
 
         if tri is None or tri.NbTriangles() == 0:
@@ -382,12 +389,14 @@ def _triangles(shape):
 
         vertex_blocks.append(nodes)
         triangle_blocks.append(faces + offset)
+        planar_blocks.append(np.full(len(faces), is_plane))
         offset += len(nodes)
 
     if not vertex_blocks:
-        return np.zeros((0, 3)), np.zeros((0, 3), dtype=np.int32)
+        return np.zeros((0, 3)), np.zeros((0, 3), dtype=np.int32), np.zeros(0, dtype=bool)
 
-    return np.concatenate(vertex_blocks), np.concatenate(triangle_blocks).astype(np.int32)
+    return (np.concatenate(vertex_blocks), np.concatenate(triangle_blocks).astype(np.int32),
+            np.concatenate(planar_blocks))
 
 
 def _vertex_normals(vertices, triangles):

@@ -51,8 +51,11 @@ Only level 0 knows about OpenCASCADE.
      about 62 Ω.
    - Plan: separate them, so thin copper still merges but gaps get
      `cells_per_feature` cells.
-   - Fixpoints only from the planar CAD faces, not from tessellation
-     facets of cylinders (spurious "merged lines" with vias).
+   - Done: fixpoints only from planar CAD faces (`Body.planar`, from the
+     OCP surface type; vias: caps only). Facets of a tessellated bore
+     normal to the axis had chained the merge and pulled a 15 um inner
+     ground 7 um off its face. Copper between two dielectric layers sits
+     on the thinner layer's face (`check_mesh`, the 4-layer stack).
 3. **Field monitors** (level 5): DFT fields at chosen frequencies on the
    display grid, then far field.
 

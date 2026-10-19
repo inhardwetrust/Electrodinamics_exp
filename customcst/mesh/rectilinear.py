@@ -6,8 +6,11 @@
 #
 # Per axis:
 #   1. Fixpoints: coordinates that must be grid lines.
-#      - planar faces of material bodies normal to the axis, and the body
-#        extents along the axis;
+#      - planar CAD faces of material bodies normal to the axis, and the
+#        body extents along the axis. Only planar CAD faces: a facet of a
+#        tessellated cylinder can be normal to the axis too (at its top),
+#        and those odd coordinates chained the merge of nearby faces (an
+#        SMA's round body pulled a ground plane 7 um off its face);
 #      - port axes (transverse coordinates), so each port lies on a line;
 #      - the domain ends (model box + padding). A waveguide port's plane
 #        is the domain end on its side, with no padding: the line runs
@@ -16,7 +19,11 @@
 #      copper) collapse onto one line here: this is where a thin solid
 #      becomes a sheet. Inside a cluster the priority is: domain end >
 #      dielectric face > conductor face > port axis, so the substrate
-#      thickness stays exact and the copper sits on its surface.
+#      thickness stays exact and the copper sits on its surface. Two
+#      dielectric faces in one cluster (copper between two layers): the
+#      face of the thinner layer wins, its relative error would be the
+#      larger one (a 15 um inner ground between 0.2 and 1.07 mm of FR4
+#      sits on the 0.2 mm layer's face, not halfway).
 #   3. Target step per interval between fixpoints:
 #        min( lambda(f_max) / N in the densest material spanning it,
 #             interval / cells_per_feature ),  but >= min_step.
@@ -157,54 +164,57 @@ def build_grid(geometry, project, ports=None, waveports=None, vias=()):
 # =====================================================
 
 def _fixpoints(axis, materials, ports, lo, hi):
-    """[(coordinate, priority)] along one axis."""
-    points = [(lo, PRIORITY_DOMAIN), (hi, PRIORITY_DOMAIN)]
+    """[(coordinate, priority, size)] along one axis; size: the body's extent (tie-break)."""
+    points = [(lo, PRIORITY_DOMAIN, math.inf), (hi, PRIORITY_DOMAIN, math.inf)]
 
     for body, n in materials:
         priority = PRIORITY_CONDUCTOR if n is None else PRIORITY_DIELECTRIC
         b_lo, b_hi = body.bounds
-        points += [(b_lo[axis], priority), (b_hi[axis], priority)]
+        size = float(b_hi[axis] - b_lo[axis])
+        points += [(b_lo[axis], priority, size), (b_hi[axis], priority, size)]
 
-        # Planar faces normal to this axis (exact for boxes, caps of cylinders).
+        # Planar CAD faces normal to this axis (exact for boxes, caps of cylinders).
         v = body.vertices[body.triangles]                       # (T, 3, 3)
         normal = np.cross(v[:, 1] - v[:, 0], v[:, 2] - v[:, 0])
         length = np.linalg.norm(normal, axis=1)
-        flat = length > 0
+        flat = (length > 0) & body.planar
         aligned = np.zeros(len(v), dtype=bool)
         aligned[flat] = np.abs(normal[flat, axis]) >= (1.0 - 1e-9) * length[flat]
         for c in np.unique(np.round(v[aligned, 0, axis], 12)):
-            points.append((float(c), priority))
+            points.append((float(c), priority, size))
 
     for port in ports:
         direction = port.plus - port.minus
         if np.abs(direction[axis]) <= 1e-9 * np.linalg.norm(direction):
-            points.append((float(port.minus[axis]), PRIORITY_PORT))   # transverse: one line
+            points.append((float(port.minus[axis]), PRIORITY_PORT, math.inf))   # transverse: one line
 
-    return [(c, p) for c, p in points if lo <= c <= hi]
+    return [(c, p, s) for c, p, s in points if lo <= c <= hi]
 
 
 def _merge(points, min_step):
     """
     Clusters of fixpoints closer than min_step become one: the highest
-    priority wins (mean on ties). Returns (kept [(coord, priority)],
+    priority wins, then the thinnest body (mean on ties). points:
+    [(coord, priority, size)]. Returns (kept [(coord, priority)],
     merged [(kept coord, [dropped coords])]).
     """
     points = sorted(points)
     clusters = [[points[0]]]
-    for c, p in points[1:]:
-        if c - clusters[-1][-1][0] < min_step:
-            clusters[-1].append((c, p))
+    for point in points[1:]:
+        if point[0] - clusters[-1][-1][0] < min_step:
+            clusters[-1].append(point)
         else:
-            clusters.append([(c, p)])
+            clusters.append([point])
 
     kept, merged = [], []
     for cluster in clusters:
-        top = max(p for _, p in cluster)
-        winners = [c for c, p in cluster if p == top]
+        top = max(p for _, p, _ in cluster)
+        thinnest = min(size for _, p, size in cluster if p == top)
+        winners = [c for c, p, size in cluster if p == top and size == thinnest]
         coord = float(np.mean(winners))
         kept.append((coord, top))
 
-        dropped = sorted({round(c, 12) for c, _ in cluster} - {round(coord, 12)})
+        dropped = sorted({round(c, 12) for c, _, _ in cluster} - {round(coord, 12)})
         if dropped:
             merged.append((coord, dropped))
 

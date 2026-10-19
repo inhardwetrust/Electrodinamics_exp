@@ -29,6 +29,9 @@ class Body:
     circles    (C, 7) float64 exact circular CAD edges, one row per circle:
                center (3, m), unit axis (3), radius (m). Used to read ports
                (the ends of a cone / cylinder).
+    planar     (M,) bool per triangle: it lies on a planar CAD face (not on
+               a facet of a tessellated curved face). The mesh takes its
+               fixpoints only from these. None = all planar.
     holes      (H, 8) float64 cylindrical holes of a solid (concave
                cylinder faces closing a full turn): start point on the axis
                (3, m), unit axis (3), radius (m), length along the axis (m).
@@ -45,6 +48,7 @@ class Body:
     edges: np.ndarray
     circles: np.ndarray = None
     holes: np.ndarray = None
+    planar: np.ndarray = None
     color: Optional[Color] = None
     shape: object = field(default=None, repr=False)
 
@@ -60,6 +64,11 @@ class Body:
         self.circles = np.asarray(circles, dtype=np.float64).reshape(-1, 7)
         holes = np.zeros((0, 8)) if self.holes is None else self.holes
         self.holes = np.asarray(holes, dtype=np.float64).reshape(-1, 8)
+        planar = np.ones(len(self.triangles), dtype=bool) if self.planar is None else self.planar
+        self.planar = np.asarray(planar, dtype=bool).reshape(-1)
+        if len(self.planar) != len(self.triangles):
+            raise ValueError(f"body {self.name!r}: {len(self.planar)} planar flags "
+                             f"for {len(self.triangles)} triangles")
 
     @property
     def bounds(self):

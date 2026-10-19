@@ -164,6 +164,7 @@ def via_body(hole, segments=48):
         triangles += [(i, j, n + j), (i, n + j, n + i)]        # side, outward (e1 x e2 = axis)
         triangles += [(c0, j, i), (c1, n + i, n + j)]          # caps: bottom -axis, top +axis
     triangles = np.array(triangles, dtype=np.int32)
+    planar = np.tile([False, False, True, True], n)              # sides curved, caps planar
 
     a, b, c = (vertices[triangles[:, k]] for k in range(3))
     face_normal = np.cross(b - a, c - a)
@@ -175,4 +176,5 @@ def via_body(hole, segments=48):
     edges = np.concatenate([np.stack([bottom, np.roll(bottom, -1, axis=0)], axis=1),
                             np.stack([top, np.roll(top, -1, axis=0)], axis=1)])
     circles = np.array([[*hole.start, *axis, hole.radius], [*hole.end, *axis, hole.radius]])
-    return Body(f"via {hole.id}", "solid", vertices, triangles, normals, edges, circles=circles)
+    return Body(f"via {hole.id}", "solid", vertices, triangles, normals, edges,
+                circles=circles, planar=planar)

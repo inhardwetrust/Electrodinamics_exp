@@ -189,9 +189,11 @@ def main():
         path2 = os.path.join(folder, "drawn.step")
         g2, p2 = board(path2, drawn_vias=[(-6.0, 0.0), (0.0, 0.0)])
         mesh2, m2 = solve(g2, p2, [])
-        same_grid = all(len(a) == len(b) and np.allclose(a, b, rtol=0, atol=1e-9)
+        # Within 1 um: only the extents of the round vias are fixpoints, and a
+        # 48-gon's extent and OCP's tessellation differ by ~0.5 um.
+        same_grid = all(len(a) == len(b) and np.allclose(a, b, rtol=0, atol=1e-6)
                         for a, b in zip(mesh.grid.lines, mesh2.grid.lines))
-        check("drawn cylinders: same grid", same_grid)
+        check("drawn cylinders: same grid (within 1 um)", same_grid)
         if same_grid:
             diff = sum(int(np.sum(a != b)) for a, b in zip(m.pec, m2.pec))
             via_edges = sum(int(np.sum(a)) for a in m.pec) - sum(int(np.sum(a)) for a in m_none.pec)

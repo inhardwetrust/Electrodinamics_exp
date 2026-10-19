@@ -4,6 +4,11 @@
 # Z up): 35 um copper merges onto the substrate faces, body faces and port
 # axes are lines, the step limits (lambda/N per material, cells per feature)
 # and the grading ratio hold, and the domain is the model box + padding.
+# A 4-layer stack (0.2 mm FR4, 15 um inner ground, 1.07 mm FR4) next to a
+# round PEC body lying along y (an SMA): the z fixpoints come only from
+# planar CAD faces and body extents (the cylinder's tessellation has facets
+# normal to z, which chained the merge), and the inner ground sits exactly
+# on the thinner layer's face.
 #
 #   python checks/check_mesh.py
 
@@ -45,6 +50,64 @@ def cone_z(x, y, z0, z1, r0, r1):
 
 def has_line(lines, value, tol=1e-9):
     return bool(np.min(np.abs(lines - value)) < tol)
+
+
+def stack_with_cylinder(folder):
+    """See the header; the round body is a tube along y (an SMA shell) whose bore has facets normal to z."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+
+    def tube(phi):
+        x_dir = gp_Dir(np.cos(np.radians(phi)), 0, np.sin(np.radians(phi)))
+        axes = gp_Ax2(gp_Pnt(0, -12, -0.5), gp_Dir(0, 1, 0), x_dir)
+        outer = BRepPrimAPI_MakeCylinder(axes, 2.6, 8.0).Shape()
+        inner = BRepPrimAPI_MakeCylinder(axes, 0.65, 8.0).Shape()
+        return BRepAlgoAPI_Cut(outer, inner).Shape()
+
+    def bore_facets(body):
+        v = body.vertices[body.triangles]
+        normal = np.cross(v[:, 1] - v[:, 0], v[:, 2] - v[:, 0])
+        lo, hi = body.bounds
+        z = v[:, 0, 2]
+        return (~body.planar & (np.abs(normal[:, 2]) >= (1 - 1e-9) * np.linalg.norm(normal, axis=1))
+                & (z > lo[2] + 1e-9) & (z < hi[2] - 1e-9))
+
+    path = os.path.join(folder, "stack.step")
+    for phi in range(0, 30):                    # turn the seam until the bore has a flat-on-top facet
+        write_step(path, [("rod", tube(phi), None)])
+        if bore_facets(read_step(path)["rod"]).any():
+            break
+    write_step(path, [("fr4_thin", box(-8, -4, 0, 8, 4, 0.2), None),
+                      ("l2", box(-8, -4, 0.2, 8, 4, 0.2152), None),
+                      ("fr4_thick", box(-8, -4, 0.2152, 8, 4, 1.2802), None),
+                      ("l3", box(-8, -4, 1.2802, 8, 4, 1.2954), None),
+                      ("top", box(-0.5, -4, -0.035, 0.5, 4, 0), None),
+                      ("rod", tube(phi), None)])
+    g = read_step(path)
+    project = Project(path)
+    for name in ("l2", "l3", "top", "rod"):
+        project.set_type(g[name], "pec")
+    for name in ("fr4_thin", "fr4_thick"):
+        project.set_type(g[name], "dielectric")
+        project.set_value(name, "eps_r", 4.3)
+    project.set_setting("simulation", "f_max", 6.0)
+    mesh = build_grid(g, project, {})
+
+    body = g["rod"]
+    facets = bore_facets(body)
+    z_facets = np.unique(np.round(body.vertices[body.triangles][facets, 0, 2] / MM, 4))
+    check("stack: the tube's bore has facets normal to z (the test means something)", facets.any(),
+          f"{int(facets.sum())} facets at z {z_facets} mm")
+
+    allowed = {0.0, 0.2, 0.2152, 1.2802, 1.2954, -0.035}
+    lo, hi = body.bounds
+    allowed |= {round(lo[2] / MM, 4), round(hi[2] / MM, 4)}
+    allowed |= {round(c / MM, 4) for c in mesh.grid.bounds[0][2:3]} | {round(c / MM, 4) for c in mesh.grid.bounds[1][2:3]}
+    fixed = {round(c / MM, 4) for c in mesh.fixpoints[2]}
+    check("stack: z fixpoints only from planar faces and extents", fixed <= allowed,
+          f"extra {sorted(fixed - allowed)}")
+    check("stack: inner ground on the 0.2 mm layer's face", has_line(mesh.grid.lines[2], 0.2 * MM),
+          f"z lines near it {np.round(mesh.grid.lines[2][np.abs(mesh.grid.lines[2] - 0.2 * MM) < 0.2 * MM] / MM, 4)} mm")
 
 
 def main():
@@ -124,6 +187,8 @@ def main():
         lo_auto, _ = build_grid(g, project, ports).grid.bounds
         check("auto padding = 25 mm at 1-5 GHz", np.isclose(-lo_auto[2] / MM, 24.983, atol=1e-3),
               f"{-lo_auto[2] / MM:.3f} mm")
+
+        stack_with_cylinder(folder)
     finally:
         shutil.rmtree(folder)
 

@@ -7,7 +7,11 @@
 #   - eps_eff = eps_r (a homogeneous TEM line; metal cells are left out of
 #     the edge eps mean, so the edges next to the pin keep eps_r);
 #   - the mode field: E is radial and falls as 1/r between the conductors;
-#   - errors: no ground in the region, two signal conductors.
+#   - errors: no ground in the region, two signal conductors;
+#   - a coplanar section whose gaps are ONE cell wide (synthetic grid): the
+#     signal and the side grounds have neighbouring metal nodes with a free
+#     edge between them, which the FDTD sees as a gap: still two conductors
+#     (joining neighbours shorted them: "no signal conductor").
 # Also guards the thin-body PEC rule: an edge just outside a THICK curved
 # conductor is not metal (otherwise the pin grows and Z0 drops by ~25 %).
 #
@@ -66,6 +70,25 @@ def materials_for(path, types, eps=None):
     return mesh, discretize(mesh, g, project)
 
 
+def one_cell_gap():
+    """Port plane x = 0 of a synthetic grid (1 mm cells): ground plane at z = 0,
+    side grounds y 0..2 and 6..10 and a strip y 3..5 at z = 1 (gaps 2..3, 5..6)."""
+    from types import SimpleNamespace
+    nx, ny, nz = 2, 10, 4
+    lines = [np.arange(n + 1) * 1e-3 for n in (nx, ny, nz)]
+    pec = [np.zeros((nx, ny + 1, nz + 1), bool), np.zeros((nx + 1, ny, nz + 1), bool),
+           np.zeros((nx + 1, ny + 1, nz), bool)]
+    pec[1][:, :, 0] = True                              # ground plane
+    pec[1][:, [0, 1, 6, 7, 8, 9], 1] = True             # side grounds
+    pec[1][:, [3, 4], 1] = True                         # strip y 3..5
+    pec[2][:, [0, 10], 0] = True                        # side grounds tied down at the walls
+    eps = [np.full(a.shape, 4.3) for a in pec]
+    m = SimpleNamespace(grid=SimpleNamespace(lines=lines), pec=pec, eps_r=eps)
+    mode = solve_port_mode(m, 0, 0, region=((0.0, 10e-3), (0.0, 4e-3)))
+    check("one-cell coplanar gaps: the strip is the signal", mode.ok,
+          f"Z0 {mode.z0:.1f} Ohm" if mode.ok else "; ".join(mode.errors))
+
+
 def main():
     folder = tempfile.mkdtemp()
     try:
@@ -113,6 +136,8 @@ def main():
         ix = int(np.argmin(np.abs(mesh_t.grid.lines[0] - 1.5e-3)))
         bad = solve_port_mode(m_t, 0, ix, region=((-r, r), (-r, r)))
         check("two signal conductors -> error", not bad.ok and "2 separate" in bad.errors[0], bad.errors)
+
+        one_cell_gap()
     finally:
         shutil.rmtree(folder)
 
