@@ -10,7 +10,7 @@ excite = "all"
 
 [mesh]
 cells_per_wavelength = 20.0
-cells_per_feature = 4.0
+cells_per_feature = 8.0
 max_ratio = 1.3
 min_step = 0.05   # mm
 
