@@ -31,7 +31,7 @@
 import os
 
 import numpy as np
-from PySide6.QtCore import QEvent, Qt
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel, QMessageBox,
@@ -47,6 +47,8 @@ REFLECTION_ONLY = ("SWR", "Smith", "Z in")
 
 
 class ResultsPanel(QWidget):
+    shifts_changed = Signal()           # a reference plane moved (self.shifts)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.runs = []                  # shown runs, oldest first
@@ -233,6 +235,7 @@ class ResultsPanel(QWidget):
     def _set_shift(self, name, value):
         self.shifts[name] = float(value)
         self._redraw()
+        self.shifts_changed.emit()
 
     def _moved(self, run, j, k):
         """S_jk of a run with the reference planes moved (see the header)."""

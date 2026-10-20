@@ -346,9 +346,16 @@ check.
   161 of 216 s). Model 08 at 1.8 M cells: 216 -> 4 s; 12 M cells: 32 s;
   results bit-identical (all fields compared).
 - `discretize(progress=)` reports each step (a body's cells, a conductor's
-  edges, the ports). The main window shows a blue bar in the status bar
-  when a rebuild takes over 0.3 s, and keeps the UI responding: an edit
-  that arrives meanwhile restarts the rebuild with the new settings.
+  edges, the ports). The main window runs it in a background thread
+  (one worker, no Qt objects in it): the grid is built at once, then
+  `materials` stays None ("the mesh is still being built" for Simulate)
+  until a 100 ms timer finds the job done and takes the result in the GUI
+  thread. A blue bar in the status bar shows the steps after 0.3 s. An
+  edit meanwhile cancels the job (it stops at its next step) and starts
+  a new one; a finished result waits while a tree editor is open (the
+  rows are rebuilt). The first version ran discretize in the GUI thread
+  with processEvents and crashed: the tree's editor could be deleted
+  under its own commit. `wait_for_mesh()` for scripts and --screenshot.
 
 ## Z0 accuracy of narrow lines
 
@@ -444,6 +451,10 @@ file next to the STEP: model.step -> `model.results/<save time>.npz`
   comparing with a VNA calibrated at another plane (an SMA's 9.6 mm of
   coax turn the board's ~11 Ohm into ~190 + j135 Ohm at 5 GHz). The
   readout and the Touchstone export use the moved planes.
+  The 3D view shows each plane as a dark blue translucent square (the
+  port face, a coax's 1.5 radius), drawn through the bodies; the "Ref.
+  planes" toolbar box hides them. The move is along the port's axis:
+  past a bend of the line the square no longer marks the real plane.
 - Results > Normalize to (like a VNA's port impedance, CST's "normalize
   to fixed impedance"): S referred to one R for all ports (50 Ohm by
   default) instead of each port's own Z0, after the planes are moved:

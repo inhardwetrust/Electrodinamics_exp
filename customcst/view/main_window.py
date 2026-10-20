@@ -11,6 +11,8 @@
 
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 import numpy as np
 from PySide6.QtCore import QRect, Qt, QTimer
@@ -43,6 +45,10 @@ from solver.line_profile import impedance_profile, line_impedance
 MM = 1e-3
 AXES = "xyz"
 MESH_PROGRESS_DELAY = 0.3       # s: the mesh progress bar appears after this
+
+
+class _Cancelled(Exception):
+    """A background discretization made stale by a newer edit."""
 
 
 def _fmt_mm(values):
@@ -81,6 +87,12 @@ class MainWindow(QMainWindow):
         self.materials = None       # MaterialGrid (solver's view)
         self._mesh_coordinate = None    # where the mesh plane is (m)
         self.profile_window = None      # Z0 profile (ProfileWindow), made on first use
+        self._mesh_pool = ThreadPoolExecutor(max_workers=1)    # background discretization
+        self._mesh_job = None
+        self._center_slider = False
+        self._mesh_timer = QTimer(self)
+        self._mesh_timer.setInterval(100)
+        self._mesh_timer.timeout.connect(self._poll_discretize)
         self.view = GeometryView()
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
@@ -141,6 +153,13 @@ class MainWindow(QMainWindow):
         xray = QCheckBox("X-ray")
         xray.toggled.connect(self.view.set_xray)
         bar.addWidget(xray)
+
+        planes = QCheckBox("Ref. planes")
+        planes.setChecked(True)
+        planes.setToolTip("Reference planes of the waveguide ports (dark blue): the port plane "
+                          "moved by the shift in the Results tab, along the port's axis")
+        planes.toggled.connect(self.view.set_show_reference_planes)
+        bar.addWidget(planes)
         bar.addSeparator()
 
         bar.addWidget(QLabel(" Up: "))
@@ -426,7 +445,23 @@ class MainWindow(QMainWindow):
 
     def _build_results_panel(self):
         self.results = ResultsPanel()
+        self.results.shifts_changed.connect(self._show_reference_planes)
         self.tabs.addTab(self.results, "Results")
+
+    def _show_reference_planes(self):
+        """A square on each valid waveguide port's plane, moved by its Results shift."""
+        planes = []
+        for name, port in self.waveports.items():
+            if not port.ok:
+                continue
+            center = np.array(port.center, dtype=float)
+            center[port.axis] = port.plane + port.direction * self.results.shifts.get(name, 0.0) * MM
+            if port.region is not None:
+                half = tuple(0.5 * (b - a) for a, b in port.region)
+            else:
+                half = (1.5 * port.radius,) * 2
+            planes.append((port.axis, center, half))
+        self.view.set_reference_planes(planes)
 
     # =====================================================
     # Simulation
@@ -439,7 +474,7 @@ class MainWindow(QMainWindow):
         if self.mesh is None or not self.mesh.ok:
             return f"no mesh ({self.mesh.error if self.mesh else 'no project'})"
         if self.materials is None:
-            return "no materials"
+            return "the mesh is still being built" if self.mesh_busy() else "no materials"
         if self.materials.errors:
             return self.materials.errors[0]
         if not self.materials.ports and not self.materials.waveports:
@@ -589,6 +624,8 @@ class MainWindow(QMainWindow):
             "maximized": self.isMaximized(),
         }
         self.app_settings.save()            # an error here must not keep the window open
+        self._cancel_discretize()           # the worker stops at its next step
+        self._mesh_pool.shutdown(wait=False, cancel_futures=True)
         super().closeEvent(event)
 
     def _remember(self, path):
@@ -679,13 +716,16 @@ class MainWindow(QMainWindow):
     # =====================================================
 
     def _refresh_model(self, center_slider=False):
-        if getattr(self, "_discretizing", False):
-            self._model_changed = True          # the running rebuild starts over
-            return
+        """
+        Ports, vias, the grid (fast), then the discretization in the
+        background (_start_discretize): self.materials is None until it is
+        done, then _mesh_ready() updates the plane and the tree.
+        """
         self.ports = self.project.ports(self.geometry) if self.project else {}
         self.elements = self.project.elements(self.geometry) if self.project else {}
         self.waveports = self.project.waveports(self.geometry) if self.project else {}
         self.view.set_ports(list(self.ports.values()), list(self.elements.values()))
+        self._show_reference_planes()
 
         types = {n: a.type for n, a in self.project.assignments.items()} if self.project else {}
         self.view.set_type_colors(types)
@@ -697,48 +737,95 @@ class MainWindow(QMainWindow):
         self.mesh = (build_grid(self.geometry, self.project, columns, self.waveports, self.via_bodies)
                      if self.project else None)
         self.materials = None
+        self._center_slider = self._center_slider or center_slider
         if self.mesh is not None and self.mesh.ok:
-            self.materials = self._discretize_with_progress()
-            if self.materials is None:                  # an edit came in: build again
-                self._refresh_model(center_slider)
-                return
-        self._configure_mesh_slider(center=center_slider)
+            self._start_discretize()
+        else:
+            self._cancel_discretize()
+            self._mesh_ready()
+
+    # Background discretization: one worker thread, no Qt objects in it.
+    # The newest job wins: an edit while one runs cancels it (it stops at
+    # its next step) and starts another; a timer polls the job's progress
+    # and takes the result in the GUI thread. No nested event loop: running
+    # discretize in the GUI thread with processEvents crashed the app when
+    # the tree's editor was deleted under its own commit.
+
+    def _start_discretize(self):
+        self._cancel_discretize()
+        job = SimpleNamespace(progress=(0, 1, ""), cancelled=False, start=time.perf_counter(),
+                              mesh=self.mesh, geometry=self.geometry)
+        args = (self.mesh, self.geometry, self.project, self.ports, self.elements, self.waveports,
+                self.via_bodies)
+
+        def progress(done, total, what):
+            if job.cancelled:
+                raise _Cancelled()
+            job.progress = (done, total, what)
+
+        def run():
+            return discretize(*args, progress=progress)
+
+        job.future = self._mesh_pool.submit(run)
+        self._mesh_job = job
+        self._mesh_timer.start()
+
+    def _cancel_discretize(self):
+        if self._mesh_job is not None:
+            self._mesh_job.cancelled = True
+            self._mesh_job = None
+        self._mesh_timer.stop()
+        self.mesh_bar.setVisible(False)
+
+    def _poll_discretize(self):
+        job = self._mesh_job
+        if job is None:
+            self._mesh_timer.stop()
+            return
+        elapsed = time.perf_counter() - job.start
+        cells = job.mesh.grid.cell_count / 1e6
+        if not job.future.done():
+            if elapsed > MESH_PROGRESS_DELAY:
+                done, total, what = job.progress
+                self.mesh_bar.setRange(0, total)
+                self.mesh_bar.setValue(done)
+                self.mesh_bar.setFormat(f"mesh {done}/{total}: {what}")
+                self.mesh_bar.setVisible(True)
+                self.statusBar().showMessage(f"Mesh: {cells:.2f} M cells, discretizing {what} ({done}/{total})")
+            return
+        if self.tree.state() == QAbstractItemView.EditingState:
+            return                      # the tree is rebuilt below: not under an open editor
+        self._mesh_job = None
+        self._mesh_timer.stop()
+        self.mesh_bar.setVisible(False)
+        try:
+            self.materials = job.future.result()
+        except Exception as error:      # show it, keep the window alive
+            self.materials = None
+            self.statusBar().showMessage(f"Mesh: discretization failed: {error}", 15000)
+        else:
+            if elapsed > MESH_PROGRESS_DELAY:
+                self.statusBar().showMessage(f"Mesh: {cells:.2f} M cells in {elapsed:.1f} s", 5000)
+        self._mesh_ready()
+        if self.geometry is not None:
+            self._refresh_rows()
+
+    def mesh_busy(self):
+        return self._mesh_job is not None
+
+    def wait_for_mesh(self, timeout=600.0):
+        """For scripts and tests: process events until the background discretization is done."""
+        end = time.perf_counter() + timeout
+        while self.mesh_busy() and time.perf_counter() < end:
+            QApplication.processEvents()
+            time.sleep(0.01)
+
+    def _mesh_ready(self):
+        self._configure_mesh_slider(center=self._center_slider)
+        self._center_slider = False
         self._show_mesh_plane()
         if self.profile_window is not None and self.profile_window.isVisible():
             self.profile_window.mark_outdated()
-
-    def _discretize_with_progress(self):
-        """
-        discretize() with the mesh progress bar. The UI keeps responding
-        (processEvents), so an edit can arrive meanwhile: it only marks the
-        model as changed, and this returns None (the caller starts over).
-        """
-        self._discretizing = True
-        self._model_changed = False
-        start = time.perf_counter()
-        grid = self.mesh.grid
-
-        def progress(done, total, what):
-            if not self.mesh_bar.isVisible() and time.perf_counter() - start > MESH_PROGRESS_DELAY:
-                self.mesh_bar.setRange(0, total)
-                self.mesh_bar.setVisible(True)
-            if self.mesh_bar.isVisible():
-                self.mesh_bar.setValue(done)
-                self.mesh_bar.setFormat(f"mesh {done}/{total}: {what}")
-                self.statusBar().showMessage(
-                    f"Mesh: {grid.cell_count / 1e6:.2f} M cells, discretizing {what} ({done}/{total})")
-                QApplication.processEvents()
-
-        try:
-            materials = discretize(self.mesh, self.geometry, self.project, self.ports, self.elements,
-                                   self.waveports, self.via_bodies, progress=progress)
-        finally:
-            self._discretizing = False
-            if self.mesh_bar.isVisible():
-                self.mesh_bar.setVisible(False)
-                self.statusBar().showMessage(
-                    f"Mesh: {grid.cell_count / 1e6:.2f} M cells in {time.perf_counter() - start:.1f} s", 5000)
-        return None if self._model_changed else materials
 
     def _configure_mesh_slider(self, center=False):
         if self.mesh is None or not self.mesh.ok:
@@ -1459,7 +1546,10 @@ class MainWindow(QMainWindow):
         """Save, recompute ports and mesh, refresh the dependent tree rows."""
         self._save()
         self._refresh_model()
+        self._refresh_rows()
 
+    def _refresh_rows(self):
+        """The tree rows that depend on the ports and the mesh."""
         for body in self.geometry.bodies:
             self._fill_type(self._top_item("body", body.name))
         self._fill_section(self._top_item("section", "mesh"))

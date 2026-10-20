@@ -13,6 +13,10 @@
 # coordinates), and the cut face is drawn: a fill image of the bodies on
 # the plane plus their exact outline (view/section.py), the outline a hair
 # in front of the fill so it wins the depth test.
+#
+# Reference planes (set_reference_planes): a dark blue translucent square on
+# each waveguide port's reference plane (the port plane moved by the Results
+# tab's shift), drawn through the bodies like the ports.
 
 import numpy as np
 
@@ -54,6 +58,8 @@ DOMAIN_COLOR = (0.35, 0.65, 1.0, 1.0)
 SECTION_OUTLINE_DARKEN = 0.55     # outline color = body color times this
 PORT_OK_COLOR = (0.2, 1.0, 0.35, 1.0)
 PORT_ERROR_COLOR = (1.0, 0.25, 0.2, 1.0)
+REFERENCE_FILL = (0.05, 0.1, 0.5, 0.55)           # dark blue, translucent
+REFERENCE_EDGE = (0.3, 0.45, 1.0, 0.9)
 
 
 def _skip_redundant_qt_swap(canvas):
@@ -336,6 +342,7 @@ class GeometryView:
         self.domain_box = scene.visuals.Line(connect="segments", color=DOMAIN_COLOR,
                                              width=1.5, parent=self.view.scene)
         self.domain_box.visible = False
+        self.reference_root = scene.Node(parent=self.view.scene)
         self.port_root = scene.Node(parent=self.view.scene)   # drawn last, on top
         # Highlighted holes: their outline plus a halo ring (a 0.3 mm via is
         # invisible at board scale), drawn through the bodies.
@@ -593,6 +600,30 @@ class GeometryView:
                                      width=width, parent=self.port_root)
             bar.set_gl_state("translucent", depth_test=False)
 
+        self.canvas.update()
+
+    def set_reference_planes(self, planes):
+        """planes: [(axis, center (m), (half size along u, along v) m)], u < v the other axes."""
+        for child in list(self.reference_root.children):
+            child.parent = None
+        for axis, center, (hu, hv) in planes:
+            u, v = [a for a in range(3) if a != axis]
+            corners = np.zeros((4, 3))
+            for n, (su, sv) in enumerate(((-1, -1), (1, -1), (1, 1), (-1, 1))):
+                corners[n] = center
+                corners[n, u] += su * hu
+                corners[n, v] += sv * hv
+            corners = (corners / SCENE_UNIT).astype(np.float32)
+            fill = scene.visuals.Mesh(vertices=corners, faces=np.array([[0, 1, 2], [0, 2, 3]], np.uint32),
+                                      color=REFERENCE_FILL, parent=self.reference_root)
+            edge = scene.visuals.Line(pos=corners[[0, 1, 1, 2, 2, 3, 3, 0]], connect="segments",
+                                      color=REFERENCE_EDGE, width=2.0, parent=self.reference_root)
+            for visual in (fill, edge):
+                visual.set_gl_state("translucent", depth_test=False, cull_face=False)
+        self.canvas.update()
+
+    def set_show_reference_planes(self, on):
+        self.reference_root.visible = on
         self.canvas.update()
 
     def reset_view(self):

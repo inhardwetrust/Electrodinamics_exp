@@ -42,6 +42,7 @@ def main(argv):
         from PySide6.QtCore import QTimer
 
         def grab():
+            window.wait_for_mesh()             # the discretization runs in the background
             window.grab().save(screenshot)     # widget grab, never a screen grab
             vispy_app.quit()
 
