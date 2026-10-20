@@ -53,13 +53,21 @@ def line_impedance(materials, axis, index, bounds):
     u, v = [a for a in range(3) if a != axis]
     lo, hi = bounds
     section = Section(float(materials.grid.lines[axis][index]))
-    mode = solve_port_mode(materials, axis, index, region=((lo[u], hi[u]), (lo[v], hi[v])))
+    model = ((lo[u], hi[u]), (lo[v], hi[v]))
+    mode = solve_port_mode(materials, axis, index, region=model)
     if not mode.ok and mode.errors[0].startswith("no conductor touches"):
         # Nothing reaches the model's side here (a connector's shell beyond
-        # the board): the metal's own extent on the plane picks the ground.
+        # the board, a KiCad board's copper pulled back from its edge): the
+        # metal's own extent on the plane picks the ground. A trace on the
+        # outer layer touches that extent too (top or bottom): then the
+        # extent is opened across one direction, so only what spans the
+        # other one (the pour, the planes) is ground.
         extent = _metal_extent(materials, axis, index)
         if extent is not None:
-            mode = solve_port_mode(materials, axis, index, region=extent)
+            for region in (extent, (extent[0], model[1]), (model[0], extent[1])):
+                mode = solve_port_mode(materials, axis, index, region=region)
+                if mode.ok:
+                    break
     if mode.ok:
         section.z0, section.eps_eff = float(mode.z0), float(mode.eps_eff)
     else:

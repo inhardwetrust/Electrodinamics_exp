@@ -25,6 +25,10 @@
 #   - board: "board" (one dielectric; the inner layers lie inside it);
 #   - soldermask and silkscreen are dropped (not modeled);
 #   - a footprint model: its solids named "<reference> 1", "<reference> 2"...
+#     in KiCad's order: a body added to the model renumbers the others.
+# Re-importing over an earlier _prep file keeps its project file, so bodies
+# keep their types by name; compare_bodies() lists the names whose shape
+# changed (a renumbered model part would get another part's type).
 # OCP code, like geometry/step_io.py (the two modules that import OCP).
 
 import os
@@ -53,6 +57,8 @@ from geometry.step_io import _label_name, _new_document, _silence_occt, read_ste
 LAYER_TOLERANCE = 1e-3      # mm: solids whose z ranges match within this are one layer
 MAX_LAYER_THICKNESS = 0.2   # mm: thicker "copper" is reported, not treated as a layer
 DROPPED = ("_soldermask", "_silkscreen")
+CHANGE_TOLERANCE = 1e-6     # m: bounds moved more than this -> the body changed
+VOLUME_TOLERANCE = 0.01     # relative
 COPPER_COLOR = (0.85, 0.55, 0.2)
 VIA_COLOR = (0.95, 0.78, 0.25)
 
@@ -134,6 +140,22 @@ def prepare_kicad_step(src, dst):
 
     _write(dst, named)
     return report
+
+
+def compare_bodies(old, new):
+    """(new names, gone names, changed names) between two Geometries of the same file."""
+    before = {b.name: b for b in old.bodies}
+    after = {b.name: b for b in new.bodies}
+    changed = []
+    for name in after.keys() & before.keys():
+        a, b = before[name], after[name]
+        moved = np.max(np.abs(np.asarray(a.bounds) - np.asarray(b.bounds))) > CHANGE_TOLERANCE
+        resized = abs(a.volume - b.volume) > VOLUME_TOLERANCE * max(abs(a.volume), 1e-30)
+        if moved or resized:
+            changed.append(name)
+    order = [b.name for b in new.bodies]
+    return ([n for n in order if n not in before], sorted(before.keys() - after.keys()),
+            sorted(changed, key=order.index))
 
 
 # =====================================================

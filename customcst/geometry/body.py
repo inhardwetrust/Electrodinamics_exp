@@ -38,6 +38,10 @@ class Body:
                See geometry/holes.py.
     color      RGB in 0..1 from the STEP file, or None
     shape      OCP TopoDS_Shape in millimeters, or None
+    pieces     a body of several disjoint solids (a KiCad copper layer: the
+               pour and a trace in its clearance): one Body per solid, else
+               None. A conductor's PEC closure runs per piece, never across
+               the gap between two of them (discretize/materials.py).
     """
 
     name: str
@@ -51,6 +55,7 @@ class Body:
     planar: np.ndarray = None
     color: Optional[Color] = None
     shape: object = field(default=None, repr=False)
+    pieces: Optional[list] = field(default=None, repr=False)
 
     def __post_init__(self):
         if self.kind not in BODY_KINDS:

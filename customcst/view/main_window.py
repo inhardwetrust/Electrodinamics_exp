@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 
 from app_settings import AppSettings
 from geometry.holes import find_holes, group_by_diameter, via_body
-from geometry.kicad_step import prepare_kicad_step
+from geometry.kicad_step import compare_bodies, prepare_kicad_step
 from geometry.step_io import read_step
 from discretize.materials import discretize
 from mesh.rectilinear import ACCURATE_CELLS_PER_FEATURE, build_grid, z0_error_percent
@@ -610,11 +610,18 @@ class MainWindow(QMainWindow):
             answer = QMessageBox.question(
                 self, "Import KiCad",
                 f"{os.path.basename(dst)} exists. Overwrite it?\n\n"
-                "Its project file (.toml) is kept: bodies with the same names keep their types.")
+                "Its project file (.toml) is kept: bodies with the same names keep their types, "
+                "the types of bodies no longer in the board are removed.")
             if answer != QMessageBox.Yes:
                 return
         QGuiApplication.setOverrideCursor(Qt.WaitCursor)
         try:
+            old = None
+            if os.path.exists(dst):
+                try:
+                    old = read_step(dst)
+                except Exception:           # an unreadable old file: nothing to compare
+                    old = None
             report = prepare_kicad_step(src, dst)
         except Exception as error:          # a file we cannot convert: say why
             QGuiApplication.restoreOverrideCursor()
@@ -622,7 +629,24 @@ class MainWindow(QMainWindow):
             return
         QGuiApplication.restoreOverrideCursor()
         self.load(dst)
-        text = "\n".join(report.lines + [f"warning: {w}" for w in report.warnings])
+        lines = report.lines + [f"warning: {w}" for w in report.warnings]
+        if old is not None and self.geometry is not None:
+            new, _, changed = compare_bodies(old, self.geometry)
+            if changed:
+                lines.append("\nchanged under the same name, CHECK THE TYPE (a model part may have "
+                             "been renumbered): " + ", ".join(changed))
+            if new:
+                lines.append("new, without type: " + ", ".join(new))
+        # A re-import drops the types of bodies no longer in the board (a
+        # plain Open STEP keeps them, in case a CAD edit brings them back).
+        gone = self.project.orphans(self.geometry) if self.project is not None else []
+        if gone:
+            for name in gone:
+                self.project.remove_type(name)
+            self._save()
+            self._show_summary()
+            lines.append("gone, removed from the project file: " + ", ".join(gone))
+        text = "\n".join(lines)
         QMessageBox.information(self, "Import KiCad", f"Written {os.path.basename(dst)}:\n\n{text}")
 
     # =====================================================

@@ -110,11 +110,16 @@ def read_step(path, linear_deflection=None, angular_deflection=0.3):
         parts = _split(shape)
         names = [_body_name(transfer, part, part_name, n, len(parts)) for n, (_, part) in enumerate(parts)]
 
-        for name, kind, part in _merge_part_named(part_name, names, parts):
+        for name, kind, part, solids in _merge_part_named(part_name, names, parts):
             body_name = _unique(name, taken)
-            bodies.append(_make_body(
-                body_name, kind, part.Moved(location), color, deflection_mm, angular_deflection,
-            ))
+            body = _make_body(body_name, kind, part.Moved(location), color, deflection_mm, angular_deflection)
+            if len(solids) > 1:
+                body.pieces = [
+                    _make_body(f"{body_name}#{n + 1}", kind, solid.Moved(location), color,
+                               deflection_mm, angular_deflection)
+                    for n, solid in enumerate(solids)
+                ]
+            bodies.append(body)
 
     return Geometry(bodies, source=path)
 
@@ -140,7 +145,7 @@ def _body_name(transfer, part, part_name, index, count):
 
 
 def _merge_part_named(part_name, names, parts):
-    """[(name, kind, shape)]: the solids named like the part become one compound."""
+    """[(name, kind, shape, [its solids])]: the solids named like the part become one compound."""
     groups = {}
     order = []
     for name, (kind, part) in zip(names, parts):
@@ -154,14 +159,14 @@ def _merge_part_named(part_name, names, parts):
     for key in order:
         shapes = groups[key]
         if len(shapes) == 1:
-            merged.append((key[0], key[1], shapes[0]))
+            merged.append((key[0], key[1], shapes[0], shapes))
             continue
         compound = TopoDS_Compound()
         builder = BRep_Builder()
         builder.MakeCompound(compound)
         for shape in shapes:
             builder.Add(compound, shape)
-        merged.append((key[0], key[1], compound))
+        merged.append((key[0], key[1], compound, shapes))
     return merged
 
 

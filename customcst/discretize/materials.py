@@ -233,10 +233,14 @@ def discretize(mesh, geometry, project, ports=None, elements=None, waveports=Non
         pec.append(np.zeros(edge_shape(shape, axis), dtype=bool))
 
     for body in conductors:
-        own = [_edges_in_metal(body, lines, axis, tolerance) for axis in range(3)]
-        _close_metal(own, shape)
-        for axis in range(3):
-            pec[axis] |= own[axis]
+        # Per piece: a KiCad layer is one body holding the pour and the
+        # trace in its clearance; closed as one, a gap one cell wide
+        # (a trace's rounded end) was bridged into a short.
+        for piece in body.pieces or [body]:
+            own = [_edges_in_metal(piece, lines, axis, tolerance) for axis in range(3)]
+            _close_metal(own, shape)
+            for axis in range(3):
+                pec[axis] |= own[axis]
         step(body.name)
 
     # --- H-edges: mu --------------------------------------------------------
@@ -349,7 +353,8 @@ def _close_metal(edges, shape):
     edges across the line but a free edge along it: the solver then sees a
     conductor that carries no current along the line there, and the TEM
     mode of the staircased line is broken (a coax pin came out 11 % off in
-    Z0). Per body, so a gap between two conductors is never closed.
+    Z0). Per body (per piece of a multi-piece body), so a gap between two
+    conductors is never closed.
     """
     nodes = np.zeros(tuple(n + 1 for n in shape), dtype=bool)
     for axis, pec in enumerate(edges):

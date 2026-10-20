@@ -260,10 +260,24 @@ by hand. The usual Open STEP path is unchanged.
   entities in writing order and checked by reading the file back. Each
   body is written as a compound (a located solid alone becomes an instance
   of an unnamed part, 'SOLID').
+- A multi-piece body keeps its solids as `Body.pieces`: the PEC closure
+  of discretize (`_close_metal`, every edge between two metal nodes of a
+  conductor is PEC) runs per piece. Run per body it bridged the gap at a
+  trace's rounded end (one cell wide at min step 0.08) and shorted the
+  trace to the pour: the first KiCad runs reflected everything.
+  `check_kicad` builds such a board and sees the short when the pieces
+  are dropped. A gap narrower than a cell is still not resolved: then the
+  two pieces share nodes and are joined (that is the grid, not a bug).
 - The test board (4 layers, SMA, 10 vias): 27 KiCad solids -> 9 bodies in
   1 s; F.Cu is 2 pieces (pour, trace with the pin's pad).
 - Re-importing keeps the `_prep` project file: bodies with the same names
-  keep their types.
+  keep their types, new ones come untyped, gone ones are removed from it
+  (a plain Open STEP keeps them as orphans). The
+  model parts are numbered in KiCad's order, so a body added to a model
+  renumbers the others and a type would land on another part: the report
+  lists the bodies whose bounds or volume changed under the same name
+  (`compare_bodies`), new and gone ones. A second import of the same file
+  reports no change.
 
 ## Application settings
 
