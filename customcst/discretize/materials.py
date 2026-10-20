@@ -144,13 +144,16 @@ def edge_shape(shape, axis):
     return tuple(n if a == axis else n + 1 for a, n in enumerate(shape))
 
 
-def discretize(mesh, geometry, project, ports=None, elements=None, waveports=None, vias=()):
+def discretize(mesh, geometry, project, ports=None, elements=None, waveports=None, vias=(),
+               progress=None):
     """
     mesh: a MeshResult (its grid and the merge distance it used).
     ports / elements: {name: PortGeometry} of the port and lumped bodies.
     waveports: {name: WavePortGeometry}.
     vias: PEC bodies of the assigned vias (geometry.holes.via_body), extra
     conductors that are not bodies of the STEP file.
+    progress(done, total, what): called after each step (a body's cells, a
+    conductor's edges, the ports), for a progress bar.
     """
     grid = mesh.grid
     lines = grid.lines
@@ -175,6 +178,15 @@ def discretize(mesh, geometry, project, ports=None, elements=None, waveports=Non
         conductors.append(body)
         names.append(body.name)
 
+    total = len(dielectrics) + 2 * len(conductors) + 1
+    done = 0
+
+    def step(what):
+        nonlocal done
+        done += 1
+        if progress is not None:
+            progress(done, total, what)
+
     warnings = []
     f_min, f_max = (project.settings["simulation"][k] for k in ("f_min", "f_max"))
 
@@ -190,6 +202,7 @@ def discretize(mesh, geometry, project, ports=None, elements=None, waveports=Non
         cell_mu[inside] = values["mu_r"]
         cell_sigma[inside] = 2 * math.pi * values["f_ref"] * GHZ * EPS0 * values["eps_r"] * values["tan_d"]
         cell_body[inside] = names.index(body.name)
+        step(body.name)
 
         if values["eps_r"] == 1.0 and values["mu_r"] == 1.0 and values["tan_d"] == 0.0:
             warnings.append(f"{body.name}: εr = μr = 1, tan δ = 0: the same as air")
@@ -205,6 +218,7 @@ def discretize(mesh, geometry, project, ports=None, elements=None, waveports=Non
         inside = _cells_inside(body, centers)
         cell_body[inside] = names.index(body.name)
         in_metal |= inside
+        step(body.name)
 
     # --- E-edges: eps, sigma, PEC ------------------------------------------
     is_dielectric = np.zeros(shape)
@@ -223,6 +237,7 @@ def discretize(mesh, geometry, project, ports=None, elements=None, waveports=Non
         _close_metal(own, shape)
         for axis in range(3):
             pec[axis] |= own[axis]
+        step(body.name)
 
     # --- H-edges: mu --------------------------------------------------------
     mu_r = tuple(_dual_harmonic(cell_mu, axis, h).astype(np.float32) for axis in range(3))
@@ -244,6 +259,7 @@ def discretize(mesh, geometry, project, ports=None, elements=None, waveports=Non
     for waveport in (waveports or {}).values():
         if waveport.ok:
             _discretize_waveport(result, waveport, mesh.min_step)
+    step("ports")
 
     return result
 
@@ -282,20 +298,47 @@ def _edges_in_metal(body, lines, axis, tolerance):
     """
     coords = [0.5 * (l[1:] + l[:-1]) if a == axis else l for a, l in enumerate(lines)]
     delta = 1e-6 * tolerance
-    hit = in_or_on_grid(body, axis, coords, delta)          # inside, or exactly on a face
+    full = np.zeros(tuple(len(c) for c in coords), dtype=bool)
+    # Only the grid points near the body: nothing beyond its box plus the
+    # reach (<= tolerance) can be hit. Rays across the whole domain made
+    # every body cost the same (~6 s for a 12-triangle box at 1.8 M cells).
+    box = _box(body, coords, tolerance + 2 * delta)
+    if box is None:
+        return full
+    sub = [c[b] for c, b in zip(coords, box)]
+    hit = in_or_on_grid(body, axis, sub, delta)             # inside, or exactly on a face
     needed = 1 if body.kind == "sheet" else 2               # through a thin solid: in + out
     for across in range(3):
         if across != axis:
             gaps = 0.4999 * np.diff(lines[across])
-            reach = (np.minimum(tolerance, np.r_[np.inf, gaps]), np.minimum(tolerance, np.r_[gaps, np.inf]))
-            hit |= crossings_on_grid(body, across, coords, reach, delta,
+            reach = (np.minimum(tolerance, np.r_[np.inf, gaps])[box[across]],
+                     np.minimum(tolerance, np.r_[gaps, np.inf])[box[across]])
+            hit |= crossings_on_grid(body, across, sub, reach, delta,
                                      all_offsets=body.kind == "sheet") >= needed
-    return hit
+    full[box] = hit
+    return full
 
 
 def _cells_inside(body, centers):
     """Bool (nx, ny, nz): cell centers strictly inside the body (rays along x)."""
-    return inside_on_grid(body, 0, centers)
+    full = np.zeros(tuple(len(c) for c in centers), dtype=bool)
+    box = _box(body, centers, 0.0)
+    if box is not None:
+        full[box] = inside_on_grid(body, 0, [c[b] for c, b in zip(centers, box)])
+    return full
+
+
+def _box(body, coords, margin):
+    """Per axis the slice of coords within the body's bounds +- margin; None if empty."""
+    lo, hi = body.bounds
+    box = []
+    for a, c in enumerate(coords):
+        i0 = int(np.searchsorted(c, lo[a] - margin - 1e-12, side="left"))
+        i1 = int(np.searchsorted(c, hi[a] + margin + 1e-12, side="right"))
+        if i1 <= i0:
+            return None
+        box.append(slice(i0, i1))
+    return tuple(box)
 
 
 def _close_metal(edges, shape):

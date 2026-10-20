@@ -48,7 +48,7 @@ class ProfileWindow(QWidget):
         layout.addWidget(self.readout)
         layout.addWidget(self.info)
 
-    def set_profile(self, profile, axis_name, title=""):
+    def set_profile(self, profile, axis_name, title="", accuracy=""):
         self.profile = profile
         self.axis_name = axis_name
         self.setWindowTitle(f"Z0 profile along {axis_name.upper()}" + (f" - {title}" if title else ""))
@@ -57,6 +57,7 @@ class ProfileWindow(QWidget):
         self.info.setText(
             "Z0 of a uniform line with each grid cross-section (quasi-TEM, as the FDTD grid sees it): "
             "exact on uniform stretches, indicative on tapers and steps; not the input impedance. "
+            + (f"<b>At this mesh Z0 of narrow lines is {accuracy}</b> (see Mesh in the tree). " if accuracy else "")
             + (f"Gaps: {missing} section{'s' * (missing > 1)} without a single signal conductor."
                if missing else ""))
         self._index = min(self._index, max(len(profile.sections) - 1, 0))

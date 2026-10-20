@@ -32,6 +32,15 @@
 #        h(x) = min_j ( h_j + (max_ratio - 1) * dist(x, interval_j) ).
 #   5. Lines: in each interval, n = ceil(integral dx / h) cells, placed by
 #      inverting that integral, so steps follow h(x) and hit both ends.
+#
+# Accuracy of narrow lines (z0_error_percent): a staircased conductor looks
+# wider near its edges, where the field is strongest, so a narrow line's
+# capacitance comes out high and its Z0 low. The cells across a trace or a
+# gap are interval / max(interval / cells_per_feature, min_step): both
+# settings bound them. A 0.3 mm trace with 0.25 mm gaps over 0.2 mm FR4
+# (2D mode solver; converged 52.4 Ohm): cells per feature 4: -7 % (the 3D
+# model 08 at min step 0.05: 48.8 Ohm), 6: -3 %, 8: -1.5 %, 12: -1.1 %,
+# 24: -0.4 %. Good for comparing variants; absolute Z0 needs >= 8.
 
 import math
 from dataclasses import dataclass, field
@@ -49,6 +58,15 @@ PRIORITY_CONDUCTOR = 1
 PRIORITY_PORT = 0
 
 SAMPLES_PER_INTERVAL = 400
+
+ACCURATE_CELLS_PER_FEATURE = 8      # below: the Z0 accuracy notice
+Z0_ERROR = ((4, 7.0), (6, 3.0), (8, 1.5), (12, 1.1), (24, 0.4), (48, 0.0))   # (cells, % low)
+
+
+def z0_error_percent(cells_per_feature):
+    """Rough Z0 underestimate (percent) of a narrow line at this setting (see the header)."""
+    n, e = zip(*Z0_ERROR)
+    return float(np.interp(math.log(max(cells_per_feature, 1.0)), np.log(n), e))
 
 
 @dataclass

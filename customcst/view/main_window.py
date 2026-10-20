@@ -10,6 +10,7 @@
 # project/object_types.py and project/settings.py.
 
 import os
+import time
 
 import numpy as np
 from PySide6.QtCore import QRect, Qt, QTimer
@@ -25,7 +26,7 @@ from app_settings import AppSettings
 from geometry.holes import find_holes, group_by_diameter, via_body
 from geometry.step_io import read_step
 from discretize.materials import discretize
-from mesh.rectilinear import build_grid
+from mesh.rectilinear import ACCURATE_CELLS_PER_FEATURE, build_grid, z0_error_percent
 from project.materials import BUILTIN, CUSTOM, MATERIAL_PARAMS
 from project.object_types import OBJECT_TYPES
 from project.project_file import UP_AXES, Project, ProjectError
@@ -41,6 +42,7 @@ from solver.line_profile import impedance_profile, line_impedance
 
 MM = 1e-3
 AXES = "xyz"
+MESH_PROGRESS_DELAY = 0.3       # s: the mesh progress bar appears after this
 
 
 def _fmt_mm(values):
@@ -223,6 +225,19 @@ class MainWindow(QMainWindow):
             "QProgressBar::chunk { background-color: #3cb043; border-radius: 2px; }")
         self.progress_bar.setVisible(False)
         self.statusBar().addPermanentWidget(self.progress_bar)
+
+        # Mesh progress: the steps of the discretization (bodies), shown when
+        # a rebuild takes longer than MESH_PROGRESS_DELAY.
+        self.mesh_bar = QProgressBar()
+        self.mesh_bar.setFixedWidth(220)
+        self.mesh_bar.setMaximumHeight(16)
+        self.mesh_bar.setTextVisible(True)
+        self.mesh_bar.setStyleSheet(
+            "QProgressBar { border: 1px solid #999; border-radius: 3px; background: #eee; "
+            "text-align: center; font-size: 11px; }"
+            "QProgressBar::chunk { background-color: #3c8dd0; border-radius: 2px; }")
+        self.mesh_bar.setVisible(False)
+        self.statusBar().addPermanentWidget(self.mesh_bar)
 
     def _build_tree_panel(self):
         self.tree = QTreeWidget()
@@ -664,6 +679,9 @@ class MainWindow(QMainWindow):
     # =====================================================
 
     def _refresh_model(self, center_slider=False):
+        if getattr(self, "_discretizing", False):
+            self._model_changed = True          # the running rebuild starts over
+            return
         self.ports = self.project.ports(self.geometry) if self.project else {}
         self.elements = self.project.elements(self.geometry) if self.project else {}
         self.waveports = self.project.waveports(self.geometry) if self.project else {}
@@ -678,15 +696,49 @@ class MainWindow(QMainWindow):
         columns = {**self.ports, **self.elements}       # bodies that need a line on their axis
         self.mesh = (build_grid(self.geometry, self.project, columns, self.waveports, self.via_bodies)
                      if self.project else None)
-        self.materials = (
-            discretize(self.mesh, self.geometry, self.project, self.ports, self.elements,
-                       self.waveports, self.via_bodies)
-            if self.mesh is not None and self.mesh.ok else None
-        )
+        self.materials = None
+        if self.mesh is not None and self.mesh.ok:
+            self.materials = self._discretize_with_progress()
+            if self.materials is None:                  # an edit came in: build again
+                self._refresh_model(center_slider)
+                return
         self._configure_mesh_slider(center=center_slider)
         self._show_mesh_plane()
         if self.profile_window is not None and self.profile_window.isVisible():
             self.profile_window.mark_outdated()
+
+    def _discretize_with_progress(self):
+        """
+        discretize() with the mesh progress bar. The UI keeps responding
+        (processEvents), so an edit can arrive meanwhile: it only marks the
+        model as changed, and this returns None (the caller starts over).
+        """
+        self._discretizing = True
+        self._model_changed = False
+        start = time.perf_counter()
+        grid = self.mesh.grid
+
+        def progress(done, total, what):
+            if not self.mesh_bar.isVisible() and time.perf_counter() - start > MESH_PROGRESS_DELAY:
+                self.mesh_bar.setRange(0, total)
+                self.mesh_bar.setVisible(True)
+            if self.mesh_bar.isVisible():
+                self.mesh_bar.setValue(done)
+                self.mesh_bar.setFormat(f"mesh {done}/{total}: {what}")
+                self.statusBar().showMessage(
+                    f"Mesh: {grid.cell_count / 1e6:.2f} M cells, discretizing {what} ({done}/{total})")
+                QApplication.processEvents()
+
+        try:
+            materials = discretize(self.mesh, self.geometry, self.project, self.ports, self.elements,
+                                   self.waveports, self.via_bodies, progress=progress)
+        finally:
+            self._discretizing = False
+            if self.mesh_bar.isVisible():
+                self.mesh_bar.setVisible(False)
+                self.statusBar().showMessage(
+                    f"Mesh: {grid.cell_count / 1e6:.2f} M cells in {time.perf_counter() - start:.1f} s", 5000)
+        return None if self._model_changed else materials
 
     def _configure_mesh_slider(self, center=False):
         if self.mesh is None or not self.mesh.ok:
@@ -765,8 +817,10 @@ class MainWindow(QMainWindow):
         axis = self.mesh_axis.currentIndex()
         s = line_impedance(self.materials, axis, self.mesh_slider.value(), self.geometry.bounds)
         where = f"{AXES[axis]} = {s.coordinate / MM:.3f} mm"
-        self.statusBar().showMessage(f"Z0 at {where}: {s.z0:.1f} Ω, eps_eff {s.eps_eff:.3f}" if not s.error
-                                     else f"Z0 at {where}: {s.error}", 15000)
+        note = self._z0_note()
+        self.statusBar().showMessage(
+            f"Z0 at {where}: {s.z0:.1f} Ω, eps_eff {s.eps_eff:.3f}" + (f"  (narrow lines: {note})" if note else "")
+            if not s.error else f"Z0 at {where}: {s.error}", 15000)
 
     def _z0_profile(self):
         if not self._z0_ready():
@@ -786,7 +840,7 @@ class MainWindow(QMainWindow):
         if self.profile_window is None:
             self.profile_window = ProfileWindow(self)
             self.profile_window.coordinate_picked.connect(self._profile_picked)
-        self.profile_window.set_profile(profile, AXES[axis])
+        self.profile_window.set_profile(profile, AXES[axis], accuracy=self._z0_note())
         if self._mesh_coordinate is not None:
             self.profile_window.set_marker(self._mesh_coordinate)
         self.profile_window.show()
@@ -1008,6 +1062,30 @@ class MainWindow(QMainWindow):
         if name == "simulation":
             self._fill_results()
 
+    def _z0_note(self):
+        """'' or a short note on how low Z0 of narrow lines comes out at this mesh."""
+        cells = self.project.settings["mesh"]["cells_per_feature"] if self.project else 0
+        if not cells or cells >= ACCURATE_CELLS_PER_FEATURE:
+            return ""
+        return f"~{z0_error_percent(cells):.0f} % low at cells per feature {cells:g}"
+
+    def _z0_accuracy_rows(self, item):
+        note = self._z0_note()
+        if not note:
+            return
+        advice = (
+            "A staircased conductor looks wider near its edges, where the field is strongest: "
+            "the Z0 of narrow lines (traces and gaps of a few cells) comes out low, about 7 % at "
+            "4 cells per feature, 3 % at 6, 1.5 % at 8, 1 % at 12 (a 0.3 mm GCPW over 0.2 mm FR4). "
+            "Variants compare fine at this mesh. For absolute Z0: cells per feature >= 8 and min step "
+            "<= (narrowest trace or gap) / 8; the min step bounds the cells too. Check a line's Z0 "
+            "with Z₀ (toolbar) at such a mesh first: the mesh builds in seconds, the 3D run is the "
+            "long part (cells and time steps both grow).")
+        for text in (f"⚠ narrow lines: Z0 {note}",
+                     f"   for absolute Z0: cells per feature ≥ {ACCURATE_CELLS_PER_FEATURE}, "
+                     f"min step ≤ narrowest gap / {ACCURATE_CELLS_PER_FEATURE}"):
+            self._note_row(item, "mesh", text, "#c80").setToolTip(0, advice)
+
     def _mesh_rows(self, item):
         mesh = self.mesh
         if mesh is None:
@@ -1044,6 +1122,7 @@ class MainWindow(QMainWindow):
 
         for warning in mesh.warnings:
             self._note_row(item, "mesh", f"⚠ {warning}", "#c80")
+        self._z0_accuracy_rows(item)
 
         m = self.materials
         if m is not None:

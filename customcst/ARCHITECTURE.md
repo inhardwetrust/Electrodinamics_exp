@@ -338,6 +338,38 @@ check.
   run compiles the kernels (a few seconds); numba caches them in
   `solver/__pycache__`.
 
+## Mesh rebuild speed and progress
+
+- `discretize` casts each body's rays only over the grid points inside
+  its box (plus the PEC reach): before, every body cost a whole-domain
+  ray set (~6 s each at 1.8 M cells, even a 12-triangle box; 28 vias were
+  161 of 216 s). Model 08 at 1.8 M cells: 216 -> 4 s; 12 M cells: 32 s;
+  results bit-identical (all fields compared).
+- `discretize(progress=)` reports each step (a body's cells, a conductor's
+  edges, the ports). The main window shows a blue bar in the status bar
+  when a rebuild takes over 0.3 s, and keeps the UI responding: an edit
+  that arrives meanwhile restarts the rebuild with the new settings.
+
+## Z0 accuracy of narrow lines
+
+A staircased conductor looks wider near its edges (where the field is
+strongest), so a narrow line's Z0 comes out low. 2D study of the 0.3 mm
+trace / 0.25 mm gap GCPW over 0.2 mm FR4 (converged 52.4 Ohm, microstrip
+without side grounds 54.9, RFcalc 55.06): cells per feature 4: -7 %,
+6: -3 %, 8: -1.5 %, 12: -1.1 %. Model 08 at min step 0.05, cpf 4: the
+line 48.8 Ohm; at min step 0.02, cpf 8: 52.2. The cells across a feature
+are bound by both settings (step = max(feature / cpf, min step)).
+- Mesh in the tree: below cells per feature 8 a notice gives the estimate
+  (`mesh/rectilinear.z0_error_percent`) and the settings for absolute
+  Z0; Z₀ at a plane and the Z0 profile repeat it.
+- The interval between neighbouring fixpoints is NOT a feature: lines run
+  through the whole domain, so faces of other bodies (vias, other layers)
+  cut a trace's width into pieces. A per-feature check needs the
+  conductors' own widths and gaps; not done.
+- Practice: compare variants at the normal mesh; check absolute Z0 with
+  Z₀ at cpf >= 8 (the mesh builds in seconds); a 3D run at that mesh is
+  hours (12 M cells, half the time step).
+
 ## Excited ports
 
 `[simulation] excite` is "all" (the default: one run per port, the full
