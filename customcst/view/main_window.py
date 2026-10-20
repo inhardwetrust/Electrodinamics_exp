@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 
 from app_settings import AppSettings
 from geometry.holes import find_holes, group_by_diameter, via_body
+from geometry.kicad_step import prepare_kicad_step
 from geometry.step_io import read_step
 from discretize.materials import discretize
 from mesh.rectilinear import ACCURATE_CELLS_PER_FEATURE, build_grid, z0_error_percent
@@ -45,6 +46,7 @@ from solver.line_profile import impedance_profile, line_impedance
 MM = 1e-3
 AXES = "xyz"
 MESH_PROGRESS_DELAY = 0.3       # s: the mesh progress bar appears after this
+SLIDER_STEPS = 200              # plane positions over the model when there is no mesh
 
 
 class _Cancelled(Exception):
@@ -129,6 +131,9 @@ class MainWindow(QMainWindow):
         self.addToolBar(bar)
 
         bar.addAction("Open STEP...", self._open_dialog)
+        kicad = bar.addAction("Import KiCad...", self._import_kicad)
+        kicad.setToolTip("A KiCad board STEP -> <name>_prep.stp in our form (one body per copper "
+                         "layer, pads cut to the copper, vias as one body), then opened")
         self.recent_menu = QMenu(self)
         self.recent_menu.aboutToShow.connect(self._fill_recent_menu)
         recent = QToolButton()
@@ -594,6 +599,32 @@ class MainWindow(QMainWindow):
         if path:
             self.load(path)
 
+    def _import_kicad(self):
+        """KiCad STEP -> <name>_prep.stp next to it (geometry/kicad_step.py), then opened."""
+        start = os.path.dirname(self.geometry.source) if self.geometry else ""
+        src, _ = QFileDialog.getOpenFileName(self, "Import KiCad STEP", start, "STEP (*.step *.stp)")
+        if not src:
+            return
+        dst = os.path.splitext(src)[0] + "_prep.stp"
+        if os.path.exists(dst):
+            answer = QMessageBox.question(
+                self, "Import KiCad",
+                f"{os.path.basename(dst)} exists. Overwrite it?\n\n"
+                "Its project file (.toml) is kept: bodies with the same names keep their types.")
+            if answer != QMessageBox.Yes:
+                return
+        QGuiApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            report = prepare_kicad_step(src, dst)
+        except Exception as error:          # a file we cannot convert: say why
+            QGuiApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, "Import KiCad", f"Cannot convert {os.path.basename(src)}:\n{error}")
+            return
+        QGuiApplication.restoreOverrideCursor()
+        self.load(dst)
+        text = "\n".join(report.lines + [f"warning: {w}" for w in report.warnings])
+        QMessageBox.information(self, "Import KiCad", f"Written {os.path.basename(dst)}:\n\n{text}")
+
     # =====================================================
     # Window size and state (app settings)
     # =====================================================
@@ -827,15 +858,24 @@ class MainWindow(QMainWindow):
         if self.profile_window is not None and self.profile_window.isVisible():
             self.profile_window.mark_outdated()
 
+    def _slider_positions(self):
+        """Plane coordinates of the slider: the grid lines, or steps over the model without a mesh."""
+        axis = self.mesh_axis.currentIndex()
+        if self.mesh is not None and self.mesh.ok:
+            return self.mesh.grid.lines[axis]
+        lo, hi = self.geometry.bounds
+        return np.linspace(lo[axis], hi[axis], SLIDER_STEPS + 1)
+
     def _configure_mesh_slider(self, center=False):
-        if self.mesh is None or not self.mesh.ok:
+        if self.geometry is None:
             self.mesh_slider.setEnabled(False)
             return
 
         # The plane keeps its coordinate when the grid changes (the line
         # index would point somewhere else); new axis or first mesh: center.
+        # Without a mesh (no types yet) the slider still moves the section.
         axis = self.mesh_axis.currentIndex()
-        lines = self.mesh.grid.lines[axis]
+        lines = self._slider_positions()
         if center or self._mesh_coordinate is None:
             lo, hi = self.geometry.bounds
             self._mesh_coordinate = 0.5 * (lo + hi)[axis]
@@ -847,11 +887,13 @@ class MainWindow(QMainWindow):
         self.mesh_slider.blockSignals(False)
 
     def _mesh_slider_moved(self, index):
-        if self.mesh is not None and self.mesh.ok:
-            self._mesh_coordinate = self.mesh.grid.lines[self.mesh_axis.currentIndex()][index]
-            window = self.profile_window
-            if window is not None and window.profile is not None                     and window.profile.axis == self.mesh_axis.currentIndex():
-                window.set_marker(self._mesh_coordinate)
+        if self.geometry is None:
+            return
+        self._mesh_coordinate = float(self._slider_positions()[index])
+        window = self.profile_window
+        if (self.mesh is not None and self.mesh.ok and window is not None and window.profile is not None
+                and window.profile.axis == self.mesh_axis.currentIndex()):
+            window.set_marker(self._mesh_coordinate)
         self._show_mesh_plane()
 
     def _mesh_axis_changed(self, _index):
@@ -946,13 +988,13 @@ class MainWindow(QMainWindow):
         self.mesh_slider.setValue(int(np.argmin(np.abs(self.mesh.grid.lines[axis] - coordinate))))
 
     def _show_section(self):
-        """Section view at the plane of the slider (the model's middle without a mesh)."""
+        """Section view at the plane of the slider (grid lines, or steps over the model without a mesh)."""
         if not self.section_check.isChecked() or self.geometry is None:
             self.view.set_section(None)
             return
         axis = self.mesh_axis.currentIndex()
         coordinate = self._mesh_coordinate
-        if coordinate is None or self.mesh is None or not self.mesh.ok:
+        if coordinate is None:
             lo, hi = self.geometry.bounds
             coordinate = 0.5 * (lo + hi)[axis]
         self.view.set_section(axis, coordinate, keep_below=not self.section_flip.isChecked())

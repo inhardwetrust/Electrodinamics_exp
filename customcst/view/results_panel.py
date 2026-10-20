@@ -35,7 +35,7 @@ from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel, QMessageBox,
-    QPushButton, QSlider, QStackedWidget, QVBoxLayout, QWidget,
+    QFrame, QPushButton, QScrollArea, QSlider, QSplitter, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from project.settings import C0
@@ -44,6 +44,7 @@ from view.plot import LinePlot
 from view.smith import SmithChart
 
 REFLECTION_ONLY = ("SWR", "Smith", "Z in")
+TEXT_HEIGHT = 170           # px: the readout / status / info area under the plot (scrolls)
 
 
 class ResultsPanel(QWidget):
@@ -125,15 +126,40 @@ class ResultsPanel(QWidget):
         self.status = QLabel()          # current / outdated
         self.status.setWordWrap(True)
 
+        # The plot keeps its height: the text under it scrolls in its own
+        # area (a splitter: the extra height of the window goes to the plot,
+        # the border can be dragged).
+        plot = QWidget()
+        plot_layout = QVBoxLayout(plot)
+        plot_layout.setContentsMargins(0, 0, 0, 0)
+        plot_layout.addWidget(self.stack, 1)
+        plot_layout.addLayout(marker_row)
+
+        text = QWidget()
+        text_layout = QVBoxLayout(text)
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.addWidget(self.readout)
+        text_layout.addWidget(self.status)
+        text_layout.addWidget(self.info)
+        text_layout.addStretch(1)
+        scroll = QScrollArea()
+        scroll.setWidget(text)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+
+        self.splitter = QSplitter(Qt.Vertical)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.addWidget(plot)
+        self.splitter.addWidget(scroll)
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 0)
+        self.splitter.setSizes([10000, TEXT_HEIGHT])
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.addLayout(controls)
         layout.addLayout(self.shift_row)
-        layout.addWidget(self.stack, 1)
-        layout.addLayout(marker_row)
-        layout.addWidget(self.readout)
-        layout.addWidget(self.status)
-        layout.addWidget(self.info)
+        layout.addWidget(self.splitter, 1)
         self._redraw()
 
     # =====================================================

@@ -60,7 +60,8 @@ Context for future Claude sessions. Read this first, then `ARCHITECTURE.md`.
 - Layout: Project dock on the left; the central QTabWidget holds
   "3D View" (the VisPy canvas) and "Results" (ResultsPanel). After a run,
   the window switches to Results. The status bar stays at the bottom.
-- Only OCP code goes in `geometry/step_io.py`; everything above it is numpy.
+- Only OCP code goes in `geometry/step_io.py` (and `geometry/kicad_step.py`,
+  the KiCad import, which needs booleans); everything above them is numpy.
 - The FDTD hot loop runs as numba kernels (`solver/fdtd_kernels.py`) when
   numba is installed. `CUSTOMCST_NUMPY=1` forces the numpy path; after any
   change to the update equations run `checks/check_kernels.py` (both paths

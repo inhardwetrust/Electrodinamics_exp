@@ -233,6 +233,38 @@ UI:
 - recognized vias against the same vias drawn as PEC cylinders: identical
   PEC edges (0 of 3478 differ).
 
+## KiCad import
+
+Toolbar > Import KiCad (`geometry/kicad_step.py`): a KiCad board STEP
+(File > Export > STEP) becomes `<name>_prep.stp` next to it, in the form of
+our Inventor models, and is opened the normal way; the types are assigned
+by hand. The usual Open STEP path is unchanged.
+- KiCad puts each category in its own part: `<board>_PCB`, `_copper`,
+  `_pad`, `_via` (`_soldermask`, `_silkscreen` when enabled). They are told
+  apart by these names, never by shape. The footprints' 3D models lose
+  their body names (`COMPOUND`): their solids are named by the reference of
+  the instance above them (`J2 1`, `J2 2` ...).
+- Copper: solids grouped by z range into layers, top down F.Cu, In1.Cu ...
+  B.Cu. Pads are exported 5 um thicker than the copper (40 vs 35 um), which
+  would put a 5 um cell into the mesh: each is cut to the z range of the
+  one layer it overlaps and fused into it (a pad through several layers
+  stays a body `pads`). A layer is fused into one shape with its touching
+  faces merged (ShapeUpgrade_UnifySameDomain).
+- Vias (solid cylinders): one body `vias`, typed PEC by hand (no hole rule;
+  the board's via holes would add a second copy). Board: `board`.
+- A layer's disjoint pieces (pour, a trace in its clearance) are one body:
+  each solid is written named like its part, and read_step merges solids
+  named like their part (Inventor names a part after its file and may
+  repeat body names inside it, so its parts are unaffected). OCC's writer
+  leaves solid names empty: they are filled into the MANIFOLD_SOLID_BREP
+  entities in writing order and checked by reading the file back. Each
+  body is written as a compound (a located solid alone becomes an instance
+  of an unnamed part, 'SOLID').
+- The test board (4 layers, SMA, 10 vias): 27 KiCad solids -> 9 bodies in
+  1 s; F.Cu is 2 pieces (pour, trace with the pin's pad).
+- Re-importing keeps the `_prep` project file: bodies with the same names
+  keep their types.
+
 ## Application settings
 
 `app_settings.py` keeps the settings of the program itself, not of a
@@ -623,6 +655,11 @@ across a gap between two PEC bodies, with no polarity.
   shared with the ports, and snaps the axis to the nearest grid line within
   the mesh min_step: an element drawn on top of 35 µm copper ends up on the
   merged copper plane. The result is a `DiscreteElement`.
+- Both ends may lie on the same PEC body if the axis crosses a gap of it
+  (a KiCad layer is one body with the trace and the pour; a slot feed);
+  with no gap it is an error (shorted). The same holds for ports. On a
+  KiCad board the axis must run inside the 35 um copper (z of its middle):
+  only the axis counts, the cylinder's radius is free.
 - **Solver** (`solver/fdtd.py`):
   - each edge carries the element scaled by k = l_e / L, and the trapezoidal
     companion model I(n+1) = G V(n+1) + I_hist is solved together with

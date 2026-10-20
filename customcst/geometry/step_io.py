@@ -9,6 +9,10 @@
 #   - its solids                          -> kind "solid"
 #   - shells / faces outside any solid    -> kind "sheet" (zero thickness)
 # Free edges (wire antennas drawn as curves) are not imported yet.
+# Solids named like their own part form one body (a copper layer of
+# disjoint pieces written by geometry/kicad_step.py). Inventor names a part
+# after its file and may repeat body names inside it (pcb_topmetall x 3):
+# those stay one body per solid.
 #
 # OCP 8 naming: static methods end in _s (BRep_Tool.Triangulation_s), but the
 # TopoDS downcasts are plain functions (TopoDS.Face).
@@ -17,7 +21,7 @@ import os
 
 import numpy as np
 
-from OCP.BRep import BRep_Tool
+from OCP.BRep import BRep_Builder, BRep_Tool
 from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
 from OCP.BRepMesh import BRepMesh_IncrementalMesh
 from OCP.GCPnts import GCPnts_TangentialDeflection
@@ -34,7 +38,7 @@ from OCP.TopAbs import (
 )
 from OCP.TopExp import TopExp_Explorer
 from OCP.TopLoc import TopLoc_Location
-from OCP.TopoDS import TopoDS
+from OCP.TopoDS import TopoDS, TopoDS_Compound
 from OCP.gp import gp_Pnt, gp_Vec
 from OCP.XCAFDoc import XCAFDoc_ColorType, XCAFDoc_DocumentTool, XCAFDoc_ShapeTool
 from OCP.XCAFPrs import (
@@ -104,10 +108,10 @@ def read_step(path, linear_deflection=None, angular_deflection=0.3):
 
     for part_name, shape, location, color in leaves:
         parts = _split(shape)
+        names = [_body_name(transfer, part, part_name, n, len(parts)) for n, (_, part) in enumerate(parts)]
 
-        for n, (kind, part) in enumerate(parts):
-            body_name = _body_name(transfer, part, part_name, n, len(parts))
-            body_name = _unique(body_name, taken)
+        for name, kind, part in _merge_part_named(part_name, names, parts):
+            body_name = _unique(name, taken)
             bodies.append(_make_body(
                 body_name, kind, part.Moved(location), color, deflection_mm, angular_deflection,
             ))
@@ -133,6 +137,32 @@ def _body_name(transfer, part, part_name, index, count):
         name = entity.Name().ToCString().strip()
 
     return name or f"{part_name}#{index + 1}"
+
+
+def _merge_part_named(part_name, names, parts):
+    """[(name, kind, shape)]: the solids named like the part become one compound."""
+    groups = {}
+    order = []
+    for name, (kind, part) in zip(names, parts):
+        key = (name, kind) if kind == "solid" and name == part_name else (name, kind, len(order))
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(part)
+
+    merged = []
+    for key in order:
+        shapes = groups[key]
+        if len(shapes) == 1:
+            merged.append((key[0], key[1], shapes[0]))
+            continue
+        compound = TopoDS_Compound()
+        builder = BRep_Builder()
+        builder.MakeCompound(compound)
+        for shape in shapes:
+            builder.Add(compound, shape)
+        merged.append((key[0], key[1], compound))
+    return merged
 
 
 def _leaf_shapes(doc):

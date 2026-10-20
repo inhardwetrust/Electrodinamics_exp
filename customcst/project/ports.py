@@ -9,6 +9,11 @@
 # the axis that is outside all conductors (ends drawn on the outer copper
 # faces are fine).
 #
+# Both ends may be on the same PEC body when the axis crosses a gap of it:
+# a copper layer imported from KiCad (geometry/kicad_step.py) is one body
+# holding both the trace and the ground pour, and a slot feed lies across
+# one plane. With no gap the ends are shorted: an error.
+#
 # The port body itself is only a marker: it is never meshed as a material.
 #
 # Lumped elements (R, L, C) use the same geometry without polarity
@@ -71,10 +76,6 @@ def port_geometry(body, conductors, polar=True):
 
         setattr(result, attr, touching[0])
 
-    if result.minus_body == result.plus_body:
-        result.error = f"both ends are on the same conductor ({result.minus_body})"
-        return result
-
     # The gap: axis samples outside every conductor must form one run.
     s = np.linspace(0.0, 1.0, GAP_SAMPLES)
     samples = minus + s[:, None] * (plus - minus)
@@ -84,7 +85,9 @@ def port_geometry(body, conductors, polar=True):
 
     free = np.nonzero(~metal)[0]
     if len(free) == 0:
-        result.error = "the axis has no gap between the conductors"
+        result.error = (f"both ends are on the same conductor ({result.minus_body}), no gap between them"
+                        if result.minus_body == result.plus_body else
+                        "the axis has no gap between the conductors")
         return result
     if np.any(np.diff(free) != 1):
         result.error = "the axis crosses a third conductor (more than one gap)"

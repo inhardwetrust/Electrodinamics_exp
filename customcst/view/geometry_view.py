@@ -698,7 +698,7 @@ class GeometryView:
         matrix[2, axis] = 1.0
         matrix[3, u], matrix[3, v], matrix[3, axis] = u0 / SCENE_UNIT, v0 / SCENE_UNIT, coordinate / SCENE_UNIT
         matrix[3, 3] = 1.0
-        self._section_sheet(axis, coordinate)
+        self._section_sheet(axis, coordinate, keep_below)
         self.section_image.set_data(image)
         self.section_image.transform = scene.transforms.MatrixTransform(matrix)
         self.section_image.visible = True
@@ -722,13 +722,18 @@ class GeometryView:
             self.section_lines.visible = False
         self.canvas.update()
 
-    def _section_sheet(self, axis, coordinate):
-        """The section plane over the model's extent (a margin around it)."""
+    def _section_sheet(self, axis, coordinate, keep_below):
+        """
+        The section plane over the model's extent (a margin around it), two
+        hairs toward the removed half: in front of the cut face and its
+        outline, or the coplanar sheet and fill z-fight into stripes.
+        """
         lo, hi = (np.asarray(b, dtype=float) for b in self._bounds)      # scene units
-        margin = 0.05 * float(np.max(hi - lo))
+        size = float(np.max(hi - lo)) or 1.0
+        margin = 0.05 * size
         u, v = [a for a in range(3) if a != axis]
         corners = np.zeros((4, 3))
-        corners[:, axis] = coordinate / SCENE_UNIT
+        corners[:, axis] = coordinate / SCENE_UNIT + (2e-4 * size) * (1.0 if keep_below else -1.0)
         corners[:, u] = [lo[u] - margin, hi[u] + margin, hi[u] + margin, lo[u] - margin]
         corners[:, v] = [lo[v] - margin, lo[v] - margin, hi[v] + margin, hi[v] + margin]
         corners = corners.astype(np.float32)
