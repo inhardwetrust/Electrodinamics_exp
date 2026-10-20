@@ -290,6 +290,12 @@ For checking a geometry inside the program instead of the CAD tool.
   first, conductors over them, vias last) and the exact outline of each
   body's triangles crossing the plane (a 15 um layer stays visible though
   it is far below a pixel). ~80 ms for a whole SMA + board model.
+  The fill stays opaque: a translucent one showed the clipped shells'
+  empty insides, and the bodies looked hollow.
+- The plane itself: a light glass sheet (no frame) over the model's
+  extent (+5 %), visible from either side and where it cuts nothing.
+  (VisPy's set_gl_state takes no depth_mask: passing it silently broke
+  the drawing of every body.)
 - The camera's depth range is 1:200 (VisPy's 1:1e6 made 15 um copper on
   FR4 flicker through).
 - `check_section`: fill colors at known points, a plane on a face, the

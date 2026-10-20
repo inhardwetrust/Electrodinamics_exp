@@ -13,6 +13,8 @@
 # coordinates), and the cut face is drawn: a fill image of the bodies on
 # the plane plus their exact outline (view/section.py), the outline a hair
 # in front of the fill so it wins the depth test.
+# The plane itself is a light glass sheet over the model's
+# extent, so it stays visible where it cuts nothing or from behind.
 #
 # Reference planes (set_reference_planes): a dark blue translucent square on
 # each waveguide port's reference plane (the port plane moved by the Results
@@ -56,6 +58,7 @@ DIELECTRIC_LOW = np.array([0.2, 0.45, 0.75])      # eps_r = 1: dim blue
 DIELECTRIC_HIGH = np.array([0.3, 0.95, 1.0])      # eps_r >= 10: bright cyan
 DOMAIN_COLOR = (0.35, 0.65, 1.0, 1.0)
 SECTION_OUTLINE_DARKEN = 0.55     # outline color = body color times this
+SECTION_SHEET_COLOR = (0.85, 0.9, 1.0, 0.12)      # the section plane: light glass
 PORT_OK_COLOR = (0.2, 1.0, 0.35, 1.0)
 PORT_ERROR_COLOR = (1.0, 0.25, 0.2, 1.0)
 REFERENCE_FILL = (0.05, 0.1, 0.5, 0.55)           # dark blue, translucent
@@ -359,6 +362,10 @@ class GeometryView:
         self.section_image.visible = False
         self.section_lines = scene.visuals.Line(connect="segments", width=2.0, parent=self.root)
         self.section_lines.visible = False
+        self.section_sheet = scene.visuals.Mesh(color=SECTION_SHEET_COLOR, parent=self.root)
+        self.section_sheet.set_gl_state("translucent", depth_test=True, cull_face=False)
+        self.section_sheet.order = 11
+        self.section_sheet.visible = False
         self._section = None            # (axis, coordinate m, keep_below) or None
         self._types = {}
 
@@ -663,6 +670,7 @@ class GeometryView:
             for visual in visuals:
                 visual.set_clip(np.zeros((0, 2, 3), np.float32))
             self.section_image.visible = self.section_lines.visible = False
+            self.section_sheet.visible = False
             self.canvas.update()
             return
 
@@ -690,6 +698,7 @@ class GeometryView:
         matrix[2, axis] = 1.0
         matrix[3, u], matrix[3, v], matrix[3, axis] = u0 / SCENE_UNIT, v0 / SCENE_UNIT, coordinate / SCENE_UNIT
         matrix[3, 3] = 1.0
+        self._section_sheet(axis, coordinate)
         self.section_image.set_data(image)
         self.section_image.transform = scene.transforms.MatrixTransform(matrix)
         self.section_image.visible = True
@@ -712,6 +721,20 @@ class GeometryView:
         else:
             self.section_lines.visible = False
         self.canvas.update()
+
+    def _section_sheet(self, axis, coordinate):
+        """The section plane over the model's extent (a margin around it)."""
+        lo, hi = (np.asarray(b, dtype=float) for b in self._bounds)      # scene units
+        margin = 0.05 * float(np.max(hi - lo))
+        u, v = [a for a in range(3) if a != axis]
+        corners = np.zeros((4, 3))
+        corners[:, axis] = coordinate / SCENE_UNIT
+        corners[:, u] = [lo[u] - margin, hi[u] + margin, hi[u] + margin, lo[u] - margin]
+        corners[:, v] = [lo[v] - margin, lo[v] - margin, hi[v] + margin, hi[v] + margin]
+        corners = corners.astype(np.float32)
+        self.section_sheet.set_data(vertices=corners, faces=np.array([[0, 1, 2], [0, 2, 3]], np.uint32),
+                                    color=SECTION_SHEET_COLOR)
+        self.section_sheet.visible = True
 
     def set_vias(self, bodies):
         """The PEC cylinders of the assigned vias (geometry.holes.via_body), as gold pins."""
