@@ -78,6 +78,11 @@ fence and the lumped load in the clearance slot.
 
 ![KiCad board in section](docs/images/kicad_section.png)
 
+**The KiCad board's S11**: about −27 dB over 4–6 GHz on the same mesh
+settings, within a couple of dB of the Inventor model above.
+
+![KiCad board results](docs/images/kicad_results.png)
+
 **The Z0 profile along the line**: the line impedance at every grid plane.
 It shows which part of the feed is off 50 Ω.
 
