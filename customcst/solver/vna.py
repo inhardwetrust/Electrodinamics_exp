@@ -22,8 +22,10 @@ def logmag(s):
     return 20.0 * np.log10(np.maximum(np.abs(s), 1e-300))
 
 
-def phase_deg(s):
-    return np.degrees(np.angle(s))
+def phase_deg(s, unwrap=False):
+    """Phase in degrees: in (-180, 180], or continuous along frequency (unwrap)."""
+    angle = np.angle(s)
+    return np.degrees(np.unwrap(angle) if unwrap else angle)
 
 
 def group_delay(s, frequencies):

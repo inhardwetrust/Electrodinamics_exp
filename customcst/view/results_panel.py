@@ -5,6 +5,10 @@
 # checked traces S_jk, with a frequency marker and its readout, and
 # Touchstone export. Nothing here re-runs the solver.
 #
+# Phase: in (-180, 180] by default, so it jumps by 360 where it crosses
+# 180; "Unwrap" draws it continuous along frequency (from the band's first
+# point) and adds the continuous value to the readout.
+#
 # Several runs can be shown at once (ticked in Project > Results): the
 # newest of them is the primary one (full color; marker, readout and
 # export follow it), older ones are dimmed for comparison. Runs may have
@@ -63,6 +67,10 @@ class ResultsPanel(QWidget):
         self.format_combo = QComboBox()
         self.format_combo.addItems(vna.FORMATS)
         self.format_combo.currentIndexChanged.connect(lambda _: self._redraw())
+        self.unwrap_check = QCheckBox("Unwrap")
+        self.unwrap_check.setToolTip("Phase continuous along frequency, without the jumps at ±180°")
+        self.unwrap_check.toggled.connect(lambda _: self._redraw())
+        self.unwrap_check.setVisible(False)
 
         self.trace_row = QHBoxLayout()
         self.trace_row.setSpacing(10)
@@ -75,6 +83,7 @@ class ResultsPanel(QWidget):
         controls = QHBoxLayout()
         controls.addWidget(QLabel("Format:"))
         controls.addWidget(self.format_combo)
+        controls.addWidget(self.unwrap_check)
         controls.addSpacing(12)
         controls.addWidget(QLabel("Traces:"))
         controls.addLayout(self.trace_row)
@@ -351,6 +360,8 @@ class ResultsPanel(QWidget):
             return
 
         fmt = self.format_combo.currentText()
+        self.unwrap_check.setVisible(fmt == "Phase")
+        unwrap = fmt == "Phase" and self.unwrap_check.isChecked()
         fm = self._marker_frequency()
         self.marker_label.setText(f"{fm / 1e9:.4f} GHz")
 
@@ -392,7 +403,7 @@ class ResultsPanel(QWidget):
                         continue
                     y = {"LogMag": lambda: vna.logmag(s),
                          "LinMag": lambda: np.abs(s),
-                         "Phase": lambda: vna.phase_deg(s),
+                         "Phase": lambda: vna.phase_deg(s, unwrap),
                          "Group delay": lambda: vna.group_delay(s, f) * 1e9,
                          "SWR": lambda: np.minimum(vna.swr(s), 1e3)}[fmt]()
                     curves.append((name, f / 1e9, y, color, dim))
@@ -405,7 +416,7 @@ class ResultsPanel(QWidget):
             elif fmt == "LinMag":
                 y_label, y_range = "|S|", (0.0, 1.05)
             elif fmt == "Phase":
-                y_label, y_range = "phase, °", (-185.0, 185.0)
+                y_label, y_range = "phase, °", None if unwrap else (-185.0, 185.0)
             elif fmt == "Group delay":
                 y_label = "group delay, ns"
             elif fmt == "SWR":
@@ -428,6 +439,8 @@ class ResultsPanel(QWidget):
                 s = self._s(run, j, k)
                 line = prefix + vna.marker_readout(fmt, s[m], run.frequencies[m],
                                                    self._reference(run, j), j, k)
+                if unwrap:
+                    line += f"  unwrapped {vna.phase_deg(s, True)[m]:.1f}°"
                 if fmt == "Group delay":
                     line += f"  τg {vna.group_delay(s, run.frequencies)[m] * 1e9:.4f} ns"
                 lines.append(line)
