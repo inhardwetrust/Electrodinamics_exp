@@ -350,9 +350,12 @@ For checking a geometry inside the program instead of the CAD tool.
 ## Picking points (for measurements)
 
 A left click without a drag (press and release within 4 px) picks a point
-in the 3D view; a drag still rotates. The point gets a yellow marker, and
-the status bar shows its kind, body and coordinates. Esc, or a click on
-nothing, clears it.
+in the 3D view; a drag still rotates. Two points, A and B:
+- a click sets or moves A (yellow), Shift + click sets or moves B (cyan);
+  Shift + drag still pans. A click on nothing changes nothing;
+- a double click on nothing, or Esc, removes both;
+- a line joins A and B; the status bar shows each point (kind, body,
+  coordinates) and |AB| with dx, dy, dz.
 - `view/picking.py` (numpy only) snaps like CAD measuring tools:
   1. a CAD vertex within 8 px (`Body.corners`: the ends of the CAD edges,
      stored at import);
@@ -367,8 +370,8 @@ nothing, clears it.
   removed half of a section are skipped (the cut face is not pickable yet).
 - The camera comes in as VisPy's visual -> canvas transform (`map` for the
   pixels, `imap` at NDC z = -1 and 0 for the ray).
-- Next: two picks -> the distance (and dx, dy, dz); point-edge and
-  edge-edge shortest distances. `checks/check_picking.py`.
+- Next: point-edge and edge-edge shortest distances.
+  `checks/check_picking.py`.
 
 ## Line impedance (Z0 at a plane, Z0 profile)
 

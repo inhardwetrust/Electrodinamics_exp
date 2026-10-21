@@ -8,8 +8,9 @@
 #     corner: slab test). X-ray picks the hidden corner too;
 #   - a click 3 px beside a point of a visible edge picks that point (the
 #     ray's closest point on the edge, exact in perspective); a click in a face's middle picks a point on that face's plane;
-#   - a click on nothing picks nothing; a drag picks nothing, a click
-#     (press and release at one place) does;
+#   - a click on nothing picks nothing; two points: a click sets or moves
+#     A, Shift + click B, |AB|; drags and clicks on nothing change nothing;
+#     a double click on nothing removes both;
 #   - a section removing the corner's half: that corner is not picked.
 #
 #   python checks/check_picking.py
@@ -24,6 +25,7 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 import numpy as np                                                    # noqa: E402
 from vispy import app                                                 # noqa: E402
+from vispy.util import keys                                           # noqa: E402
 
 app.use_app("pyside6")
 app.use_app().create()
@@ -55,8 +57,8 @@ def slab_entry(origin, direction):
 
 
 class Event:
-    def __init__(self, pos, button=1):
-        self.pos, self.button, self.modifiers = pos, button, ()
+    def __init__(self, pos, button=1, modifiers=()):
+        self.pos, self.button, self.modifiers = pos, button, modifiers
 
 
 def main():
@@ -136,15 +138,42 @@ def main():
 
     check("a click on nothing picks nothing", view.pick_at((5, 5)) is None)
 
-    picks = []
-    view.on_pick = picks.append
-    k = int(np.argmin(hidden))
-    view._mouse_press(Event(xy[k]))
-    view._mouse_release(Event(xy[k] + 20))
-    check("a drag picks nothing", picks == [])
-    view._mouse_press(Event(xy[k]))
-    view._mouse_release(Event(xy[k] + 1))
-    check("a click picks", len(picks) == 1 and picks[0] is not None and picks[0].kind == "vertex")
+    # Two points: a click sets or moves A, Shift + click B; drags, clicks on
+    # nothing change nothing; a double click on nothing removes both.
+    def click(pos, shift=False, drag=0):
+        modifiers = (keys.SHIFT,) if shift else ()
+        view._mouse_press(Event(pos, modifiers=modifiers))
+        view._mouse_release(Event(np.asarray(pos) + drag, modifiers=modifiers))
+
+    def at(n):
+        """Which point (0 = A, 1 = B) is on corner n, or None."""
+        hits = [i for i, p in enumerate(view.picks) if p is not None and np.allclose(p.point, corners[n])]
+        return hits[0] if hits else None
+
+    calls = []
+    view.on_pick = calls.append
+    seen = [n for n in range(8) if not hidden[n]]
+    a, b, c = seen[0], seen[-1], seen[1]
+    click(xy[a], drag=20)
+    check("a drag picks nothing", calls == [] and not any(view.picks))
+    click(xy[a])
+    check("a click sets A", at(a) == 0 and view.picks[1] is None and len(calls) == 1)
+    click(xy[b], shift=True)
+    check("Shift + click sets B", at(a) == 0 and at(b) == 1)
+    distance = np.linalg.norm(view.picks[1].point - view.picks[0].point)
+    check("|AB|", abs(distance - np.linalg.norm(corners[b] - corners[a])) < 1e-9, f"{distance:.6f} mm")
+    click(xy[c])
+    check("a click moves A, B stays", at(c) == 0 and at(b) == 1)
+    click(xy[a], shift=True)
+    check("Shift + click moves B", at(c) == 0 and at(a) == 1)
+    click(xy[b], shift=True, drag=20)
+    n = len(calls)
+    click((5, 5))
+    check("Shift + drag, a click on nothing: no change", at(c) == 0 and at(a) == 1 and len(calls) == n)
+    view._double_click(Event(xy[b]))
+    check("a double click on the model keeps them", at(c) == 0 and at(a) == 1)
+    view._double_click(Event((5, 5)))
+    check("a double click on nothing removes both", view.picks == [None, None] and calls[-1] == [None, None])
 
     # A section keeping z <= 1: a top corner is not picked any more.
     top = [n for n in range(8) if corners[n][2] == HI[2] and not hidden[n]][0]

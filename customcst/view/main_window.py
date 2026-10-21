@@ -235,8 +235,10 @@ class MainWindow(QMainWindow):
         self.legend.setVisible(False)
         self.statusBar().addPermanentWidget(self.legend)   # the toolbar is full
 
-        # The point picked in the 3D view (a click without a drag; Esc clears).
+        # The points picked in the 3D view and their distance (a click sets A,
+        # Shift + click B; a double click on nothing or Esc clears).
         self.pick_label = QLabel()
+        self.pick_label.setTextFormat(Qt.RichText)
         self.pick_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.statusBar().addPermanentWidget(self.pick_label)
         self.view.on_pick = self._picked
@@ -459,11 +461,15 @@ class MainWindow(QMainWindow):
         self.results.shifts_changed.connect(self._show_reference_planes)
         self.tabs.addTab(self.results, "Results")
 
-    def _picked(self, pick):
-        if pick is None:
-            self.pick_label.setText("")
-            return
-        self.pick_label.setText(f"{pick.kind} of {pick.body}: {_fmt_point(pick.point * MM)} mm  ")
+    def _picked(self, picks):
+        """Status bar: the picked points A and B, and the distance between them."""
+        parts = [f"{name}: {p.kind} of {p.body} {_fmt_point(p.point * MM)}"
+                 for name, p in zip("AB", picks) if p is not None]
+        if all(p is not None for p in picks):
+            d = picks[1].point - picks[0].point
+            parts.insert(0, f"<b>|AB| = {np.linalg.norm(d):.4f} mm</b> "
+                            f"(dx {d[0]:.4f}, dy {d[1]:.4f}, dz {d[2]:.4f})")
+        self.pick_label.setText("&nbsp;&nbsp;".join(parts) + ("&nbsp;mm&nbsp;" if parts else ""))
 
     def _show_reference_planes(self):
         """A square on each valid waveguide port's plane, moved by its Results shift."""
@@ -758,7 +764,6 @@ class MainWindow(QMainWindow):
         self.view.highlight_holes([])
         self._mesh_coordinate = None
         self.view.set_geometry(geometry)
-        self._picked(None)
 
         up = project.up if project else "z"
         self.up_combo.blockSignals(True)
