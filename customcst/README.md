@@ -89,7 +89,9 @@ It shows which part of the feed is off 50 Ω.
   Through holes are found and can be filled as vias.
 - **KiCad import**: a KiCad board STEP becomes a clean model. There is one
   body per copper layer, with the pads merged in, plus the vias and the
-  board. Re-importing an updated board keeps the assignments of the
+  board. Every via, and every plated hole in a footprint, becomes a solid
+  through cylinder of its drill: blind and buried vias are not modeled
+  yet. Re-importing an updated board keeps the assignments of the
   surviving bodies.
 - **Project file next to the model** (`model.step` → `model.toml`):
   - body types: PEC, dielectric, discrete port, waveguide port, lumped

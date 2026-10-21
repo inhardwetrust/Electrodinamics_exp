@@ -250,19 +250,28 @@ by hand. The usual Open STEP path is unchanged.
   one layer it overlaps and fused into it (a pad through several layers
   stays a body `pads`). A layer is fused into one shape with its touching
   faces merged (ShapeUpgrade_UnifySameDomain).
-- Vias (solid cylinders): one body `vias`, typed PEC by hand (no hole rule;
-  the board's via holes would add a second copy). Board: `board`.
-- Plated holes as tubes (newer exports): a via drawn as its plating (outer
-  radius = the drill, inner = the drill minus 2 x 25 um), and a footprint's
-  plated hole as such a tube among the pads plus a ring on each layer.
-  A solid made of two coaxial vertical cylinders and horizontal ends is
-  replaced by a solid cylinder of its outer radius over the copper's z
-  range and goes to `vias`; the rings join their layers. Same conductor
-  from outside, no 25 um wall for the mesh, and a footprint via gives the
-  same column as a board via of the same drill. A tube with no hole of its
-  outer radius in the board on its axis is reported. On the test board
-  (pcb2) 18 footprint vias + 3 board vias: 21 columns of 0.1117 mm3, the
-  same as the solid vias of the older export.
+- Vias: one body `vias`, typed PEC by hand (no hole rule; the board's via
+  holes would add a second copy). Board: `board`.
+- **Every via is a through via (a simplification for now).** Each via is
+  rebuilt as a solid copper cylinder of its drill from the bottom of B.Cu
+  to the top of F.Cu, whatever KiCad drew: blind and buried vias (outer
+  to inner layer, inner to inner) and micro vias become through vias too.
+  The import report counts them ("N blind or buried, made through"). A
+  board that relies on them (a via that must not reach the other side)
+  is not modeled right yet.
+- Plated holes as tubes: KiCad draws a via either solid or as its plating
+  (outer radius = the drill, inner = the drill minus 2 x 25 um), depending
+  on the export, and a footprint's plated hole (a via in a footprint, a
+  through-hole pad) as such a tube among the pads plus a ring on each
+  layer. Every round via, and every round pad through several layers (one
+  or two coaxial vertical cylinders, horizontal ends), becomes the through
+  cylinder of its outer radius in `vias`; the rings join their layers.
+  Same conductor from outside, no 25 um wall for the mesh, and a footprint
+  via gives the same column as a board via of the same drill. A plated
+  hole in the pads with no hole of its outer radius in the board on its
+  axis is reported (KiCad drills the board for pads, not for vias). The
+  test board exported both ways (pcb_solidvia, pcb_holesvia) and the older
+  export (pcb): 21 / 21 / 22 columns of 0.1117 mm3 each.
 - A layer's disjoint pieces (pour, a trace in its clearance) are one body:
   each solid is written named like its part, and read_step merges solids
   named like their part (Inventor names a part after its file and may

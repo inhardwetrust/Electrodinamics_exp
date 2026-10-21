@@ -20,18 +20,23 @@
 #     Its disjoint pieces (the ground pour, a trace in its clearance, an
 #     island) are written as solids named like the layer: read_step makes
 #     them one body;
-#   - vias: solid copper cylinders, one body "vias" (type it PEC; no hole
-#     rule needed);
+#   - vias: one body "vias" (type it PEC; no hole rule needed). A
+#     simplification for now: EVERY via is a through via, a solid copper
+#     cylinder of its drill from the bottom of B.Cu to the top of F.Cu.
+#     KiCad's blind and buried vias (from an outer layer to an inner one,
+#     or between inner ones) and micro vias are made through too; the
+#     report counts them;
 #   - plated holes: newer exports draw a via as its plating, a tube (outer
 #     radius = the drill, inner = the drill minus 2 x 25 um), and a
 #     footprint's plated hole (a via in a footprint, a through-hole pad) as
 #     such a tube in the pads plus a ring on each layer. Outside, a tube and
 #     a solid cylinder of its outer radius are the same conductor, and the
-#     solid one has no 25 um wall for the mesh: each tube (two coaxial
-#     vertical cylinders, horizontal ends) becomes a solid cylinder of its
-#     outer radius over the copper's z range, in "vias". The rings join
-#     their layers like any pad. A tube with no hole of its outer radius in
-#     the board on its axis is reported;
+#     solid one has no 25 um wall for the mesh: every round via, and every
+#     round pad through several layers (one or two coaxial vertical
+#     cylinders, horizontal ends), becomes such a through cylinder in
+#     "vias". The rings join their layers like any pad. A plated hole in
+#     the pads with no hole of its outer radius in the board on its axis is
+#     reported (KiCad drills the board for pads, not for vias);
 #   - board: "board" (one dielectric; the inner layers lie inside it);
 #   - soldermask and silkscreen are dropped (not modeled);
 #   - a footprint model: its solids named "<reference> 1", "<reference> 2"...
@@ -123,30 +128,42 @@ def prepare_kicad_step(src, dst):
     if pads:
         report.lines.append(f"pads: {len(pads) - len(extra)} cut to their layer's copper and merged into it")
 
-    # Plated holes (tubes) -> solid cylinders of the drill, in the vias.
+    # Vias and plated holes -> solid cylinders of the drill through all the copper.
     copper_z = (min(a for _, (a, b), _ in layers), max(b for _, (a, b), _ in layers)) if layers else None
     drills = [d for solids, _ in board for s in solids for d in _cylinders(s, only=False)]
-    filled = {"via": [], "pad": []}
+    rods = {"via": [], "pad": []}           # (solid, (x, y, r), drawn as a tube)
     for kind, solids in (("via", vias), ("pad", extra)):
         kept = []
         for solid in solids:
-            tube = _tube(solid)
-            if tube is None:
+            axis = _round(solid)
+            if axis is None:
                 kept.append(solid)
                 continue
-            filled[kind].append(_fill(solid, tube, copper_z))
-            x, y, r = tube
-            if not any(abs(x - a) < AXIS_TOLERANCE and abs(y - b) < AXIS_TOLERANCE
-                       and abs(r - c) < AXIS_TOLERANCE for a, b, c in drills):
+            x, y, r, tube = axis
+            rods[kind].append((solid, (x, y, r), tube))
+            if kind == "pad" and not any(abs(x - a) < AXIS_TOLERANCE and abs(y - b) < AXIS_TOLERANCE
+                                         and abs(r - c) < AXIS_TOLERANCE for a, b, c in drills):
                 report.warnings.append(f"plated hole at ({x:.3f}, {y:.3f}) mm, ⌀ {2 * r:.3f}: "
                                        "no hole of that size in the board there")
         solids[:] = kept
-    vias += filled["via"] + filled["pad"]
-    for kind, what in (("via", "vias drawn as plating tubes"), ("pad", "plated holes in pads")):
-        if filled[kind]:
-            sizes = sorted({round(2 * _tube_radius(s), 3) for s in filled[kind]})
-            report.lines.append(f"{what}: {len(filled[kind])} filled to solid cylinders "
-                                f"(⌀ {', '.join(f'{d:g}' for d in sizes)} mm) -> body 'vias'")
+    if vias:
+        report.warnings.append(f"{len(vias)} vias are not round: kept as they are")
+    for kind, what in (("via", "vias"), ("pad", "plated holes in pads")):
+        if not rods[kind]:
+            continue
+        sizes = sorted({round(2 * r, 3) for _, (_, _, r), _ in rods[kind]})
+        tubes = sum(tube for _, _, tube in rods[kind])
+        partial = 0                         # blind or buried: not over all the copper
+        if copper_z is not None:
+            for solid, _, _ in rods[kind]:
+                z0, z1 = _z_range(solid)
+                partial += z0 > copper_z[0] + LAYER_TOLERANCE or z1 < copper_z[1] - LAYER_TOLERANCE
+        report.lines.append(
+            f"{what}: {len(rods[kind])} -> solid cylinders through all the copper "
+            f"(⌀ {', '.join(f'{d:g}' for d in sizes)} mm), body 'vias'"
+            + (f"; {tubes} drawn as plating tubes, filled" if tubes else "")
+            + (f"; {partial} blind or buried, made through" if partial else ""))
+        vias += [_rod(solid, xyr, copper_z) for solid, xyr, _ in rods[kind]]
     if extra:
         report.warnings.append(f"{len(extra)} pads span no or several layers: kept as body 'pads'")
 
@@ -311,8 +328,12 @@ def _cylinders(shape, only=True):
     return found
 
 
-def _tube(solid):
-    """(x, y, outer radius) mm if the solid is a tube: two coaxial vertical cylinders, horizontal ends."""
+def _round(solid):
+    """
+    (x, y, outer radius mm, tube) if the solid is round about a vertical
+    axis: one cylinder (a solid via) or two coaxial ones (a plating tube),
+    horizontal ends; None otherwise.
+    """
     found = _cylinders(solid)
     if not found:
         return None
@@ -320,21 +341,20 @@ def _tube(solid):
     if np.ptp(xyr[:, :2], axis=0).max() > AXIS_TOLERANCE:
         return None
     radii = np.sort(xyr[:, 2])
-    if np.count_nonzero(np.diff(radii) > AXIS_TOLERANCE) != 1:      # exactly two radii
+    steps = np.count_nonzero(np.diff(radii) > AXIS_TOLERANCE)       # 0: one radius, 1: two
+    if steps > 1:
         return None
-    return float(xyr[0, 0]), float(xyr[0, 1]), float(radii[-1])
+    return float(xyr[0, 0]), float(xyr[0, 1]), float(radii[-1]), steps == 1
 
 
-def _tube_radius(solid):
-    return max(r for _, _, r in _cylinders(solid))
-
-
-def _fill(solid, tube, copper_z):
-    """A solid cylinder of the tube's outer radius over its z range, within the copper's."""
-    x, y, r = tube
-    z0, z1 = _z_range(solid)
-    if copper_z is not None:
-        z0, z1 = max(z0, copper_z[0]), min(z1, copper_z[1])
+def _rod(solid, xyr, copper_z):
+    """
+    A solid cylinder of radius r on the axis (x, y) through all the copper,
+    from the bottom of B.Cu to the top of F.Cu: every via is a through via
+    here. Without copper layers: over the solid's own z range.
+    """
+    x, y, r = xyr
+    z0, z1 = copper_z if copper_z is not None else _z_range(solid)
     return BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(x, y, z0), gp_Dir(0, 0, 1)), r, z1 - z0).Shape()
 
 

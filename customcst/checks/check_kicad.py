@@ -10,9 +10,10 @@
 #     radius 0.15 = the drill, inner 0.125), and in the pads two tubes
 #     40 um past the copper with a ring on each outer layer; the board
 #     drilled for all but one of them. Each tube becomes a solid cylinder
-#     of radius 0.15 over the copper's z range in "vias" (the volume of 5
-#     solid vias), the rings join their layers, no "pads" body, and the
-#     undrilled one is reported;
+#     of radius 0.15 over the copper's z range in "vias", the rings join
+#     their layers, no "pads" body, and the undrilled one is reported;
+#   - a blind via (from F.Cu halfway down) is made through and counted;
+#     "vias" then holds 6 through vias: their volume, the copper's z range;
 #   - the result: bodies F.Cu (2 pieces, one body), B.Cu, vias, board; the
 #     pad cut to the copper's 35 um, no face at the pad's top left;
 #   - discretized at min step 0.08 mm, cells per feature 4, ~0.25 mm cells
@@ -102,6 +103,7 @@ def main():
             return BRepAlgoAPI_Cut(disk(x, y, z0, outer, h), disk(x, y, z0 - 1, inner, h + 2)).Shape()
 
         vias.append(tube(8, 0, -CU, T + 2 * CU))                                       # a via as plating
+        vias.append(disk(8, 1.5, T / 2, 0.15, T / 2 + CU))                             # blind, from F.Cu
         plated = [(5, -3), (3, 3)]                                                       # (3, 3): not drilled
         rings = []
         for x, y in plated:
@@ -126,13 +128,16 @@ def main():
         top_z = np.array(f_cu.bounds)[1][2] * 1e3
         check("pad cut to the copper (no 40 um top)", abs(top_z - (top + CU)) < 1e-6, f"top {top_z:.4f} mm")
         v = g["vias"]
-        check("vias: one body of 5 (2 solid, a tube, 2 plated pad holes)",
-              v.pieces is not None and len(v.pieces) == 5, f"{0 if v.pieces is None else len(v.pieces)}")
-        want = 5 * np.pi * 0.15 ** 2 * (T + 2 * CU)
+        check("vias: one body of 6 (2 solid, a tube, a blind one, 2 plated pad holes)",
+              v.pieces is not None and len(v.pieces) == 6, f"{0 if v.pieces is None else len(v.pieces)}")
+        want = 6 * np.pi * 0.15 ** 2 * (T + 2 * CU)
         # From the triangles: a few tenths of a percent under the exact
-        # cylinders. Unfilled, the 3 tubes would make it 0.32 mm3.
-        check("tubes filled: the volume of 5 solid vias over the copper",
+        # cylinders. Unfilled and blind, it would be 0.38 mm3.
+        check("tubes filled, the blind via through: the volume of 6 through vias",
               abs(v.volume * 1e9 - want) < 0.02 * want, f"{v.volume * 1e9:.5f} vs {want:.5f} mm3")
+        line = next((s for s in report.lines if s.startswith("vias: 4 ")), "")
+        check("the report counts the tube and the blind via",
+              "1 drawn as plating tubes" in line and "1 blind or buried, made through" in line, line)
         z = np.array(v.bounds)[:, 2] * 1e3
         check("vias span the copper exactly (the pads' 40 um cut)",
               np.allclose(z, [-CU, T + CU], atol=1e-6), f"z {z}")
