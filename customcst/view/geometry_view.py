@@ -13,8 +13,11 @@
 # coordinates), and the cut face is drawn: a fill image of the bodies on
 # the plane plus their exact outline (view/section.py), the outline a hair
 # in front of the fill so it wins the depth test.
-# The plane itself is a light glass sheet over the model's
-# extent, so it stays visible where it cuts nothing or from behind.
+# The plane itself is light glass, so it stays visible where it cuts nothing
+# or from behind: the fill image's empty pixels over the model's extent, and
+# a frame-shaped sheet around it (the two never overlap: coplanar
+# translucent layers z-fight into stripes). The fill is drawn after the
+# bodies: its pixels write depth, and would hide bodies drawn later behind.
 #
 # Reference planes (set_reference_planes): a dark blue translucent square on
 # each waveguide port's reference plane (the port plane moved by the Results
@@ -36,7 +39,7 @@ from vispy.util import keys, transforms
 from vispy.visuals.filters.clipping_planes import PlanesClipper
 
 from view.picking import Picker
-from view.section import section_fill, section_outline
+from view.section import MAX_PIXELS, section_fill, section_outline
 
 SCENE_UNIT = 1e-3      # one scene unit = 1 mm
 
@@ -69,6 +72,7 @@ DIELECTRIC_HIGH = np.array([0.3, 0.95, 1.0])      # eps_r >= 10: bright cyan
 DOMAIN_COLOR = (0.35, 0.65, 1.0, 1.0)
 SECTION_OUTLINE_DARKEN = 0.55     # outline color = body color times this
 SECTION_SHEET_COLOR = (0.85, 0.9, 1.0, 0.12)      # the section plane: light glass
+QUICK_PIXELS = 300           # section fill resolution while the plane is dragged
 PORT_OK_COLOR = (0.2, 1.0, 0.35, 1.0)
 PORT_ERROR_COLOR = (1.0, 0.25, 0.2, 1.0)
 REFERENCE_FILL = (0.05, 0.1, 0.5, 0.55)           # dark blue, translucent
@@ -372,6 +376,7 @@ class GeometryView:
         self.section_image = scene.visuals.Image(np.zeros((1, 1, 4), np.float32), interpolation="nearest",
                                                  parent=self.root)
         self.section_image.set_gl_state("translucent", depth_test=True, cull_face=False)
+        self.section_image.order = 10           # after the bodies (see the header)
         self.section_image.visible = False
         self.section_lines = scene.visuals.Line(connect="segments", width=2.0, parent=self.root)
         self.section_lines.visible = False
@@ -742,15 +747,16 @@ class GeometryView:
     # Section view
     # =====================================================
 
-    def set_section(self, axis=None, coordinate=None, keep_below=True):
+    def set_section(self, axis=None, coordinate=None, keep_below=True, quick=False):
         """
         Cut the model by the plane normal to `axis` at `coordinate` (m) and
         keep the half below it (keep_below=False: above); axis=None: whole.
+        quick: a coarser fill image (while a slider is dragged).
         """
         self._section = None if axis is None else (int(axis), float(coordinate), bool(keep_below))
-        self._apply_section()
+        self._apply_section(quick)
 
-    def _apply_section(self):
+    def _apply_section(self, quick=False):
         visuals = list(self._bodies.values()) + self._vias
         if self._section is None:
             for visual in visuals:
@@ -775,7 +781,9 @@ class GeometryView:
         shown += [(v.body, v.base_color) for v in self._vias]
 
         lo, hi = (np.asarray(b) * SCENE_UNIT for b in self._bounds)
-        image, (u0, u1), (v0, v1) = section_fill(shown, axis, coordinate, lo, hi, keep_below)
+        image, (u0, u1), (v0, v1) = section_fill(shown, axis, coordinate, lo, hi, keep_below,
+                                                    QUICK_PIXELS if quick else MAX_PIXELS,
+                                                    SECTION_SHEET_COLOR)
         u, v = [a for a in range(3) if a != axis]
         nv, nu = image.shape[:2]
         matrix = np.zeros((4, 4))
@@ -784,7 +792,7 @@ class GeometryView:
         matrix[2, axis] = 1.0
         matrix[3, u], matrix[3, v], matrix[3, axis] = u0 / SCENE_UNIT, v0 / SCENE_UNIT, coordinate / SCENE_UNIT
         matrix[3, 3] = 1.0
-        self._section_sheet(axis, coordinate, keep_below)
+        self._section_sheet(axis, coordinate)
         self.section_image.set_data(image)
         self.section_image.transform = scene.transforms.MatrixTransform(matrix)
         self.section_image.visible = True
@@ -808,22 +816,22 @@ class GeometryView:
             self.section_lines.visible = False
         self.canvas.update()
 
-    def _section_sheet(self, axis, coordinate, keep_below):
+    def _section_sheet(self, axis, coordinate):
         """
-        The section plane over the model's extent (a margin around it), two
-        hairs toward the removed half: in front of the cut face and its
-        outline, or the coplanar sheet and fill z-fight into stripes.
+        The glass frame around the fill image: from the model's extent (the
+        image's edge) out to a margin around it.
         """
         lo, hi = (np.asarray(b, dtype=float) for b in self._bounds)      # scene units
-        size = float(np.max(hi - lo)) or 1.0
-        margin = 0.05 * size
+        margin = 0.05 * (float(np.max(hi - lo)) or 1.0)
         u, v = [a for a in range(3) if a != axis]
-        corners = np.zeros((4, 3))
-        corners[:, axis] = coordinate / SCENE_UNIT + (2e-4 * size) * (1.0 if keep_below else -1.0)
-        corners[:, u] = [lo[u] - margin, hi[u] + margin, hi[u] + margin, lo[u] - margin]
-        corners[:, v] = [lo[v] - margin, lo[v] - margin, hi[v] + margin, hi[v] + margin]
-        corners = corners.astype(np.float32)
-        self.section_sheet.set_data(vertices=corners, faces=np.array([[0, 1, 2], [0, 2, 3]], np.uint32),
+        corners = np.zeros((8, 3))
+        corners[:, axis] = coordinate / SCENE_UNIT
+        for start, d in ((0, margin), (4, 0.0)):                 # outer, inner rectangle
+            corners[start:start + 4, u] = [lo[u] - d, hi[u] + d, hi[u] + d, lo[u] - d]
+            corners[start:start + 4, v] = [lo[v] - d, lo[v] - d, hi[v] + d, hi[v] + d]
+        faces = [[k, (k + 1) % 4, 4 + k] for k in range(4)] + [[(k + 1) % 4, 4 + (k + 1) % 4, 4 + k]
+                                                                for k in range(4)]
+        self.section_sheet.set_data(vertices=corners.astype(np.float32), faces=np.array(faces, np.uint32),
                                     color=SECTION_SHEET_COLOR)
         self.section_sheet.visible = True
 

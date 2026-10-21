@@ -58,11 +58,20 @@
 #   - waveguide ports: the grid plane of the port (a domain end) and the
 #     line's mode on it (solver/port_mode.py), found on the discretized
 #     materials, so it is the mode of the staircased line the FDTD sees.
+#   - shorts: the nodes joined by PEC edges form pieces of metal. A
+#     waveguide port whose signal and ground nodes are in one piece, or a
+#     port or element whose two column ends are, is listed in `shorts`.
+#     Usually a gap narrower than the mesh resolves (min step auto on a
+#     KiCad board: 0.145 mm against 0.25 mm gaps joined the SMA's pin to
+#     its shell), but it can be meant (a shorted stub, a PIFA's short
+#     pin): the caller asks before running, it does not refuse.
 
 import math
 from dataclasses import dataclass, field
 
 import numpy as np
+import scipy.sparse as sp
+from scipy.sparse.csgraph import connected_components
 
 from geometry.raycast import crossings_on_grid, in_or_on_grid, inside_on_grid
 from project.object_types import CONDUCTOR_TYPES
@@ -135,6 +144,7 @@ class MaterialGrid:
     ports: list = field(default_factory=list)
     elements: list = field(default_factory=list)       # DiscreteElement
     waveports: list = field(default_factory=list)      # DiscreteWavePort
+    shorts: list = field(default_factory=list)         # str: ports / elements shorted by metal
     warnings: list = field(default_factory=list)
     errors: list = field(default_factory=list)
 
@@ -263,6 +273,7 @@ def discretize(mesh, geometry, project, ports=None, elements=None, waveports=Non
     for waveport in (waveports or {}).values():
         if waveport.ok:
             _discretize_waveport(result, waveport, mesh.min_step)
+    _find_shorts(result, mesh.min_step)
     step("ports")
 
     return result
@@ -513,6 +524,45 @@ def _discretize_element(result, element, values, snap):
     result.elements.append(DiscreteElement(
         element.name, axis, edges, length, values["topology"], r, l, c,
     ))
+
+
+def _find_shorts(result, min_step):
+    """Fills result.shorts (see the header)."""
+    items = result.ports + result.elements + result.waveports
+    if not items:
+        return
+    nodes = tuple(n + 1 for n in result.grid.shape)
+    a, b = [], []
+    for axis, pec in enumerate(result.pec):
+        start = np.nonzero(pec)
+        end = list(start)
+        end[axis] = start[axis] + 1
+        a.append(np.ravel_multi_index(start, nodes))
+        b.append(np.ravel_multi_index(tuple(end), nodes))
+    a, b = np.concatenate(a), np.concatenate(b)
+    size = int(np.prod(nodes))
+    graph = sp.coo_matrix((np.ones(len(a), dtype=np.int8), (a, b)), shape=(size, size))
+    _, piece = connected_components(graph, directed=False)
+    hint = f"a gap narrower than the mesh resolves? (merge distance {min_step / 1e-3:.3g} mm, Mesh > min step)"
+
+    for item in result.ports + result.elements:
+        first = item.edges[np.argmin(item.edges[:, item.axis])].copy()
+        last = item.edges[np.argmax(item.edges[:, item.axis])].copy()
+        last[item.axis] += 1
+        if piece[np.ravel_multi_index(tuple(first), nodes)] == piece[np.ravel_multi_index(tuple(last), nodes)]:
+            what = "port" if item in result.ports else "element"
+            result.shorts.append(f"{item.name}: both ends of the {what} are one piece of metal "
+                                 f"({'shorted' if what == 'port' else 'bypassed'}); {hint}")
+    for port in result.waveports:
+        mode = port.mode
+        u, v = np.meshgrid(np.arange(nodes[mode.u_axis]), np.arange(nodes[mode.v_axis]), indexing="ij")
+        node = [None, None, None]
+        node[port.axis], node[mode.u_axis], node[mode.v_axis] = np.full(u.shape, port.index), u, v
+        on_plane = np.ravel_multi_index(tuple(node), nodes)
+        hot, grounded = set(piece[on_plane[mode.hot]]), set(piece[on_plane[mode.grounded]])
+        if hot & grounded:
+            result.shorts.append(f"{port.name}: the signal conductor and ground are one piece of metal "
+                                 f"(a short); {hint}")
 
 
 def _node_on_metal(pec, node, shape):

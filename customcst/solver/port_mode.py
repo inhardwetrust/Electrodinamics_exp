@@ -65,6 +65,8 @@ class PortMode:
     e_v_air: np.ndarray = None      # a quasi-TEM line: H does not see eps)
     capacitance: float = 0.0        # F/m with the dielectrics
     capacitance_air: float = 0.0    # F/m with all eps_r = 1
+    hot: np.ndarray = None          # (nu+1, nv+1) bool: the nodes of the signal at 1 V
+    grounded: np.ndarray = None     # (nu+1, nv+1) bool: the nodes of the grounded pieces
     errors: list = field(default_factory=list)
 
     @property
@@ -195,6 +197,11 @@ def solve_port_mode(materials, axis, index, region=None, circle=None):
         elif p == hot_piece:
             fixed[k] = True
             value[k] = 1.0
+
+    mode.hot = np.zeros(uu.shape, dtype=bool)
+    mode.hot[inside] = on_metal & (piece == hot_piece)
+    mode.grounded = np.zeros(uu.shape, dtype=bool)
+    mode.grounded[inside] = on_metal & np.isin(piece, list(grounded_pieces))
 
     sa, sb = supernode[edges.a], supernode[edges.b]
     phi, mode.capacitance = _solve(sa, sb, edges.g, ~edges.pec & (sa != sb), m, fixed, value)

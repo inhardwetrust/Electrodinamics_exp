@@ -6,6 +6,13 @@
 #     whose end is rounded, 0.25 mm from the slot's rounded end; bottom
 #     copper: a full plane; a 40 um pad on the trace (KiCad's pads are 5 um
 #     thicker than the copper) and two vias;
+#   - plated holes the way newer exports draw them: a via as a tube (outer
+#     radius 0.15 = the drill, inner 0.125), and in the pads two tubes
+#     40 um past the copper with a ring on each outer layer; the board
+#     drilled for all but one of them. Each tube becomes a solid cylinder
+#     of radius 0.15 over the copper's z range in "vias" (the volume of 5
+#     solid vias), the rings join their layers, no "pads" body, and the
+#     undrilled one is reported;
 #   - the result: bodies F.Cu (2 pieces, one body), B.Cu, vias, board; the
 #     pad cut to the copper's 35 um, no face at the pad's top left;
 #   - discretized at min step 0.08 mm, cells per feature 4, ~0.25 mm cells
@@ -14,7 +21,9 @@
 #     to the pour by PEC edges: the closure of a conductor's metal runs per
 #     piece. Closed per body (the pieces dropped) the same grid joins them:
 #     that bridge was the short of a KiCad board;
-#   - a lumped element across the trace-pour gap: both ends on F.Cu is fine.
+#   - a lumped element across the trace-pour gap: both ends on F.Cu is fine;
+#     MaterialGrid.shorts is empty, and lists the element (bypassed) when
+#     the pieces are dropped and the grid bridges the gap.
 #
 #   python checks/check_kicad.py      (~20 s)
 
@@ -88,9 +97,22 @@ def main():
         bottom = box(0, -4, -CU, 10, 4, 0)
         pad = box(2, -W / 2, top, 3, W / 2, top + 0.04)                                  # 40 um, on the trace
         vias = [disk(8, 3, -CU, 0.15, T + 2 * CU), disk(8, -3, -CU, 0.15, T + 2 * CU)]
-        write_step(src, [("t_PCB", box(0, -4, 0, 10, 4, T), None),
+
+        def tube(x, y, z0, h, outer=0.15, inner=0.125):
+            return BRepAlgoAPI_Cut(disk(x, y, z0, outer, h), disk(x, y, z0 - 1, inner, h + 2)).Shape()
+
+        vias.append(tube(8, 0, -CU, T + 2 * CU))                                       # a via as plating
+        plated = [(5, -3), (3, 3)]                                                       # (3, 3): not drilled
+        rings = []
+        for x, y in plated:
+            rings += [tube(x, y, top, 0.04, 0.3), tube(x, y, -0.04, 0.04, 0.3)]
+        barrels = [tube(x, y, -0.04, T + 0.08) for x, y in plated]
+        board = box(0, -4, 0, 10, 4, T)
+        for x, y in [(8, 0), plated[0]]:
+            board = BRepAlgoAPI_Cut(board, disk(x, y, -1, 0.15, T + 2)).Shape()
+        write_step(src, [("t_PCB", board, None),
                          ("t_copper", compound([pour, trace, bottom]), None),
-                         ("t_pad", compound([pad]), None),
+                         ("t_pad", compound([pad] + rings + barrels), None),
                          ("t_via", compound(vias), None)])
 
         dst = os.path.join(folder, "board_prep.stp")
@@ -103,7 +125,20 @@ def main():
               f"{0 if f_cu.pieces is None else len(f_cu.pieces)} pieces")
         top_z = np.array(f_cu.bounds)[1][2] * 1e3
         check("pad cut to the copper (no 40 um top)", abs(top_z - (top + CU)) < 1e-6, f"top {top_z:.4f} mm")
-        check("vias: one body", g["vias"].pieces is not None and len(g["vias"].pieces) == 2)
+        v = g["vias"]
+        check("vias: one body of 5 (2 solid, a tube, 2 plated pad holes)",
+              v.pieces is not None and len(v.pieces) == 5, f"{0 if v.pieces is None else len(v.pieces)}")
+        want = 5 * np.pi * 0.15 ** 2 * (T + 2 * CU)
+        # From the triangles: a few tenths of a percent under the exact
+        # cylinders. Unfilled, the 3 tubes would make it 0.32 mm3.
+        check("tubes filled: the volume of 5 solid vias over the copper",
+              abs(v.volume * 1e9 - want) < 0.02 * want, f"{v.volume * 1e9:.5f} vs {want:.5f} mm3")
+        z = np.array(v.bounds)[:, 2] * 1e3
+        check("vias span the copper exactly (the pads' 40 um cut)",
+              np.allclose(z, [-CU, T + CU], atol=1e-6), f"z {z}")
+        undrilled = [w for w in report.warnings if "no hole" in w]
+        check("the undrilled plated hole is reported (only it)",
+              len(undrilled) == 1 and "(3.000, 3.000)" in undrilled[0], str(report.warnings))
 
         # A lumped element across the gap, axis in the copper's middle.
         r1 = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(4.0, 0.0, top + CU / 2), gp_Dir(0, 1, 0)), 0.05, 0.6).Shape()
@@ -126,8 +161,11 @@ def main():
 
         mesh = build_grid(g, project, elements, {}, ())
 
+        shorts = []
+
         def joined():
             m = discretize(mesh, g, project, {}, elements, {}, ())
+            shorts[:] = m.shorts
             lines = m.grid.lines
             n = [len(l) for l in lines]
             idx = np.arange(np.prod(n)).reshape(n)
@@ -151,9 +189,12 @@ def main():
         x = mesh.grid.lines[0] * 1e3
         near = np.round(x[(x > END - 0.3) & (x < END + 0.6)], 3)
         check("trace not joined to the pour (closure per piece)", not joined(), f"x lines at the end {near}")
+        check("  no shorts reported", shorts == [], str(shorts))
         pieces = g["F.Cu"].pieces
         g["F.Cu"].pieces = None
         check("closed per body instead, the same grid shorts them (the check sees the bug)", joined())
+        check("  the element is reported as bypassed", len(shorts) == 1 and shorts[0].startswith("R1:"),
+              str(shorts))
         g["F.Cu"].pieces = pieces
         print("  " + "; ".join(report.lines))
     finally:

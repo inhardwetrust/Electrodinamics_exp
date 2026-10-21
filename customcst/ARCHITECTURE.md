@@ -252,6 +252,17 @@ by hand. The usual Open STEP path is unchanged.
   faces merged (ShapeUpgrade_UnifySameDomain).
 - Vias (solid cylinders): one body `vias`, typed PEC by hand (no hole rule;
   the board's via holes would add a second copy). Board: `board`.
+- Plated holes as tubes (newer exports): a via drawn as its plating (outer
+  radius = the drill, inner = the drill minus 2 x 25 um), and a footprint's
+  plated hole as such a tube among the pads plus a ring on each layer.
+  A solid made of two coaxial vertical cylinders and horizontal ends is
+  replaced by a solid cylinder of its outer radius over the copper's z
+  range and goes to `vias`; the rings join their layers. Same conductor
+  from outside, no 25 um wall for the mesh, and a footprint via gives the
+  same column as a board via of the same drill. A tube with no hole of its
+  outer radius in the board on its axis is reported. On the test board
+  (pcb2) 18 footprint vias + 3 board vias: 21 columns of 0.1117 mm3, the
+  same as the solid vias of the older export.
 - A layer's disjoint pieces (pour, a trace in its clearance) are one body:
   each solid is written named like its part, and read_step merges solids
   named like their part (Inventor names a part after its file and may
@@ -335,11 +346,21 @@ For checking a geometry inside the program instead of the CAD tool.
   so a plane on a face shows the kept side's body; dielectrics painted
   first, conductors over them, vias last) and the exact outline of each
   body's triangles crossing the plane (a 15 um layer stays visible though
-  it is far below a pixel). ~80 ms for a whole SMA + board model.
+  it is far below a pixel). ~90 ms for a KiCad board with an SMA; while
+  the slider is dragged the fill is coarser (300 px, ~20 ms), full detail
+  on release.
+- The slider: on the grid lines while Mesh or Materials is shown (that
+  plane must be a grid line), else 1000 even steps (a smooth section: the
+  grid's lines are up to millimeters apart in the air). Z0 and the
+  materials plane take the grid line nearest the plane.
   The fill stays opaque: a translucent one showed the clipped shells'
   empty insides, and the bodies looked hollow.
-- The plane itself: a light glass sheet (no frame) over the model's
-  extent (+5 %), visible from either side and where it cuts nothing.
+- The plane itself: light glass, visible from either side and where it
+  cuts nothing: the fill image's empty pixels over the model's extent, and
+  a frame-shaped sheet out to +5 % around it. The two never overlap
+  (coplanar translucent layers z-fight into stripes), and the fill is drawn
+  after the bodies: its pixels write depth, so drawn first it hid every
+  body behind the plane.
   (VisPy's set_gl_state takes no depth_mask: passing it silently broke
   the drawing of every body.)
 - The camera's depth range is 1:200 (VisPy's 1:1e6 made 15 um copper on
@@ -454,6 +475,22 @@ are bound by both settings (step = max(feature / cpf, min step)).
 - Practice: compare variants at the normal mesh; check absolute Z0 with
   Z₀ at cpf >= 8 (the mesh builds in seconds); a 3D run at that mesh is
   hours (12 M cells, half the time step).
+
+## Shorts on the mesh
+
+A gap narrower than the mesh resolves turns into metal: with min step
+auto (lambda / 200 in FR4 at 5 GHz = 0.145 mm) the 0.25 mm gaps of a KiCad
+board joined the SMA's pin to its shell, and the run gave S11 = 0 dB.
+After discretizing, the nodes joined by PEC edges form pieces of metal
+(scipy connected_components, ~0.5 s on 1.7 M nodes):
+- a waveguide port whose signal nodes and grounded nodes on its plane
+  (PortMode.hot / grounded) are in one piece: "a short";
+- a lumped port or element whose two column ends are in one piece:
+  shorted / bypassed.
+They go to `MaterialGrid.shorts`, shown in red under Mesh; Simulate asks
+before running (default No). Not refused: a short can be meant (a shorted
+stub, a PIFA's short pin). `checks/check_kicad.py` (the bridged gap is
+reported, the resolved one is not).
 
 ## Excited ports
 

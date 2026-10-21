@@ -28,11 +28,12 @@ def plane_axes(axis):
     return u, v
 
 
-def section_fill(bodies, axis, coordinate, lo, hi, keep_below=True, max_pixels=MAX_PIXELS):
+def section_fill(bodies, axis, coordinate, lo, hi, keep_below=True, max_pixels=MAX_PIXELS,
+                 background=(0.0, 0.0, 0.0, 0.0)):
     """
     bodies: [(Body, rgb)] in paint order. lo, hi: the extent (m) to cover.
     Returns (rgba float32 (nv, nu, 4), (u0, u1), (v0, v1)): row j is v,
-    column i is u; alpha 0 where no body is.
+    column i is u; `background` where no body is.
     """
     u, v = plane_axes(axis)
     size = max(hi[u] - lo[u], hi[v] - lo[v])
@@ -43,7 +44,8 @@ def section_fill(bodies, axis, coordinate, lo, hi, keep_below=True, max_pixels=M
     cv = lo[v] + (np.arange(nv) + 0.5) * (hi[v] - lo[v]) / nv
     at = coordinate - SIDE_OFFSET if keep_below else coordinate + SIDE_OFFSET
 
-    image = np.zeros((nv, nu, 4), dtype=np.float32)
+    image = np.empty((nv, nu, 4), dtype=np.float32)
+    image[:] = background
     for body, rgb in bodies:
         b_lo, b_hi = body.bounds
         if body.kind != "solid" or not b_lo[axis] <= at <= b_hi[axis]:

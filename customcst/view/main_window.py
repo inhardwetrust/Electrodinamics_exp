@@ -46,7 +46,7 @@ from solver.line_profile import impedance_profile, line_impedance
 MM = 1e-3
 AXES = "xyz"
 MESH_PROGRESS_DELAY = 0.3       # s: the mesh progress bar appears after this
-SLIDER_STEPS = 200              # plane positions over the model when there is no mesh
+SLIDER_STEPS = 1000             # plane positions over the model when it is not on the grid lines
 
 
 class _Cancelled(Exception):
@@ -177,12 +177,12 @@ class MainWindow(QMainWindow):
 
         # Mesh view: grid lines on one plane normal to an axis, at a grid line.
         self.mesh_check = QCheckBox("Mesh")
-        self.mesh_check.toggled.connect(lambda _: self._show_mesh_plane())
+        self.mesh_check.toggled.connect(lambda _: self._grid_plane_toggled())
         bar.addWidget(self.mesh_check)
 
         self.materials_check = QCheckBox("Materials")
         self.materials_check.setToolTip("Edges on the mesh plane as the solver sees them")
-        self.materials_check.toggled.connect(lambda _: self._show_mesh_plane())
+        self.materials_check.toggled.connect(lambda _: self._grid_plane_toggled())
         bar.addWidget(self.materials_check)
 
         self.section_check = QCheckBox("Section")
@@ -206,6 +206,7 @@ class MainWindow(QMainWindow):
         self.mesh_slider = QSlider(Qt.Horizontal)
         self.mesh_slider.setMinimumWidth(220)
         self.mesh_slider.valueChanged.connect(self._mesh_slider_moved)
+        self.mesh_slider.sliderReleased.connect(self._show_section)        # full detail after a drag
         bar.addWidget(self.mesh_slider)
 
         self.mesh_label = QLabel()
@@ -508,6 +509,15 @@ class MainWindow(QMainWindow):
                     f"(Simulation > excite: choose another one, or all ports)")
         return None
 
+    def _confirm_shorts(self):
+        """Ports or elements shorted by metal on this mesh: usually a mesh too coarse, ask."""
+        text = ("On this mesh, metal joins what should be apart:\n\n"
+                + "\n\n".join(f"• {s}" for s in self.materials.shorts)
+                + "\n\nUnless the short is meant (a shorted stub, a PIFA's short pin), the result "
+                  "will be wrong. Simulate anyway?")
+        answer = QMessageBox.warning(self, "Simulate", text, QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        return answer == QMessageBox.Yes
+
     def _port_list(self):
         """Names of the valid ports in S-matrix order (lumped, then waveguide)."""
         if self.materials is None:
@@ -518,6 +528,8 @@ class MainWindow(QMainWindow):
         problem = self._simulation_problem()
         if problem:
             QMessageBox.warning(self, "Simulate", f"Cannot simulate: {problem}")
+            return
+        if self.materials.shorts and not self._confirm_shorts():
             return
         sim = self.project.settings["simulation"]
         self._run_fingerprint = fingerprint(self.project)      # the inputs of this run
@@ -900,13 +912,39 @@ class MainWindow(QMainWindow):
         if self.profile_window is not None and self.profile_window.isVisible():
             self.profile_window.mark_outdated()
 
+    def _on_grid(self):
+        """The plane is on the grid lines: the mesh or materials plane is shown."""
+        return (self.mesh is not None and self.mesh.ok
+                and (self.mesh_check.isChecked() or self.materials_check.isChecked()))
+
     def _slider_positions(self):
-        """Plane coordinates of the slider: the grid lines, or steps over the model without a mesh."""
+        """
+        Plane coordinates of the slider: the grid lines while the mesh or
+        materials plane is shown, else fine even steps (a smooth section;
+        the grid's lines are up to millimeters apart in the air).
+        """
         axis = self.mesh_axis.currentIndex()
-        if self.mesh is not None and self.mesh.ok:
+        if self._on_grid():
             return self.mesh.grid.lines[axis]
-        lo, hi = self.geometry.bounds
-        return np.linspace(lo[axis], hi[axis], SLIDER_STEPS + 1)
+        if self.mesh is not None and self.mesh.ok:
+            lines = self.mesh.grid.lines[axis]
+            lo, hi = lines[0], lines[-1]
+        else:
+            lo, hi = (b[axis] for b in self.geometry.bounds)
+        return np.linspace(lo, hi, SLIDER_STEPS + 1)
+
+    def _grid_index(self):
+        """The grid line nearest the plane (for the mesh, materials and Z0)."""
+        lines = self.mesh.grid.lines[self.mesh_axis.currentIndex()]
+        return int(np.argmin(np.abs(lines - self._mesh_coordinate)))
+
+    def _grid_plane_toggled(self):
+        # The slider's steps change (grid lines or fine steps); the plane
+        # goes to the nearest one.
+        self._configure_mesh_slider()
+        if self._on_grid():
+            self._mesh_coordinate = float(self._slider_positions()[self.mesh_slider.value()])
+        self._show_mesh_plane()
 
     def _configure_mesh_slider(self, center=False):
         if self.geometry is None:
@@ -962,7 +1000,7 @@ class MainWindow(QMainWindow):
             return
 
         axis = self.mesh_axis.currentIndex()
-        index = self.mesh_slider.value()
+        index = self._grid_index()
         coordinate = self.mesh.grid.lines[axis][index]
         self.view.set_mesh_plane(self.mesh.grid if show_mesh else None, axis, coordinate)
         if show_materials and self.materials is not None:
@@ -986,7 +1024,7 @@ class MainWindow(QMainWindow):
         if not self._z0_ready():
             return
         axis = self.mesh_axis.currentIndex()
-        s = line_impedance(self.materials, axis, self.mesh_slider.value(), self.geometry.bounds)
+        s = line_impedance(self.materials, axis, self._grid_index(), self.geometry.bounds)
         where = f"{AXES[axis]} = {s.coordinate / MM:.3f} mm"
         note = self._z0_note()
         self.statusBar().showMessage(
@@ -1027,7 +1065,7 @@ class MainWindow(QMainWindow):
         if not (self.mesh_check.isChecked() or self.materials_check.isChecked()
                 or self.section_check.isChecked()):
             self.materials_check.setChecked(True)
-        self.mesh_slider.setValue(int(np.argmin(np.abs(self.mesh.grid.lines[axis] - coordinate))))
+        self.mesh_slider.setValue(int(np.argmin(np.abs(self._slider_positions() - coordinate))))
 
     def _show_section(self):
         """Section view at the plane of the slider (grid lines, or steps over the model without a mesh)."""
@@ -1039,7 +1077,8 @@ class MainWindow(QMainWindow):
         if coordinate is None:
             lo, hi = self.geometry.bounds
             coordinate = 0.5 * (lo + hi)[axis]
-        self.view.set_section(axis, coordinate, keep_below=not self.section_flip.isChecked())
+        self.view.set_section(axis, coordinate, keep_below=not self.section_flip.isChecked(),
+                              quick=self.mesh_slider.isSliderDown())
         self.mesh_label.setText(f" {AXES[axis]} = {coordinate / MM:.3f} mm")
 
     # =====================================================
@@ -1317,6 +1356,8 @@ class MainWindow(QMainWindow):
                 row.setForeground(1, QColor("#2a2"))
             for error in m.errors:
                 self._note_row(item, "mesh", f"✗ {error}", "#d33")
+            for short in m.shorts:
+                self._note_row(item, "mesh", f"⚠ short: {short}", "#d33")
             for warning in m.warnings:
                 self._note_row(item, "mesh", f"⚠ {warning}", "#c80")
 

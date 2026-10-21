@@ -22,6 +22,16 @@
 #     them one body;
 #   - vias: solid copper cylinders, one body "vias" (type it PEC; no hole
 #     rule needed);
+#   - plated holes: newer exports draw a via as its plating, a tube (outer
+#     radius = the drill, inner = the drill minus 2 x 25 um), and a
+#     footprint's plated hole (a via in a footprint, a through-hole pad) as
+#     such a tube in the pads plus a ring on each layer. Outside, a tube and
+#     a solid cylinder of its outer radius are the same conductor, and the
+#     solid one has no 25 um wall for the mesh: each tube (two coaxial
+#     vertical cylinders, horizontal ends) becomes a solid cylinder of its
+#     outer radius over the copper's z range, in "vias". The rings join
+#     their layers like any pad. A tube with no hole of its outer radius in
+#     the board on its axis is reported;
 #   - board: "board" (one dielectric; the inner layers lie inside it);
 #   - soldermask and silkscreen are dropped (not modeled);
 #   - a footprint model: its solids named "<reference> 1", "<reference> 2"...
@@ -38,19 +48,21 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from OCP.BRep import BRep_Builder
+from OCP.BRepAdaptor import BRepAdaptor_Surface
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Fuse
 from OCP.BRepBndLib import BRepBndLib
-from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder
 from OCP.Bnd import Bnd_Box
+from OCP.GeomAbs import GeomAbs_Cylinder, GeomAbs_Plane
 from OCP.IFSelect import IFSelect_RetDone
 from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
 from OCP.STEPCAFControl import STEPCAFControl_Reader
-from OCP.TopAbs import TopAbs_SOLID
+from OCP.TopAbs import TopAbs_FACE, TopAbs_SOLID
 from OCP.TopExp import TopExp_Explorer
-from OCP.TopoDS import TopoDS_Compound
+from OCP.TopoDS import TopoDS, TopoDS_Compound
 from OCP.XCAFDoc import XCAFDoc_ShapeTool
 from OCP.XCAFPrs import XCAFPrs_DocumentExplorer, XCAFPrs_DocumentExplorerFlags_None
-from OCP.gp import gp_Pnt
+from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
 
 from geometry.step_io import _label_name, _new_document, _silence_occt, read_step, write_step
 
@@ -59,6 +71,7 @@ MAX_LAYER_THICKNESS = 0.2   # mm: thicker "copper" is reported, not treated as a
 DROPPED = ("_soldermask", "_silkscreen")
 CHANGE_TOLERANCE = 1e-6     # m: bounds moved more than this -> the body changed
 VOLUME_TOLERANCE = 0.01     # relative
+AXIS_TOLERANCE = 1e-4       # mm: cylinders on one axis, equal radii
 COPPER_COLOR = (0.85, 0.55, 0.2)
 VIA_COLOR = (0.95, 0.78, 0.25)
 
@@ -109,6 +122,31 @@ def prepare_kicad_step(src, dst):
             extra.append(pad)
     if pads:
         report.lines.append(f"pads: {len(pads) - len(extra)} cut to their layer's copper and merged into it")
+
+    # Plated holes (tubes) -> solid cylinders of the drill, in the vias.
+    copper_z = (min(a for _, (a, b), _ in layers), max(b for _, (a, b), _ in layers)) if layers else None
+    drills = [d for solids, _ in board for s in solids for d in _cylinders(s, only=False)]
+    filled = {"via": [], "pad": []}
+    for kind, solids in (("via", vias), ("pad", extra)):
+        kept = []
+        for solid in solids:
+            tube = _tube(solid)
+            if tube is None:
+                kept.append(solid)
+                continue
+            filled[kind].append(_fill(solid, tube, copper_z))
+            x, y, r = tube
+            if not any(abs(x - a) < AXIS_TOLERANCE and abs(y - b) < AXIS_TOLERANCE
+                       and abs(r - c) < AXIS_TOLERANCE for a, b, c in drills):
+                report.warnings.append(f"plated hole at ({x:.3f}, {y:.3f}) mm, ⌀ {2 * r:.3f}: "
+                                       "no hole of that size in the board there")
+        solids[:] = kept
+    vias += filled["via"] + filled["pad"]
+    for kind, what in (("via", "vias drawn as plating tubes"), ("pad", "plated holes in pads")):
+        if filled[kind]:
+            sizes = sorted({round(2 * _tube_radius(s), 3) for s in filled[kind]})
+            report.lines.append(f"{what}: {len(filled[kind])} filled to solid cylinders "
+                                f"(⌀ {', '.join(f'{d:g}' for d in sizes)} mm) -> body 'vias'")
     if extra:
         report.warnings.append(f"{len(extra)} pads span no or several layers: kept as body 'pads'")
 
@@ -248,6 +286,56 @@ def _layers(copper, report):
     n = len(groups)
     names = (["F.Cu"] + [f"In{k}.Cu" for k in range(1, n - 1)] + ["B.Cu"]) if n > 1 else ["F.Cu"] * n
     return [(name, (g[0], g[1]), g[2]) for name, g in zip(names, groups)]
+
+
+def _cylinders(shape, only=True):
+    """
+    [(x, y, r) mm] of the vertical cylindrical faces of a shape. only: its
+    other faces must all be horizontal planes, else None.
+    """
+    found = []
+    explorer = TopExp_Explorer(shape, TopAbs_FACE)
+    while explorer.More():
+        surface = BRepAdaptor_Surface(TopoDS.Face(explorer.Current()), True)
+        kind = surface.GetType()
+        if kind == GeomAbs_Cylinder:
+            cylinder = surface.Cylinder()
+            if abs(abs(cylinder.Axis().Direction().Z()) - 1.0) < 1e-9:
+                p = cylinder.Location()
+                found.append((p.X(), p.Y(), cylinder.Radius()))
+            elif only:
+                return None
+        elif only and (kind != GeomAbs_Plane or abs(abs(surface.Plane().Axis().Direction().Z()) - 1.0) > 1e-9):
+            return None
+        explorer.Next()
+    return found
+
+
+def _tube(solid):
+    """(x, y, outer radius) mm if the solid is a tube: two coaxial vertical cylinders, horizontal ends."""
+    found = _cylinders(solid)
+    if not found:
+        return None
+    xyr = np.array(found)
+    if np.ptp(xyr[:, :2], axis=0).max() > AXIS_TOLERANCE:
+        return None
+    radii = np.sort(xyr[:, 2])
+    if np.count_nonzero(np.diff(radii) > AXIS_TOLERANCE) != 1:      # exactly two radii
+        return None
+    return float(xyr[0, 0]), float(xyr[0, 1]), float(radii[-1])
+
+
+def _tube_radius(solid):
+    return max(r for _, _, r in _cylinders(solid))
+
+
+def _fill(solid, tube, copper_z):
+    """A solid cylinder of the tube's outer radius over its z range, within the copper's."""
+    x, y, r = tube
+    z0, z1 = _z_range(solid)
+    if copper_z is not None:
+        z0, z1 = max(z0, copper_z[0]), min(z1, copper_z[1])
+    return BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(x, y, z0), gp_Dir(0, 0, 1)), r, z1 - z0).Shape()
 
 
 def _cut_z(shape, z0, z1):
