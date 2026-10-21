@@ -242,6 +242,9 @@ class ResultsPanel(QWidget):
         while self.shift_row.count():
             widget = self.shift_row.takeAt(0).widget()
             if widget is not None:
+                # Off the panel now: deleteLater alone left the old label and
+                # box drawn under the new ones until the deferred delete ran.
+                widget.setParent(None)
                 widget.deleteLater()
         self._shift_boxes = {}
         if not names:
