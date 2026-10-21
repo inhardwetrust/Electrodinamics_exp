@@ -271,7 +271,7 @@ def _make_body(name, kind, shape, color, deflection_mm, angular_deflection):
 
     vertices, triangles, planar = _triangles(shape)
     normals = _vertex_normals(vertices, triangles)
-    edges = _edge_segments(shape, deflection_mm, angular_deflection)
+    edges, corners = _edge_segments(shape, deflection_mm, angular_deflection)
     circles = _circles(shape)
     circles[:, [0, 1, 2, 6]] *= MM
     holes = _holes(shape) if kind == "solid" else np.zeros((0, 8))
@@ -284,6 +284,7 @@ def _make_body(name, kind, shape, color, deflection_mm, angular_deflection):
         triangles=triangles,
         normals=normals,
         edges=edges * MM,
+        corners=corners * MM,
         circles=circles,
         holes=holes,
         planar=planar,
@@ -450,11 +451,13 @@ def _vertex_normals(vertices, triangles):
 
 def _edge_segments(shape, deflection_mm, angular_deflection):
     """
-    CAD edges as line segments. The explorer visits an edge once per face
-    that uses it (OCP 8 has no bound shape maps to deduplicate shapes), so
-    identical segments are removed afterwards.
+    CAD edges as line segments, and the CAD vertices (the edges' ends). The
+    explorer visits an edge once per face that uses it (OCP 8 has no bound
+    shape maps to deduplicate shapes), so identical segments and points are
+    removed afterwards.
     """
     segments = []
+    ends = []
     explorer = TopExp_Explorer(shape, TopAbs_EDGE)
 
     while explorer.More():
@@ -471,9 +474,10 @@ def _edge_segments(shape, deflection_mm, angular_deflection):
 
         if len(points) >= 2:
             segments.append(np.stack((points[:-1], points[1:]), axis=1))
+            ends += [points[0], points[-1]]
 
     if not segments:
-        return np.zeros((0, 2, 3))
+        return np.zeros((0, 2, 3)), np.zeros((0, 3))
 
     segments = np.concatenate(segments)
 
@@ -482,7 +486,9 @@ def _edge_segments(shape, deflection_mm, angular_deflection):
     forward = np.array([tuple(a) <= tuple(b) for a, b in key])
     ordered = np.where(forward[:, None, None], key, key[:, ::-1])
     _, keep = np.unique(ordered.reshape(len(key), 6), axis=0, return_index=True)
-    return segments[np.sort(keep)]
+    ends = np.array(ends)
+    _, first = np.unique(np.round(ends / 1e-6).astype(np.int64), axis=0, return_index=True)
+    return segments[np.sort(keep)], ends[np.sort(first)]
 
 
 # =====================================================

@@ -19,6 +19,11 @@
 # Reference planes (set_reference_planes): a dark blue translucent square on
 # each waveguide port's reference plane (the port plane moved by the Results
 # tab's shift), drawn through the bodies like the ports.
+#
+# Picking (for measurements): a left click without a drag (the cursor moved
+# less than CLICK_PX) picks a point of the model (view/picking.py: a CAD
+# vertex, a point on an edge, or on a face) and marks it; on_pick(Pick or
+# None) is called. A drag still rotates; Esc or a click on nothing clears.
 
 import numpy as np
 
@@ -26,6 +31,7 @@ from vispy import scene
 from vispy.util import keys, transforms
 from vispy.visuals.filters.clipping_planes import PlanesClipper
 
+from view.picking import Picker
 from view.section import section_fill, section_outline
 
 SCENE_UNIT = 1e-3      # one scene unit = 1 mm
@@ -63,6 +69,8 @@ PORT_OK_COLOR = (0.2, 1.0, 0.35, 1.0)
 PORT_ERROR_COLOR = (1.0, 0.25, 0.2, 1.0)
 REFERENCE_FILL = (0.05, 0.1, 0.5, 0.55)           # dark blue, translucent
 REFERENCE_EDGE = (0.3, 0.45, 1.0, 0.9)
+PICK_COLOR = (1.0, 0.85, 0.1, 1.0)                # the picked point: yellow, black rim
+CLICK_PX = 4                # a press and release closer than this is a click, not a drag
 
 
 def _skip_redundant_qt_swap(canvas):
@@ -378,7 +386,17 @@ class GeometryView:
         self.show_edges = True
         self._bounds = (np.zeros(3), np.ones(3))
 
+        self.pick_marker = scene.visuals.Markers(parent=self.view.scene)
+        self.pick_marker.set_gl_state("translucent", depth_test=False)
+        self.pick_marker.order = 20
+        self.pick_marker.visible = False
+        self._picker = None
+        self.picked = None              # the last Pick, or None
+        self.on_pick = None             # callback(Pick or None)
+        self._press = None
+
         self._init_headlight()
+        self._init_click()
 
     def _init_space_pan(self):
         """
@@ -411,6 +429,55 @@ class GeometryView:
             self.canvas.native.unsetCursor()
         event.handled = True
 
+    def _init_click(self):
+        self.canvas.events.mouse_press.connect(self._mouse_press)
+        self.canvas.events.mouse_release.connect(self._mouse_release)
+        self.canvas.events.key_press.connect(self._escape)
+
+    def _escape(self, event):
+        if event.key == keys.ESCAPE and self.picked is not None:
+            self.set_pick(None)
+            if self.on_pick is not None:
+                self.on_pick(None)
+            event.handled = True
+
+    def _mouse_press(self, event):
+        self._press = np.array(event.pos[:2], float) if event.button == 1 else None
+
+    def _mouse_release(self, event):
+        press, self._press = self._press, None
+        if press is None or event.button != 1 or event.modifiers or self.view.camera.space_down:
+            return
+        if np.linalg.norm(np.array(event.pos[:2], float) - press) >= CLICK_PX:
+            return                      # a drag: rotated
+        self.set_pick(self.pick_at(event.pos))
+        if self.on_pick is not None:
+            self.on_pick(self.picked)
+
+    def pick_at(self, pos):
+        """The Pick under canvas pixel `pos`, or None."""
+        if self._picker is None or not self._bodies:
+            return None
+        visual = next(iter(self._bodies.values())).mesh
+        transform = visual.get_transform("visual", "canvas")
+        section = None
+        if self._section is not None:
+            axis, coordinate, keep_below = self._section
+            section = (axis, coordinate / SCENE_UNIT, keep_below)
+        visible = {name for name, on in self._visible.items() if on}
+        return self._picker.pick(transform, pos, visible, section, occlude=not (self.xray or self.ghost))
+
+    def set_pick(self, pick):
+        """Mark the picked point (None clears)."""
+        self.picked = pick
+        if pick is None:
+            self.pick_marker.visible = False
+        else:
+            self.pick_marker.set_data(np.array([pick.point], np.float32), size=11, edge_width=2,
+                                      face_color=PICK_COLOR, edge_color=(0, 0, 0, 1))
+            self.pick_marker.visible = True
+        self.canvas.update()
+
     def _init_headlight(self):
         """The light follows the camera, so no side of a model stays dark."""
         self._light_eye = np.array([0.3, 0.6, 1.0, 0.0])
@@ -435,6 +502,8 @@ class GeometryView:
         self._bodies = {b.name: _BodyVisual(b, self.root) for b in geometry.bodies}
         self._visible = {name: True for name in self._bodies}
         self.selected = None
+        self._picker = Picker(geometry.bodies)
+        self.set_pick(None)
 
         lo, hi = (np.asarray(v) / SCENE_UNIT for v in geometry.bounds)
         self._bounds = (lo, hi)

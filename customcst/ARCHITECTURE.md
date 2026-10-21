@@ -347,6 +347,29 @@ For checking a geometry inside the program instead of the CAD tool.
 - `check_section`: fill colors at known points, a plane on a face, the
   outline's length and coordinate.
 
+## Picking points (for measurements)
+
+A left click without a drag (press and release within 4 px) picks a point
+in the 3D view; a drag still rotates. The point gets a yellow marker, and
+the status bar shows its kind, body and coordinates. Esc, or a click on
+nothing, clears it.
+- `view/picking.py` (numpy only) snaps like CAD measuring tools:
+  1. a CAD vertex within 8 px (`Body.corners`: the ends of the CAD edges,
+     stored at import);
+  2. else a point of a CAD edge within 6 px: the edge's point closest to
+     the ray through the click (exact in perspective; the screen fraction
+     along an edge going into the depth was off by 0.5 mm on a 10 mm box);
+  3. else the point where the ray through the click enters the first face
+     (Möller–Trumbore over all triangles, ~5 ms on the KiCad board).
+- A vertex or edge point must be visible: no face between the camera and
+  it, up to 2e-4 of the model size (an edge lies on its own faces). X-ray
+  and the materials view pick through the bodies. Hidden bodies and the
+  removed half of a section are skipped (the cut face is not pickable yet).
+- The camera comes in as VisPy's visual -> canvas transform (`map` for the
+  pixels, `imap` at NDC z = -1 and 0 for the ray).
+- Next: two picks -> the distance (and dx, dy, dz); point-edge and
+  edge-edge shortest distances. `checks/check_picking.py`.
+
 ## Line impedance (Z0 at a plane, Z0 profile)
 
 Toolbar > Z₀ (`solver/line_profile.py`, `view/profile_window.py`): the

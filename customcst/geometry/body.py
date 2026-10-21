@@ -26,6 +26,8 @@ class Body:
     normals    (N, 3) float32 per vertex (vertices are not shared between
                CAD faces, so creases stay sharp)
     edges      (K, 2, 3) float64 segments of the CAD edges (display only)
+    corners    (P, 3) float64 CAD vertices (the ends of the edges), meters;
+               the points a measurement snaps to (view/picking.py)
     circles    (C, 7) float64 exact circular CAD edges, one row per circle:
                center (3, m), unit axis (3), radius (m). Used to read ports
                (the ends of a cone / cylinder).
@@ -50,6 +52,7 @@ class Body:
     triangles: np.ndarray
     normals: np.ndarray
     edges: np.ndarray
+    corners: np.ndarray = None
     circles: np.ndarray = None
     holes: np.ndarray = None
     planar: np.ndarray = None
@@ -65,6 +68,8 @@ class Body:
         self.triangles = np.asarray(self.triangles, dtype=np.int32).reshape(-1, 3)
         self.normals = np.asarray(self.normals, dtype=np.float32).reshape(-1, 3)
         self.edges = np.asarray(self.edges, dtype=np.float64).reshape(-1, 2, 3)
+        corners = self.edges.reshape(-1, 3) if self.corners is None else self.corners
+        self.corners = np.asarray(corners, dtype=np.float64).reshape(-1, 3)
         circles = np.zeros((0, 7)) if self.circles is None else self.circles
         self.circles = np.asarray(circles, dtype=np.float64).reshape(-1, 7)
         holes = np.zeros((0, 8)) if self.holes is None else self.holes
