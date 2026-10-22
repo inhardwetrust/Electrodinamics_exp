@@ -222,6 +222,29 @@ def main():
                 f.write(text)
             ok, msg = raises(lambda: Project.load(step), needle)
             check(f"bad file: {label}", ok, msg)
+
+        # --- the last display in [view] ----------------------------------------
+        os.remove(os.path.join(folder, "model.toml"))
+        shown = Project(step)
+        check("no [view] display keys -> empty", shown.view == {})
+        shown.set_up("y")
+        shown.view = {"edges": False, "xray": True, "ref_planes": True, "mesh": False,
+                      "materials": True, "section": True, "flip": True, "plane": "x", "at": -12.3456,
+                      "hidden": ["board", 'odd "name" ü']}
+        shown.save()
+        back = Project.load(step)
+        check("[view] round trip", back.view == shown.view and back.up == "y", str(back.view))
+        for label, (text, needle) in {
+            "unknown view key": ('[view]\nzoom = 2\n', "unknown keys"),
+            "switch not a bool": ('[view]\nmesh = 1\n', "true or false"),
+            "bad plane": ('[view]\nplane = "w"\n', "plane must be"),
+            "bad coordinate": ('[view]\nat = "5"\n', "coordinate in mm"),
+            "hidden not a list": ('[view]\nhidden = "board"\n', "list of body names"),
+        }.items():
+            with open(os.path.join(folder, "model.toml"), "w", encoding="utf-8") as f:
+                f.write(text)
+            ok, msg = raises(lambda: Project.load(step), needle)
+            check(f"bad file: {label}", ok, msg)
     finally:
         shutil.rmtree(folder)
 

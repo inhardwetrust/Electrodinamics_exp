@@ -15,6 +15,16 @@
 #
 #   [view]
 #   up = "y"            # vertical axis of the CAD model (x / y / z)
+#   edges = true        # the last display, restored on open (not a result
+#   xray = false        #   input: it never outdates a run). The toolbar
+#   ref_planes = true   #   switches, the plane (its axis and coordinate,
+#   mesh = false        #   mm) and the bodies unticked in the tree.
+#   materials = false
+#   section = true
+#   flip = false
+#   plane = "y"
+#   at = 25.9
+#   hidden = ["board"]
 #
 #   [materials.FR4]     # the material library, see materials.py
 #   eps_r = 4.3 ...
@@ -50,6 +60,8 @@ from project.waveports import waveport_geometry
 from project.settings import SECTIONS, check_settings
 
 UP_AXES = ("x", "y", "z")
+VIEW_SWITCHES = ("edges", "xray", "ref_planes", "mesh", "materials", "section", "flip")
+VIEW_KEYS = ("up",) + VIEW_SWITCHES + ("plane", "at", "hidden")
 
 
 class ProjectError(ValueError):
@@ -62,10 +74,11 @@ def project_path(step_path):
 
 class Project:
     def __init__(self, step_path, assignments=None, up="z", settings=None, materials=None,
-                 holes=None):
+                 holes=None, view=None):
         self.step_path = os.fspath(step_path)
         self.assignments = dict(assignments or {})     # {body name: Assignment}
         self.up = up                                   # vertical axis for the view
+        self.view = dict(view or {})                   # last display: [view] keys but up; {} = defaults
         self.materials = builtin_library()             # {preset name: {param: value}}
         # Hole rules: {drill mm: kind}, {(x, y, z) center mm: kind}.
         self.hole_diameters = dict((holes or {}).get("diameters", {}))
@@ -313,12 +326,11 @@ class Project:
         if unknown:
             raise ProjectError(f"{path}: unknown top-level keys {sorted(unknown)}")
 
-        view = data.get("view", {})
-        if set(view) - {"up"}:
-            raise ProjectError(f"{path}: [view]: unknown keys {sorted(set(view) - {'up'})}")
-        up = view.get("up", "z")
+        view = dict(data.get("view", {}))
+        up = view.pop("up", "z")
         if up not in UP_AXES:
             raise ProjectError(f"{path}: [view] up must be one of {UP_AXES}, got {up!r}")
+        view = _parse_view(path, view)
 
         library = builtin_library()
         for name, section in data.get("materials", {}).items():
@@ -345,7 +357,7 @@ class Project:
             raise ProjectError(f"{path}: {error}") from None
 
         holes = _parse_holes(path, data.get("holes", {}))
-        return cls(step_path, assignments, up, settings, library, holes)
+        return cls(step_path, assignments, up, settings, library, holes, view)
 
     def save(self):
         """Writes atomically (temp file + replace): a crash never leaves half a file."""
@@ -372,7 +384,13 @@ class Project:
 
             lines.append("")
 
-        lines += ["[view]", f'up = "{self.up}"', ""]
+        lines += ["[view]", f'up = "{self.up}"']
+        for key in VIEW_KEYS[1:]:
+            if key in self.view:
+                value = self.view[key]
+                text = json.dumps(value, ensure_ascii=False) if key == "hidden" else _toml_value(value)
+                lines.append(f"{key} = {text}" + ("   # mm" if key == "at" else ""))
+        lines.append("")
 
         if self.hole_diameters:
             lines.append("[holes.diameters]   # drill, mm")
@@ -446,6 +464,27 @@ def _parse_holes(path, section):
             raise ProjectError(f"{where}.single: {key!r} = {kind!r}, expected one of {HOLE_KINDS}")
         out["single"][_center_key(center)] = kind
     return out
+
+
+def _parse_view(path, view):
+    """The display keys of [view] (all optional), validated."""
+    where = f"{path}: [view]"
+    unknown = set(view) - set(VIEW_KEYS)
+    if unknown:
+        raise ProjectError(f"{where}: unknown keys {sorted(unknown)}")
+    for key in VIEW_SWITCHES:
+        if key in view and not isinstance(view[key], bool):
+            raise ProjectError(f"{where}: {key} must be true or false, got {view[key]!r}")
+    if "plane" in view and view["plane"] not in UP_AXES:
+        raise ProjectError(f"{where}: plane must be one of {UP_AXES}, got {view['plane']!r}")
+    if "at" in view:
+        if isinstance(view["at"], bool) or not isinstance(view["at"], (int, float)):
+            raise ProjectError(f"{where}: at must be a coordinate in mm, got {view['at']!r}")
+        view["at"] = float(view["at"])
+    if "hidden" in view and not (isinstance(view["hidden"], list)
+                                 and all(isinstance(n, str) for n in view["hidden"])):
+        raise ProjectError(f"{where}: hidden must be a list of body names")
+    return view
 
 
 def _toml_value(value):

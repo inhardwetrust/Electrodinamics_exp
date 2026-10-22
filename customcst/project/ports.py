@@ -12,7 +12,8 @@
 # Both ends may be on the same PEC body when the axis crosses a gap of it:
 # a copper layer imported from KiCad (geometry/kicad_step.py) is one body
 # holding both the trace and the ground pour, and a slot feed lies across
-# one plane. With no gap the ends are shorted: an error.
+# one plane. With no gap the ends are shorted: an error. An end touching
+# several bodies (a via in a pad) is on all of them: they touch there.
 #
 # The port body itself is only a marker: it is never meshed as a material.
 #
@@ -74,11 +75,9 @@ def port_geometry(body, conductors, polar=True):
         if not touching:
             result.error = f"{label} end touches no PEC body"
             return result
-        if len(touching) > 1:
-            result.error = f"{label} end touches several PEC bodies: {', '.join(touching)}"
-            return result
-
-        setattr(result, attr, touching[0])
+        # Several bodies at one point touch each other there: one conductor
+        # (an end on a via in a pad: the layer and the 'vias' body).
+        setattr(result, attr, " + ".join(touching))
 
     # The gap: axis samples outside every conductor must form one run.
     s = np.linspace(0.0, 1.0, GAP_SAMPLES)

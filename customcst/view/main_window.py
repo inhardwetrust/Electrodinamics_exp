@@ -95,6 +95,14 @@ class MainWindow(QMainWindow):
         self._mesh_timer = QTimer(self)
         self._mesh_timer.setInterval(100)
         self._mesh_timer.timeout.connect(self._poll_discretize)
+        # The display goes to the project's [view] a second after the last
+        # change (a slider drag is one save), and before the file is left.
+        self._view_timer = QTimer(self)
+        self._view_timer.setSingleShot(True)
+        self._view_timer.setInterval(1000)
+        self._view_timer.timeout.connect(self._save_view)
+        self._restoring = False
+        self._project_mtime = None      # of the project file as last read or written here
         self.view = GeometryView()
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
@@ -150,21 +158,21 @@ class MainWindow(QMainWindow):
         self.stop_action.setEnabled(False)
         bar.addSeparator()
 
-        edges = QCheckBox("Edges")
-        edges.setChecked(True)
-        edges.toggled.connect(self.view.set_show_edges)
-        bar.addWidget(edges)
+        self.edges_check = QCheckBox("Edges")
+        self.edges_check.setChecked(True)
+        self.edges_check.toggled.connect(self.view.set_show_edges)
+        bar.addWidget(self.edges_check)
 
-        xray = QCheckBox("X-ray")
-        xray.toggled.connect(self.view.set_xray)
-        bar.addWidget(xray)
+        self.xray_check = QCheckBox("X-ray")
+        self.xray_check.toggled.connect(self.view.set_xray)
+        bar.addWidget(self.xray_check)
 
-        planes = QCheckBox("Ref. planes")
-        planes.setChecked(True)
-        planes.setToolTip("Reference planes of the waveguide ports (dark blue): the port plane "
-                          "moved by the shift in the Results tab, along the port's axis")
-        planes.toggled.connect(self.view.set_show_reference_planes)
-        bar.addWidget(planes)
+        self.planes_check = QCheckBox("Ref. planes")
+        self.planes_check.setChecked(True)
+        self.planes_check.setToolTip("Reference planes of the waveguide ports (dark blue): the port plane "
+                                     "moved by the shift in the Results tab, along the port's axis")
+        self.planes_check.toggled.connect(self.view.set_show_reference_planes)
+        bar.addWidget(self.planes_check)
         bar.addSeparator()
 
         bar.addWidget(QLabel(" Up: "))
@@ -225,6 +233,10 @@ class MainWindow(QMainWindow):
         z0_menu.addAction("Z₀ profile along the axis…", self._z0_profile)
         self.z0_button.setMenu(z0_menu)
         bar.addWidget(self.z0_button)
+
+        for switch in self._view_switches().values():
+            switch.toggled.connect(lambda _: self._view_changed())
+        self.mesh_axis.currentIndexChanged.connect(lambda _: self._view_changed())
 
         self.legend = QLabel(
             "  <span style='color:#ccc;background:#222'>&nbsp;"
@@ -709,6 +721,7 @@ class MainWindow(QMainWindow):
             "maximized": self.isMaximized(),
         }
         self.app_settings.save()            # an error here must not keep the window open
+        self._save_view()
         self._cancel_discretize()           # the worker stops at its next step
         self._mesh_pool.shutdown(wait=False, cancel_futures=True)
         super().closeEvent(event)
@@ -753,6 +766,7 @@ class MainWindow(QMainWindow):
             self.load(self.geometry.source)
 
     def load(self, path):
+        self._save_view()               # the display of the file being left (or reloaded)
         try:
             geometry = read_step(path)
         except Exception as error:      # show any kernel/file error, keep the old model
@@ -772,6 +786,7 @@ class MainWindow(QMainWindow):
 
         self.geometry = geometry
         self.project = project
+        self._project_mtime = self._file_mtime(project.path) if project else None
         self.holes = find_holes(geometry)
         self.view.highlight_holes([])
         self._mesh_coordinate = None
@@ -783,18 +798,106 @@ class MainWindow(QMainWindow):
         self.up_combo.blockSignals(False)
         self.view.set_up(up)
 
+        view = project.view if project else {}
         self.mesh_axis.blockSignals(True)
-        self.mesh_axis.setCurrentIndex(AXES.index(up))      # horizontal plane by default
+        self.mesh_axis.setCurrentIndex(AXES.index(view.get("plane", up)))  # horizontal plane by default
         self.mesh_axis.blockSignals(False)
+        self._restore_switches(view)
+        if "at" in view:
+            self._mesh_coordinate = view["at"] * MM
 
-        self._refresh_model(center_slider=True)
+        self._refresh_model(center_slider="at" not in view)
         self._fill_tree()
+        self._restore_hidden(view.get("hidden", []))
         self._fill_materials()
         self._load_runs(path)
         self._remember(path)
 
         lo, hi = geometry.bounds
         self.setWindowTitle(f"customcst - {os.path.basename(path)}  ({_fmt_mm(hi - lo)} mm)")
+
+    # =====================================================
+    # The last display, kept in the project's [view]
+    # =====================================================
+
+    def _view_switches(self):
+        """{[view] key: its toolbar check box or button}."""
+        return {"edges": self.edges_check, "xray": self.xray_check, "ref_planes": self.planes_check,
+                "mesh": self.mesh_check, "materials": self.materials_check,
+                "section": self.section_check, "flip": self.section_flip}
+
+    def _body_items(self):
+        items = (self.tree.topLevelItem(i) for i in range(self.tree.topLevelItemCount()))
+        return [item for item in items if item.data(0, Qt.UserRole)[0] == "body"]
+
+    def _view_state(self):
+        state = {key: switch.isChecked() for key, switch in self._view_switches().items()}
+        state["plane"] = AXES[self.mesh_axis.currentIndex()]
+        if self._mesh_coordinate is not None:
+            state["at"] = round(float(self._mesh_coordinate) / MM, 4)
+        state["hidden"] = [item.data(0, Qt.UserRole)[1] for item in self._body_items()
+                           if item.checkState(0) != Qt.Checked]
+        return state
+
+    def _view_changed(self):
+        if self._restoring or self.project is None or self.geometry is None:
+            return
+        self._view_timer.start()
+
+    def _save_view(self):
+        """
+        Writes the display to the project file if it changed (quietly: no
+        status message). Never over a file edited outside since it was
+        read: that edit would be lost for a view change (Reload takes it).
+        """
+        self._view_timer.stop()
+        if self.project is None or self.geometry is None:
+            return
+        state = self._view_state()
+        if state == self.project.view:
+            return
+        self.project.view = state
+        name = os.path.basename(self.project.path)
+        if self._file_mtime(self.project.path) != self._project_mtime:
+            self.statusBar().showMessage(f"{name} changed on disk: the view is not saved (Reload reads it)", 10000)
+            return
+        try:
+            self.project.save()
+        except OSError as error:
+            self.statusBar().showMessage(f"view not saved to {name}: {error}", 10000)
+            return
+        self._project_mtime = self._file_mtime(self.project.path)
+
+    @staticmethod
+    def _file_mtime(path):
+        try:
+            return os.stat(path).st_mtime_ns
+        except OSError:
+            return None
+
+    def _restore_switches(self, view):
+        """
+        The toolbar from [view] (defaults for missing keys), without the
+        toggled handlers: the 3D view gets the three display switches here,
+        the plane ones are read when the plane is shown (_mesh_ready).
+        """
+        defaults = {"edges": True, "ref_planes": True}
+        for key, switch in self._view_switches().items():
+            switch.blockSignals(True)
+            switch.setChecked(view.get(key, defaults.get(key, False)))
+            switch.blockSignals(False)
+        self.view.set_show_edges(self.edges_check.isChecked())
+        self.view.set_xray(self.xray_check.isChecked())
+        self.view.set_show_reference_planes(self.planes_check.isChecked())
+
+    def _restore_hidden(self, names):
+        self._restoring = True
+        try:
+            for item in self._body_items():
+                if item.data(0, Qt.UserRole)[1] in names:
+                    item.setCheckState(0, Qt.Unchecked)     # -> _item_changed hides it
+        finally:
+            self._restoring = False
 
     # =====================================================
     # Derived model: ports, colors, mesh (recomputed after every edit)
@@ -970,6 +1073,7 @@ class MainWindow(QMainWindow):
         if self.geometry is None:
             return
         self._mesh_coordinate = float(self._slider_positions()[index])
+        self._view_changed()
         window = self.profile_window
         if (self.mesh is not None and self.mesh.ok and window is not None and window.profile is not None
                 and window.profile.axis == self.mesh_axis.currentIndex()):
@@ -1855,6 +1959,7 @@ class MainWindow(QMainWindow):
 
         if role == "body" and column == 0:
             self.view.set_visible(owner, item.checkState(0) == Qt.Checked)
+            self._view_changed()
             return
 
         if role == "run" and column == 0:
@@ -1896,11 +2001,14 @@ class MainWindow(QMainWindow):
             self._after_edit()
 
     def _save(self):
+        self.project.view = self._view_state()      # the display goes along
+        self._view_timer.stop()
         try:
             self.project.save()
         except OSError as error:
             QMessageBox.critical(self, "Project file", f"cannot save {self.project.path}\n\n{error}")
             return
+        self._project_mtime = self._file_mtime(self.project.path)
 
         self.statusBar().showMessage(f"saved {os.path.basename(self.project.path)}", 2000)
 

@@ -979,6 +979,16 @@ UI, and the type is stored in `model.toml` next to the file.
   - Port parameter: R (Ω). The port body is a marker and is never meshed.
 - `[view] up = "y"` in the project: the vertical axis of the CAD model
   (Inventor and SolidWorks use Y).
+- The rest of `[view]` is the last display, restored on open, Reload and a
+  KiCad re-import (to see at once what changed in a new export): the
+  toolbar switches (edges, xray, ref_planes, mesh, materials, section,
+  flip), the plane (`plane` axis, `at` coordinate in mm) and the bodies
+  unticked in the tree (`hidden`). It is written a second after the last
+  change and before another file is opened or the window closes, but never
+  over a project file edited outside since it was read. It is not in the
+  results' fingerprint.
+- An end of a port or element may touch several PEC bodies (a via in a
+  pad: the layer and `vias`); they touch there, so it is one conductor.
 - Body names: in a multi-body part each body keeps its CAD name (for
   example `MANIFOLD_SOLID_BREP('port')`); a single-body part takes the part
   name.
