@@ -10,7 +10,10 @@
 #        body extents along the axis. Only planar CAD faces: a facet of a
 #        tessellated cylinder can be normal to the axis too (at its top),
 #        and those odd coordinates chained the merge of nearby faces (an
-#        SMA's round body pulled a ground plane 7 um off its face);
+#        SMA's round body pulled a ground plane 7 um off its face). A face
+#        within 1 deg of the axis normal and under min_step across counts,
+#        at its mean coordinate: KiCad exports polygon edges leaning by a
+#        few um, and a trace whose walls all lean had no lines across it;
 #      - port axes (transverse coordinates), so each port lies on a line;
 #      - the domain ends (model box + padding). A waveguide port's plane
 #        is the domain end on its side, with no padding: the line runs
@@ -31,10 +34,12 @@
 #      lines: on a grid sized for the straight parts their staircase
 #      joins a trace to the pour across a 0.2 mm gap. Each planar
 #      conductor face not normal to an axis (by more than min_step across
-#      a triangle: KiCad's edges a hair off an axis are straight) casts a ray from each of its
-#      triangles along its normal, out (the gap to the nearest conductor)
-#      and in (the metal's width), counting only faces within 45 degrees
-#      of facing it and hits beyond min_step; the shorter is the feature f. Along
+#      a triangle: KiCad's edges a hair off an axis are straight) casts a
+#      ray from each of its triangles along its normal, out (the gap to
+#      the nearest other piece of metal: only there can the staircase join
+#      two conductors) and in (the width: to its own piece's near-parallel
+#      wall, not a via in the pour), counting only faces near facing it
+#      and hits beyond min_step; the shorter is the feature f. Along
 #      each axis its normal has a component on, over the face's extent
 #      +- f, the step is at most max(f / cells_per_feature, min_step).
 #      Curved faces (round pad ends, via holes) cast no rays: their
@@ -72,8 +77,10 @@ PRIORITY_PORT = 0
 SAMPLES_PER_INTERVAL = 400
 RAY_CHUNK = 64              # rays per batch against all conductor triangles
 RAY_EPSILON = 1e-7          # m: hits nearer than this are the ray's own face
-RAY_FACING = math.cos(math.radians(45))     # a hit counts on a face within 45 deg of facing the ray
+RAY_FACING = math.cos(math.radians(45))     # a gap ray's hit counts on a face within 45 deg of facing it
+WIDTH_FACING = math.cos(math.radians(15))   # a width ray's: the piece's own wall, near parallel
 SLANTED_BUCKET = 1.25       # slanted regions with steps within this ratio are united
+ALIGNED = math.cos(math.radians(1))         # a planar face within 1 deg of an axis normal is a fixpoint
 
 ACCURATE_CELLS_PER_FEATURE = 8      # below: the Z0 accuracy notice
 Z0_ERROR = ((4, 7.0), (6, 3.0), (8, 1.5), (12, 1.1), (24, 0.4), (48, 0.0))   # (cells, % low)
@@ -185,7 +192,7 @@ def build_grid(geometry, project, ports=None, waveports=None, vias=()):
 
     lines = []
     for axis in range(3):
-        points = _fixpoints(axis, materials, valid_ports, lo[axis], hi[axis])
+        points = _fixpoints(axis, materials, valid_ports, lo[axis], hi[axis], min_step)
         kept, merged = _merge(points, min_step)
         result.fixpoints.append(np.array([p for p, _ in kept]))
         result.merged.append(merged)
@@ -204,7 +211,7 @@ def build_grid(geometry, project, ports=None, waveports=None, vias=()):
 # Fixpoints
 # =====================================================
 
-def _fixpoints(axis, materials, ports, lo, hi):
+def _fixpoints(axis, materials, ports, lo, hi, min_step):
     """[(coordinate, priority, size)] along one axis; size: the body's extent (tie-break)."""
     points = [(lo, PRIORITY_DOMAIN, math.inf), (hi, PRIORITY_DOMAIN, math.inf)]
 
@@ -214,14 +221,17 @@ def _fixpoints(axis, materials, ports, lo, hi):
         size = float(b_hi[axis] - b_lo[axis])
         points += [(b_lo[axis], priority, size), (b_hi[axis], priority, size)]
 
-        # Planar CAD faces normal to this axis (exact for boxes, caps of cylinders).
+        # Planar CAD faces normal to this axis (exact for boxes, caps of
+        # cylinders), or a hair off it: KiCad's polygon edges lean by a few
+        # um, at their mean coordinate.
         v = body.vertices[body.triangles]                       # (T, 3, 3)
         normal = np.cross(v[:, 1] - v[:, 0], v[:, 2] - v[:, 0])
         length = np.linalg.norm(normal, axis=1)
         flat = (length > 0) & body.planar
         aligned = np.zeros(len(v), dtype=bool)
-        aligned[flat] = np.abs(normal[flat, axis]) >= (1.0 - 1e-9) * length[flat]
-        for c in np.unique(np.round(v[aligned, 0, axis], 12)):
+        aligned[flat] = np.abs(normal[flat, axis]) >= ALIGNED * length[flat]
+        aligned &= np.ptp(v[:, :, axis], axis=1) < min_step
+        for c in np.unique(np.round(v[aligned, :, axis].mean(axis=1), 12)):
             points.append((float(c), priority, size))
 
     for port in ports:
@@ -276,17 +286,25 @@ def _slanted(result, conductors, cells_per_feature, min_step, h_air):
     if not solids:
         return
     tri = np.concatenate([p.vertices[p.triangles] for p in solids])          # (T, 3, 3) targets
-    faces = np.concatenate([p.vertices[p.triangles][_slanted_mask(p, min_step)] for p in solids])
+    owner = np.concatenate([np.full(len(p.triangles), k) for k, p in enumerate(solids)])
+    masks = [_slanted_mask(p, min_step) for p in solids]
+    faces = np.concatenate([p.vertices[p.triangles][m] for p, m in zip(solids, masks)])
     if not len(faces):
         return
+    own = np.concatenate([np.full(np.count_nonzero(m), k) for k, m in enumerate(masks)])
     normal = np.cross(faces[:, 1] - faces[:, 0], faces[:, 2] - faces[:, 0])
     normal /= np.linalg.norm(normal, axis=1)[:, None]
     origin = faces.mean(axis=1)
 
-    # A feature under the min step is not resolved (as fixpoints merge):
-    # um-sized notches of a polygonized pour outline. A real gap that
-    # narrow shows up as a short on the mesh.
-    out, inward = _ray_hits(origin, normal, tri), _ray_hits(origin, -normal, tri)
+    # The gap: to another piece of metal only (a trace and its pour, two
+    # pads), where the staircase can join them. The width: to the piece's
+    # own parallel wall only (a trace's other edge), not to a via standing
+    # in the pour or across a pour's slanted corner. A feature under the
+    # min step is not resolved (as fixpoints merge): um-sized notches of a
+    # polygonized pour outline. A real gap that narrow shows up as a short
+    # on the mesh.
+    out = _ray_hits(origin, normal, tri, (owner, own, False), RAY_FACING)
+    inward = _ray_hits(origin, -normal, tri, (owner, own, True), WIDTH_FACING)
     feature = np.minimum(np.where(out >= min_step, out, math.inf), np.where(inward >= min_step, inward, math.inf))
     step = np.maximum(feature / cells_per_feature, min_step)
     keep = step < h_air
@@ -316,11 +334,13 @@ def _slanted_mask(body, min_step):
     return flat & (spread >= min_step)
 
 
-def _ray_hits(origins, directions, tri):
+def _ray_hits(origins, directions, tri, pieces, facing_min):
     """
     Distance along each ray to the nearest triangle (Moller-Trumbore) that
-    faces along the ray within 45 degrees (an opposite wall, a neighbor's
-    wall), inf if none. Without that, a ray from a triangle next to a
+    faces along the ray within acos(facing_min) (an opposite wall, a
+    neighbor's wall), inf if none. pieces: (piece of each triangle, piece
+    of each ray, same): a ray hits only its own piece (same) or only the
+    others. Without the facing rule, a ray from a triangle next to a
     corner of a polygonized pour outline hits the corner's other wall a
     few um away.
     """
@@ -332,6 +352,8 @@ def _ray_hits(origins, directions, tri):
     for start in range(0, len(origins), RAY_CHUNK):
         o = origins[start:start + RAY_CHUNK]
         d = directions[start:start + RAY_CHUNK]
+        owner, own, same = pieces
+        may = (owner[None] == own[start:start + RAY_CHUNK, None]) == same
         p = np.cross(d[:, None], e2[None])                                  # (R, T, 3)
         det = np.einsum("rtk,tk->rt", p, e1)
         ok = np.abs(det) > 1e-30
@@ -341,8 +363,8 @@ def _ray_hits(origins, directions, tri):
         q = np.cross(s, e1[None])
         w = np.einsum("rtk,rk->rt", q, d) * inv
         t = np.einsum("rtk,tk->rt", q, e2) * inv
-        parallel = np.abs(d @ facing.T) >= RAY_FACING
-        hit = ok & parallel & (u >= 0) & (w >= 0) & (u + w <= 1) & (t > RAY_EPSILON)
+        parallel = np.abs(d @ facing.T) >= facing_min
+        hit = may & ok & parallel & (u >= 0) & (w >= 0) & (u + w <= 1) & (t > RAY_EPSILON)
         out[start:start + RAY_CHUNK] = np.where(hit, t, math.inf).min(axis=1)
     return out
 

@@ -529,6 +529,19 @@ bigger one): `mesh/rectilinear.py` step 4, `Mesh > refine slanted metal`
   (Moller-Trumbore in numpy; ~300 rays x 40 k triangles on the real
   board, under 1 s). Out is the gap, in the metal's width; the feature
   is the shorter.
+- Only what can short or what a trace's Z0 needs:
+  - the gap counts only to ANOTHER piece of metal (a trace and its pour,
+    two pads): only there can the staircase join two conductors;
+  - the width counts only to the piece's OWN wall within 15 degrees of
+    parallel (a trace's other edge).
+  The first rule refined around every slanted metal face: the pour's
+  45 degree corners along the board's cut edge, and width rays that
+  stopped at a via standing in the pour 0.02 mm away. On the 90 degree
+  version of the real board (real_sim_simplify, nothing diagonal in the
+  signal path) that doubled the grid, 1.64 -> 3.24 M; now 2.53 M (the
+  SMA pad's taper, the clearance cut around the resistor's pad, an island
+  of B.Cu 0.2 mm from the ground: whether two pieces are both ground is
+  not known when meshing).
 - Not counted:
   - hits on faces more than 45 degrees from facing the ray. A ray from a
     triangle next to a corner of a polygonized pour outline hit the
@@ -542,8 +555,8 @@ bigger one): `mesh/rectilinear.py` step 4, `Mesh > refine slanted metal`
   +- the feature, the step is <= max(feature / cells_per_feature,
   min_step). Regions with steps within 1.25x are united; they grade like
   the intervals.
-- The real board at min step 0.05, 4 cells per feature: 1.8 M -> 6.1 M
-  cells, no shorts. The cost is the staircase's: 0.2 mm gaps want 0.05 mm
+- The real board at min step 0.05, 4 cells per feature: 1.8 M -> 5.95 M
+  cells (6.1 M with the first rule), no shorts. The cost is the staircase's: 0.2 mm gaps want 0.05 mm
   along x and y over the whole diagonal run. Axis-aligned routing keeps
   the fine lines at the trace edges only.
 - Models with chamfers near the pin get refined too (08: 1.3 -> 1.9 M,
@@ -553,7 +566,12 @@ bigger one): `mesh/rectilinear.py` step 4, `Mesh > refine slanted metal`
   of edges: see "Lumped elements".
 - `checks/check_slanted.py`: a 45 degree trace with 0.2 mm gaps is
   separate from the pour with the refinement and joined without; an
-  axis-aligned one gets the same grid; a 0.5 um notch is not a feature.
+  axis-aligned one gets the same grid; a 0.5 um notch is not a feature;
+  a pour's 45 degree corner with a via 0.1 mm inside it refines nothing
+  (the first rule saw a 0.1 mm feature there).
+- Time: the grid is one factor; a narrow band is the other (4-6 GHz
+  needs a pulse twice as long as 1-5 GHz: 70 000 steps against 32 000).
+  The time step is the min step's (0.05 mm copper), not the refinement's.
 
 ## Excited ports
 
@@ -887,7 +905,12 @@ switch to ray casting along the grid lines.
 - `mesh/rectilinear.py` `build_grid(geometry, project, ports)`
   (algorithm in the header):
   1. Fixpoints: the planar faces and extents of typed bodies, the port
-     axes and the domain ends.
+     axes and the domain ends. A face within 1° of the axis normal and
+     under min_step across counts at its mean coordinate. KiCad exports
+     polygon edges leaning by 2–3 µm; when every wall of a trace leaned
+     (real_sim_simplify, second version), it had no lines across it: 2
+     cells on the 0.3 mm trace, the 0402 load one edge of 0.11 mm instead
+     of 0.2 mm, S11 −12 dB.
   2. Fixpoints closer than min_step are merged, with priority domain >
      dielectric > conductor > port. So thin copper lands on the substrate
      face and the substrate thickness stays exact.

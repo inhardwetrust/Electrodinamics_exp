@@ -15,7 +15,16 @@
 #   - the same board with the slot along x: no slanted regions, the same
 #     grid as with the refinement off;
 #   - an um-sized notch in the pour's outline (a polygonized arc) is not a
-#     feature.
+#     feature;
+#   - the board with the slot along x, its pour's corner cut at 45 degrees
+#     and a via in the pour 0.1 mm from that cut: no slanted regions. The
+#     cut's gap ray reaches no other piece, its width ray stops only at the
+#     pour's own near-parallel wall, not at the via standing in it (both
+#     refined the real board's ground for nothing);
+#   - the slot along y, turned 2 um off the axis over its length (KiCad
+#     exports such walls): a line on each wall, steps <= W / 4 across,
+#     the trace not joined (such walls were no fixpoints: a real board's
+#     trace had 2 cells across and its lumped element 1 edge).
 #
 #   python checks/check_slanted.py      (~30 s)
 
@@ -32,8 +41,8 @@ import numpy as np                                                       # noqa:
 import scipy.sparse as sp                                                # noqa: E402
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut                              # noqa: E402
 from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform                  # noqa: E402
-from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox                          # noqa: E402
-from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf                       # noqa: E402
+from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder  # noqa: E402
+from OCP.gp import gp_Ax1, gp_Ax2, gp_Dir, gp_Pnt, gp_Trsf               # noqa: E402
 from scipy.sparse.csgraph import connected_components                    # noqa: E402
 
 from discretize.materials import discretize                              # noqa: E402
@@ -46,6 +55,7 @@ T, CU = 1.5, 0.035
 W, GAP = 0.3, 0.2
 L = 8.0                     # slot and trace length, mm
 C = (5.0, 5.0)              # their center
+LEAN = np.degrees(0.002 / L)    # deg: a wall 2 um off the axis over the slot (KiCad's export)
 
 
 def check(label, ok, detail=""):
@@ -64,7 +74,7 @@ def turned(shape, degrees, center=C):
     return BRepBuilderAPI_Transform(shape, t, True).Shape()
 
 
-def board(folder, degrees, notch=False):
+def board(folder, degrees, notch=False, corner=False):
     """The board's STEP with the slot at `degrees`; its path."""
     half = W / 2 + GAP
     slot = turned(box(C[0] - L / 2, C[1] - half, T - 1, C[0] + L / 2, C[1] + half, T + 1), degrees)
@@ -73,10 +83,19 @@ def board(folder, degrees, notch=False):
         corner = (0.0005, 1.0)
         cut = box(corner[0], corner[1], T - 1, corner[0] + 2, corner[1] + 2, T + 1)
         pour = BRepAlgoAPI_Cut(pour, turned(cut, 30, corner)).Shape()
+    extra = []
+    if corner:              # the corner (0, 0) cut at 45 deg (along x + y = 2 sqrt 2), a via 0.1 mm inside
+        pour = BRepAlgoAPI_Cut(pour, turned(box(-2, -2, T - 1, 2, 2, T + 1), 45, (0, 0))).Shape()
+        # Opposite a third of the cut (where its two triangles' rays start), 0.1 + r inside.
+        r, d = 0.15, (0.1 + 0.15) / 2 ** 0.5
+        x, y = 2 ** 0.5 * 2 / 3 + d, 2 ** 0.5 * 4 / 3 + d
+        extra.append(("via", BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(x, y, -CU), gp_Dir(0, 0, 1)), r,
+                                                      T + 2 * CU).Shape(), None))
     trace = turned(box(C[0] - L / 2 + 0.5, C[1] - W / 2, T, C[0] + L / 2 - 0.5, C[1] + W / 2, T + CU), degrees)
-    path = os.path.join(folder, f"board_{degrees}{'_notch' if notch else ''}.step")
+    path = os.path.join(folder, f"board_{degrees}{'_notch' if notch else ''}{'_corner' if corner else ''}.step")
     write_step(path, [("top", pour, None), ("trace", trace, None),
-                      ("bottom", box(0, 0, -CU, 10, 10, 0), None), ("board", box(0, 0, 0, 10, 10, T), None)])
+                      ("bottom", box(0, 0, -CU, 10, 10, 0), None), ("board", box(0, 0, 0, 10, 10, T), None)]
+               + extra)
     return path
 
 
@@ -148,6 +167,21 @@ def main():
         mesh = build_grid(g, project)
         f = mesh.slanted_feature * 1e3
         check("a 0.5 um notch in the pour is not a feature", abs(f - GAP) < 0.01 * GAP, f"{f:.4f} mm")
+
+        g, project = model(board(folder, 0, corner=True))
+        mesh = build_grid(g, project)
+        check("a 45 deg cut corner of the pour with a via by it: no slanted regions",
+              not any(mesh.slanted), f"{[len(r) for r in mesh.slanted]}, narrowest {mesh.slanted_feature * 1e3:.3f} mm")
+
+        g, project = model(board(folder, 90 + LEAN))
+        mesh = build_grid(g, project)
+        x = mesh.grid.lines[0] * 1e3
+        walls = C[0] + np.array([-W / 2 - GAP, -W / 2, W / 2, W / 2 + GAP])
+        off = np.abs(x[None] - walls[:, None]).min(axis=1)
+        across = np.diff(x)[(x[:-1] >= walls[0] - 1e-9) & (x[1:] <= walls[-1] + 1e-9)]
+        check("slot along y leaning 2 um: a line on each wall, steps <= W / 4 across",
+              off.max() < 0.005 and across.max() <= W / 4 + 1e-9, f"off {off.max() * 1e3:.1f} um, max step {across.max():.4f} mm")
+        check("  the trace not joined to the pour", not joined(g, project, mesh))
     finally:
         shutil.rmtree(folder)
 
