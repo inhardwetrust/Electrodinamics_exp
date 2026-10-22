@@ -54,9 +54,10 @@
 #
 # Lumped elements (discretize.DiscreteElement): R, L, C in series or in
 # parallel on a path of n edges (a column, or a staircase along two axes:
-# one entry per axis); each edge carries the element scaled by
-# k = l_e / L (R, L times k, C divided by k), so the path sums to the
-# element. Edge voltage V = E l_e, current I along +axis, J = I / A_e.
+# one entry per axis), or on N parallel columns (a wide element); each
+# edge carries the element scaled by k = N l_e / L (L: its path's length;
+# R, L times k, C divided by k), so each path is N times the element and
+# the N paths together are the element. Edge voltage V = E l_e, current I along +axis, J = I / A_e.
 # The element is discretized with the trapezoidal rule (A-stable for any
 # R, L, C) as a companion model  I(n+1) = G V(n+1) + I_hist(n), and solved
 # together with Ampere's law on its edges (time-centered current):
@@ -249,9 +250,12 @@ class FdtdSolver:
         index = tuple(edges.T)
         length = self.d[axis][edges[:, axis]]
         area = self._dual_area(axis, edges)
-        k = length / element.length                    # share of the path
+        # Share of the path; N parallel paths (a wide element) each carry
+        # N times the element, so together they are the element.
+        column = element.column[on_axis]
+        k = element.columns * length / element.column_length[column]
 
-        e = {"name": element.name, "axis": axis, "index": index, "sign": element.signs[on_axis],
+        e = {"name": element.name, "axis": axis, "index": index, "sign": element.signs[on_axis], "column": column,
              "l": length, "area": area, "topology": element.topology,
              "cb": self.cb[axis][index].astype(np.float64)}
 
@@ -308,15 +312,26 @@ class FdtdSolver:
             field[e["index"]] = e1.astype(np.float32)
 
     def element_state(self):
-        """{element: (V, I)} now: the voltage along its path (- to +) and the mean current."""
+        """
+        {element: (V, I)} now: the voltage along its path (- to +, the mean
+        over its parallel paths) and the current (their sum of the per-path
+        mean).
+        """
         state = {}
         for e in self._elements:
-            v, i = state.get(e["name"], ([], []))
+            column, v, i = state.get(e["name"], ([], [], []))
+            column.append(e["column"])
             v.append(e["sign"] * e["v"])
             i.append(e["sign"] * e["i"])
-            state[e["name"]] = (v, i)
-        return {name: (float(np.sum(np.concatenate(v))), float(np.mean(np.concatenate(i))))
-                for name, (v, i) in state.items()}
+            state[e["name"]] = (column, v, i)
+        out = {}
+        for name, (column, v, i) in state.items():
+            column = np.concatenate(column)
+            count = np.bincount(column)
+            v_path = np.bincount(column, np.concatenate(v))
+            i_path = np.bincount(column, np.concatenate(i)) / count
+            out[name] = (float(np.mean(v_path)), float(np.sum(i_path)))
+        return out
 
     # =====================================================
     # Ports

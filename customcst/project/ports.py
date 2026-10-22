@@ -18,7 +18,8 @@
 #
 # Lumped elements (R, L, C) use the same geometry without polarity
 # (polar=False): a plain cylinder is fine, "minus" / "plus" are just the two
-# ends in file order.
+# ends in file order. Its radius is the element's half width: the element
+# is spread over the grid columns inside it (discretize/materials.py).
 
 from dataclasses import dataclass
 from typing import Optional
@@ -40,6 +41,7 @@ class PortGeometry:
     plus_body: str = ""
     gap_minus: Optional[np.ndarray] = None   # the active gap, "-" side -> "+" side
     gap_plus: Optional[np.ndarray] = None
+    radius: float = 0.0                      # m, a lumped element's (its width / 2); 0 for a port
 
     @property
     def ok(self):
@@ -59,8 +61,10 @@ def port_geometry(body, conductors, polar=True):
         result.error = ends
         return result
 
-    (minus, _), (plus, _) = ends
+    (minus, r_minus), (plus, r_plus) = ends
     result.minus, result.plus = minus, plus
+    if not polar:                            # an element: spread over its width
+        result.radius = float(min(r_minus, r_plus))
     length = float(np.linalg.norm(plus - minus))
     tolerance = max(1e-7, 1e-4 * length)
 

@@ -15,6 +15,8 @@
 #        at its mean coordinate: KiCad exports polygon edges leaning by a
 #        few um, and a trace whose walls all lean had no lines across it;
 #      - port axes (transverse coordinates), so each port lies on a line;
+#        a lumped element's edges too (axis +- its radius), so the cells
+#        across its width carry its parallel columns;
 #      - the domain ends (model box + padding). A waveguide port's plane
 #        is the domain end on its side, with no padding: the line runs
 #        through it into the absorber.
@@ -238,6 +240,8 @@ def _fixpoints(axis, materials, ports, lo, hi, min_step):
         direction = port.plus - port.minus
         if np.abs(direction[axis]) <= 1e-9 * np.linalg.norm(direction):
             points.append((float(port.minus[axis]), PRIORITY_PORT, math.inf))   # transverse: one line
+            if port.radius > 0:     # a lumped element's width: lines across it for its columns
+                points += [(float(port.minus[axis]) + s * port.radius, PRIORITY_PORT, math.inf) for s in (-1, 1)]
 
     return [(c, p, s) for c, p, s in points if lo <= c <= hi]
 

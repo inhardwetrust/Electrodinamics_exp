@@ -1360,7 +1360,8 @@ class MainWindow(QMainWindow):
                     " + ".join(f"{np.count_nonzero(element.axes == a)} {AXES[a]}" for a in axes) + " (staircase)"
                 row = QTreeWidgetItem(item, [
                     f"{element.name} edges",
-                    (f"{len(element.edges)} along {along}" if len(axes) == 1 else along)
+                    (f"{np.count_nonzero(element.column == 0)} along {along}" if len(axes) == 1 else along)
+                    + (f" x {element.columns} columns" if element.columns > 1 else "")
                     + f", {element.length / MM:.3f}", "mm",
                 ])
                 row.setData(0, Qt.UserRole, ("info", "mesh", None))

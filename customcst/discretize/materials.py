@@ -55,14 +55,24 @@
 #     conductivity, so the effective tan_d scales as f_ref / f).
 #   - ports: the edges along the port axis whose midpoints lie in the gap.
 #     Both column ends must touch PEC edges, none of the column may be PEC.
-#   - lumped elements: the same column when the axis is along x, y or z.
-#     An axis slanted in a grid plane (a rotated 0402 on a board) gets a
+#   - lumped elements: the same column when the axis is along x, y or z,
+#     plus the parallel columns within the element's radius (its drawn
+#     cylinder: a 0402 is 0.5 mm wide, not one edge; one edge column is
+#     a thin wire, 0.55 nH over a 1 mm copper bridge across a 1 mm gap,
+#     the 1 mm wide element 0.08 nH: check_lumped). Each runs
+#     along a grid line inside the cylinder: free edges through the
+#     middle of the gap, grown toward both ends until a node touches
+#     metal; it counts if its ends lie on the two pieces of metal the
+#     central column joins (a column off a rounded trace tip, or above
+#     the copper, finds no metal and is left out). N columns in parallel,
+#     each N times the element (solver/fdtd.py). An axis slanted in a grid plane (a rotated 0402 on a board) gets a
 #     staircase of edges instead: from the node nearest the - end to the
 #     one nearest the + end, each step along whichever of the two axes
 #     keeps the step's midpoint nearer the axis line. Its edges whose
 #     midpoints project into the gap carry the element (the same rules as
 #     a column), each its share l_e / (path length). The path is longer
-#     than the gap (Manhattan), the element's value is exact.
+#     than the gap (Manhattan), the element's value is exact. A staircase
+#     stays one path.
 #   - waveguide ports: the grid plane of the port (a domain end) and the
 #     line's mode on it (solver/port_mode.py), found on the discretized
 #     materials, so it is the mode of the staircased line the FDTD sees.
@@ -122,12 +132,18 @@ class DiscreteElement:
     axes: np.ndarray            # (n,) each edge's direction
     edges: np.ndarray           # (n, 3) in the E array of its axis, in path order from the - end
     signs: np.ndarray           # (n,) +1: the path runs along +axis on that edge
-    length: float               # m, sum of the edge lengths
-    ends: tuple                 # the path's first and last node [i, j, k]
+    length: float               # m, sum of the edge lengths (of the central path)
+    ends: tuple                 # the central path's first and last node [i, j, k]
     topology: str               # "series" | "parallel"
     r: float                    # Ohm
     l: float                    # H
     c: float                    # F
+    column: np.ndarray = None   # (n,) each edge's parallel path (0: the central one)
+    column_length: np.ndarray = None    # (columns,) m, each path's length
+
+    @property
+    def columns(self):
+        return len(self.column_length)
 
 
 @dataclass
@@ -289,14 +305,21 @@ def discretize(mesh, geometry, project, ports=None, elements=None, waveports=Non
         if port.ok:
             _discretize_port(result, port, project.get(port.name).values["impedance"], mesh.min_step)
 
+    cache = {}
+
+    def pieces():
+        if "pieces" not in cache:
+            cache["pieces"] = _pieces(result)
+        return cache["pieces"]
+
     for element in (elements or {}).values():
         if element.ok:
-            _discretize_element(result, element, project.get(element.name).values, mesh.min_step)
+            _discretize_element(result, element, project.get(element.name).values, mesh.min_step, pieces)
 
     for waveport in (waveports or {}).values():
         if waveport.ok:
             _discretize_waveport(result, waveport, mesh.min_step)
-    _find_shorts(result, mesh.min_step)
+    _find_shorts(result, mesh.min_step, pieces)
     step("ports")
 
     return result
@@ -615,7 +638,7 @@ def _staircase(result, item, snap):
     return axes, edges, signs, length, (np.array(first), np.array(last))
 
 
-def _discretize_element(result, element, values, snap):
+def _discretize_element(result, element, values, snap, pieces):
     direction = element.plus - element.minus
     if np.count_nonzero(np.abs(direction) > 1e-9 * np.linalg.norm(direction)) == 1:
         column = _column(result, element, snap, "element")
@@ -623,11 +646,17 @@ def _discretize_element(result, element, values, snap):
             return
         axis, sign, edges, length = column
         port = DiscretePort(element.name, axis, sign, edges, 0.0, length)       # for its ends
-        path = (np.full(len(edges), axis), edges, np.full(len(edges), sign), length, port.ends)
+        ends = port.ends
+        runs = [edges] + _parallel_columns(result, element, axis, edges, ends, pieces())
+        lengths = [length] + [float(_lines_sum(result.grid.lines[axis], run[:, axis])) for run in runs[1:]]
+        column = np.concatenate([np.full(len(run), k) for k, run in enumerate(runs)])
+        edges = np.concatenate(runs)
+        path = (np.full(len(edges), axis), edges, np.full(len(edges), sign), length, ends)
     else:
         path = _staircase(result, element, snap)
         if path is None:
             return
+        column, lengths = np.zeros(len(path[1]), dtype=np.int64), [path[3]]
     axes, edges, signs, length, ends = path
     r, l, c = values["r"], values["l"] * 1e-9, values["c"] * 1e-12
     if values["topology"] == "series" and r == 0 and l == 0 and c == 0:
@@ -636,14 +665,84 @@ def _discretize_element(result, element, values, snap):
         result.warnings.append(f"{element.name}: parallel R = L = C = 0 is an open circuit")
     result.elements.append(DiscreteElement(
         element.name, axes, edges, signs, length, ends, values["topology"], r, l, c,
+        column, np.array(lengths),
     ))
 
 
-def _find_shorts(result, min_step):
-    """Fills result.shorts (see the header)."""
-    items = result.ports + result.elements + result.waveports
-    if not items:
-        return
+def _lines_sum(lines, index):
+    """Sum of the steps lines[i + 1] - lines[i] over the edge indices."""
+    return np.sum(lines[index + 1] - lines[index])
+
+
+def _parallel_columns(result, element, axis, central, ends, pieces):
+    """
+    The element's columns beside the central one (see the header): the
+    grid lines along `axis` within its radius of the axis, each a run of
+    free edges through the gap's middle edge, grown toward both ends until
+    a node touches metal, inside the element's length, its two ends on the
+    pieces of metal the central column joins. [(m, 3) edge arrays].
+    """
+    lines = result.grid.lines
+    shape = result.grid.shape
+    nodes = tuple(n + 1 for n in shape)
+    u, v = [a for a in range(3) if a != axis]
+    center = element.minus
+    radius = element.radius
+    if radius <= 0:
+        return []
+
+    def piece(node):
+        return pieces[np.ravel_multi_index(tuple(node), nodes)]
+
+    joined = sorted((piece(ends[0]), piece(ends[1])))
+    lo_end, hi_end = sorted((element.minus[axis], element.plus[axis]))
+    n_lo = int(np.searchsorted(lines[axis], lo_end - 1e-12, side="left"))
+    n_hi = int(np.searchsorted(lines[axis], hi_end + 1e-12, side="right")) - 1
+    middle = int(central[len(central) // 2, axis])
+    near_u = np.nonzero(np.abs(lines[u] - center[u]) <= radius * (1 + 1e-9))[0]
+    near_v = np.nonzero(np.abs(lines[v] - center[v]) <= radius * (1 + 1e-9))[0]
+    home = (central[0, u], central[0, v])
+
+    columns = []
+    for a in near_u:
+        for b in near_v:
+            if (a, b) == home or (lines[u][a] - center[u]) ** 2 + (lines[v][b] - center[v]) ** 2 > radius ** 2 * (1 + 1e-9):
+                continue
+            index = [a, b]
+            line = [0, 0, 0]
+            line[u], line[v], line[axis] = a, b, slice(None)
+            free = ~result.pec[axis][tuple(line)]
+
+            def node(i):
+                n = [0, 0, 0]
+                n[u], n[v], n[axis] = index[0], index[1], i
+                return n
+
+            def metal(i):
+                return _node_on_metal(result.pec, node(i), shape)
+
+            if not free[middle]:
+                continue
+            first = middle
+            while not metal(first) and first - 1 >= n_lo and free[first - 1]:
+                first -= 1
+            last = middle + 1
+            while not metal(last) and last + 1 <= n_hi and free[last]:
+                last += 1
+            if not (metal(first) and metal(last)):
+                continue
+            ends_here = (piece(node(first)), piece(node(last)))
+            if ends_here[0] == ends_here[1] or sorted(ends_here) != joined:
+                continue
+            edges = np.zeros((last - first, 3), dtype=np.int64)
+            edges[:, axis] = np.arange(first, last)
+            edges[:, u], edges[:, v] = a, b
+            columns.append(edges)
+    return columns
+
+
+def _pieces(result):
+    """Per node (raveled) the label of its piece of metal: nodes joined by PEC edges."""
     nodes = tuple(n + 1 for n in result.grid.shape)
     a, b = [], []
     for axis, pec in enumerate(result.pec):
@@ -655,7 +754,16 @@ def _find_shorts(result, min_step):
     a, b = np.concatenate(a), np.concatenate(b)
     size = int(np.prod(nodes))
     graph = sp.coo_matrix((np.ones(len(a), dtype=np.int8), (a, b)), shape=(size, size))
-    _, piece = connected_components(graph, directed=False)
+    return connected_components(graph, directed=False)[1]
+
+
+def _find_shorts(result, min_step, pieces):
+    """Fills result.shorts (see the header)."""
+    items = result.ports + result.elements + result.waveports
+    if not items:
+        return
+    nodes = tuple(n + 1 for n in result.grid.shape)
+    piece = pieces()
     hint = f"a gap narrower than the mesh resolves? (merge distance {min_step / 1e-3:.3g} mm, Mesh > min step)"
 
     for item in result.ports + result.elements:

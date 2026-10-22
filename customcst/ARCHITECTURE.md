@@ -813,6 +813,20 @@ across a gap between two PEC bodies, with no polarity.
   shared with the ports, and snaps the axis to the nearest grid line within
   the mesh min_step: an element drawn on top of 35 µm copper ends up on the
   merged copper plane. The result is a `DiscreteElement`.
+- **Width**: the drawn cylinder's radius is the element's half width.
+  The mesher puts lines at the axis +- r (both transverse axes), and
+  `discretize._parallel_columns` adds every grid column within r of the
+  axis: free edges through the gap's middle, grown to both ends until a
+  node touches metal, within the element's length, the ends on the two
+  pieces of metal the central column joins. N columns in parallel, each
+  N times the element: an edge carries k = N l_e / L_column
+  (`DiscreteElement.column`, `column_length`). A single edge column is a
+  thin wire: over a 1 mm gap it added 0.55 nH against a 1 mm copper
+  bridge, the 1 mm wide element 0.08 nH (check_lumped). The KiCad boards'
+  0402 (r 0.15 mm): 10–12 columns, two z lines (the copper's merged
+  plane and its top line). Grid: strait 1.18 -> 1.38 M cells (+12 % for
+  the lines across the width, +4 % in z). A staircase stays one path;
+  ports stay one column (radius 0).
 - **Slanted axis** (a 0402 rotated in the board plane): a staircase of
   edges. From the grid node nearest the - end to the one nearest the +
   end, each step goes along whichever of the axis's two grid axes keeps

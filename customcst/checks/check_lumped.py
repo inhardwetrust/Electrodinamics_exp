@@ -13,8 +13,13 @@
 #   Only frequencies where the calibration is well conditioned are used
 #   (|K| large: the gap is not near a voltage node of the line halves).
 #   Stability: extreme values (L = 1 pH, parallel C = 1 nF) stay finite.
+# Width (one grid for all three, so the fixture is the same): a 0 Ohm
+# element 1 mm wide is a 1 mm copper bridge over the gap. The element
+# spread over its columns (r 0.5 mm) must come near the bridge: its
+# B - B(bridge) (= K Z, the fixture's K common) under 25 % of the same
+# for a one-column element (r 0.01 mm), whose thin wire adds ~0.55 nH.
 #
-#   python checks/check_lumped.py      (~2 min)
+#   python checks/check_lumped.py      (~3 min)
 
 import math
 import os
@@ -63,29 +68,48 @@ def rod_x(x0, x1, y, z, r):
 
 
 TYPES = {"gnd": "pec", "substrate": "dielectric", "port1": "port", "port2": "port",
-         "line_a": "pec", "line_b": "pec", "element": "lumped"}
+         "line_a": "pec", "line_b": "pec", "element": "lumped", "bridge": "pec"}
+SHORT = {"topology": "series", "r": 0.001, "l": 0, "c": 0}
 
 
-def simulate(path, values):
+def fixture():
+    """The microstrip with its 1 mm gap (no element)."""
+    return [
+        ("gnd", box(-25, -15, 0, 25, 15, 0.035), None),
+        ("substrate", box(-25, -15, 0.035, 25, 15, 1.635), None),
+        ("line_a", box(-25, -1.5, 1.635, -0.5, 1.5, 1.67), None),
+        ("line_b", box(0.5, -1.5, 1.635, 25, 1.5, 1.67), None),
+        ("port1", cone_z(-25, 0, 0, 1.67, 0.8, 0.5), None),
+        ("port2", cone_z(25, 0, 0, 1.67, 0.8, 0.5), None),
+    ]
+
+
+def load(path, values):
     g = read_step(path)
     project = Project(path)
     for body in g.bodies:
         project.set_type(body, TYPES[body.name])
     project.set_value("substrate", "eps_r", 4.3)
     project.set_setting("simulation", "padding", 10.0)
-    for key, value in values.items():
-        project.set_value("element", key, value)
+    if project.get("element") is not None:
+        for key, value in values.items():
+            project.set_value("element", key, value)
+    return g, project
 
+
+def simulate(path, values, mesh=None):
+    """S of the model at `path` (on its own grid, or on `mesh`); the materials."""
+    g, project = load(path, values)
     ports, elements = project.ports(g), project.elements(g)
-    mesh = build_grid(g, project, {**ports, **elements})
+    mesh = mesh or build_grid(g, project, {**ports, **elements})
     materials = discretize(mesh, g, project, ports, elements)
-    if materials.errors or len(materials.elements) != 1:
+    if materials.errors or len(materials.elements) != len(elements):
         raise RuntimeError(f"bad model: {materials.errors}")
     solver = FdtdSolver(materials, 1.0, 5.0, active_port="port1")
     status = solver.run()
     s = s_column(solver, F)
     print(f"   {values}: {status} after {solver.step_index} steps")
-    return s
+    return s, materials
 
 
 def abcd_12(s):
@@ -97,18 +121,18 @@ def abcd_12(s):
 def calibrate(path):
     """The runs on the model at `path` (bodies named as in TYPES) and the checks."""
     runs = {
-        "short": {"topology": "series", "r": 0.001, "l": 0, "c": 0},
+        "short": SHORT,
         "open": {"topology": "parallel", "r": 0, "l": 0, "c": 0},
         "R50": {"topology": "series", "r": 50, "l": 0, "c": 0},
         "R100": {"topology": "series", "r": 100, "l": 0, "c": 0},
         "C1p": {"topology": "series", "r": 0, "l": 0, "c": 1.0},
         "L5n": {"topology": "series", "r": 0, "l": 5.0, "c": 0},
     }
-    t = {name: abcd_12(simulate(path, values)) for name, values in runs.items()}
+    t = {name: abcd_12(simulate(path, values)[0]) for name, values in runs.items()}
 
     extreme = [
-        simulate(path, {"topology": "series", "r": 0, "l": 0.001, "c": 0}),
-        simulate(path, {"topology": "parallel", "r": 0, "l": 0, "c": 1000.0}),
+        simulate(path, {"topology": "series", "r": 0, "l": 0.001, "c": 0})[0],
+        simulate(path, {"topology": "parallel", "r": 0, "l": 0, "c": 1000.0})[0],
     ]
 
     a = t["R50"] - t["short"]
@@ -147,20 +171,33 @@ def calibrate(path):
     check("stable with L = 1 pH and parallel C = 1 nF", finite)
 
 
+def width(folder):
+    """The width check (see the header)."""
+    paths = {}
+    for name, extra in (("wide", ("element", rod_x(-0.5, 0.5, 0, 1.67, 0.5), None)),
+                        ("thin", ("element", rod_x(-0.5, 0.5, 0, 1.67, 0.01), None)),
+                        ("bridge", ("bridge", box(-0.5, -0.5, 1.635, 0.5, 0.5, 1.67), None))):
+        paths[name] = os.path.join(folder, f"{name}.step")
+        write_step(paths[name], fixture() + [extra])
+    g, project = load(paths["wide"], SHORT)
+    mesh = build_grid(g, project, {**project.ports(g), **project.elements(g)})
+    runs = {name: simulate(path, SHORT, mesh) for name, path in paths.items()}
+    columns = {name: [e.columns for e in m.elements] for name, (_, m) in runs.items()}
+    check("a 1 mm wide element spreads over its columns, a thin one is one",
+          columns["wide"][0] > 1 and columns["thin"] == [1], f"{columns}")
+    b = {name: abcd_12(s) for name, (s, _) in runs.items()}
+    ratio = np.median(np.abs(b["wide"] - b["bridge"]) / np.abs(b["thin"] - b["bridge"]))
+    check("the wide 0 Ohm element is near the 1 mm copper bridge (< 25 % of a thin one's excess)",
+          ratio < 0.25, f"{ratio * 100:.0f} %")
+
+
 def main():
     folder = tempfile.mkdtemp()
     try:
         path = os.path.join(folder, "gap.step")
-        write_step(path, [
-            ("gnd", box(-25, -15, 0, 25, 15, 0.035), None),
-            ("substrate", box(-25, -15, 0.035, 25, 15, 1.635), None),
-            ("line_a", box(-25, -1.5, 1.635, -0.5, 1.5, 1.67), None),
-            ("line_b", box(0.5, -1.5, 1.635, 25, 1.5, 1.67), None),
-            ("element", rod_x(-0.5, 0.5, 0, 1.67, 0.5), None),     # on top of the copper
-            ("port1", cone_z(-25, 0, 0, 1.67, 0.8, 0.5), None),
-            ("port2", cone_z(25, 0, 0, 1.67, 0.8, 0.5), None),
-        ])
+        write_step(path, fixture() + [("element", rod_x(-0.5, 0.5, 0, 1.67, 0.5), None)])    # on top of the copper
         calibrate(path)
+        width(folder)
     finally:
         shutil.rmtree(folder)
 
