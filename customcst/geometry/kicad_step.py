@@ -38,6 +38,12 @@
 #     the pads with no hole of its outer radius in the board on its axis is
 #     reported (KiCad drills the board for pads, not for vias);
 #   - board: "board" (one dielectric; the inner layers lie inside it);
+#   - outside the board: KiCad exports the pads and vias of every footprint,
+#     also of those left out of the board (put beside it, disabled). A pad
+#     or via more than half outside the board's outline (in the board's
+#     plane, the outer edge of its top face) is dropped; one partly outside
+#     is kept and reported (a via fence along a slanted edge). Copper that
+#     reaches outside is reported, not cut;
 #   - soldermask and silkscreen are dropped (not modeled);
 #   - a footprint model: its solids named "<reference> 1", "<reference> 2"...
 #     in KiCad's order: a body added to the model renumbers the others.
@@ -56,7 +62,11 @@ from OCP.BRep import BRep_Builder
 from OCP.BRepAdaptor import BRepAdaptor_Surface
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Fuse
 from OCP.BRepBndLib import BRepBndLib
-from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder
+from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_Transform
+from OCP.BRepGProp import BRepGProp
+from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakePrism
+from OCP.BRepTools import BRepTools
+from OCP.GProp import GProp_GProps
 from OCP.Bnd import Bnd_Box
 from OCP.GeomAbs import GeomAbs_Cylinder, GeomAbs_Plane
 from OCP.IFSelect import IFSelect_RetDone
@@ -67,7 +77,7 @@ from OCP.TopExp import TopExp_Explorer
 from OCP.TopoDS import TopoDS, TopoDS_Compound
 from OCP.XCAFDoc import XCAFDoc_ShapeTool
 from OCP.XCAFPrs import XCAFPrs_DocumentExplorer, XCAFPrs_DocumentExplorerFlags_None
-from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
 
 from geometry.step_io import _label_name, _new_document, _silence_occt, read_step, write_step
 
@@ -77,6 +87,8 @@ DROPPED = ("_soldermask", "_silkscreen")
 CHANGE_TOLERANCE = 1e-6     # m: bounds moved more than this -> the body changed
 VOLUME_TOLERANCE = 0.01     # relative
 AXIS_TOLERANCE = 1e-4       # mm: cylinders on one axis, equal radii
+OUTSIDE_DROP = 0.5          # a pad or via more outside the board than this (of its volume) is dropped
+OUTSIDE_TOLERANCE = 1e-3    # less outside than this is inside (flush with the edge)
 COPPER_COLOR = (0.85, 0.55, 0.2)
 VIA_COLOR = (0.95, 0.78, 0.25)
 
@@ -112,6 +124,11 @@ def prepare_kicad_step(src, dst):
             report.lines.append(f"{category[1:]}: dropped ({len(solids)} solids)")
         else:
             models.append((reference or name, solids, color))
+
+    outline = [_outline(s) for solids, _ in board for s in solids]
+    outline = [o for o in outline if o is not None]
+    if outline:
+        _drop_outside(outline, pads, vias, copper, report)
 
     named = []          # (name, [solids], color)
     layers = _layers(copper, report)
@@ -279,6 +296,75 @@ def _bounds(shape):
 def _z_range(shape):
     lo, hi = _bounds(shape)
     return float(lo[2]), float(hi[2])
+
+
+# =====================================================
+# The board's outline
+# =====================================================
+
+def _outline(board):
+    """
+    The outline of a board solid as a tall prism: the outer wire of its top
+    face (holes left out), extruded far below and above. None without a
+    horizontal top face.
+    """
+    top = None
+    explorer = TopExp_Explorer(board, TopAbs_FACE)
+    while explorer.More():
+        face = TopoDS.Face(explorer.Current())
+        surface = BRepAdaptor_Surface(face, True)
+        if surface.GetType() == GeomAbs_Plane and abs(abs(surface.Plane().Axis().Direction().Z()) - 1.0) < 1e-9:
+            z = surface.Plane().Location().Z()
+            if top is None or z > top[0]:
+                top = (z, face)
+        explorer.Next()
+    if top is None:
+        return None
+    face = BRepBuilderAPI_MakeFace(BRepTools.OuterWire_s(top[1]), True).Face()
+    move = gp_Trsf()
+    move.SetTranslation(gp_Vec(0, 0, 1e3))
+    face = BRepBuilderAPI_Transform(face, move).Shape()
+    return BRepPrimAPI_MakePrism(face, gp_Vec(0, 0, -2e3)).Shape()
+
+
+def _volume(shape):
+    props = GProp_GProps()
+    BRepGProp.VolumeProperties_s(shape, props)
+    return props.Mass()
+
+
+def _outside(solid, outline):
+    """The part of the solid's volume outside the outline prisms, 0..1."""
+    total = _volume(solid)
+    if total <= 0:
+        return 0.0
+    inside = sum(_volume(BRepAlgoAPI_Common(solid, o).Shape()) for o in outline)
+    return max(0.0, 1.0 - inside / total)
+
+
+def _drop_outside(outline, pads, vias, copper, report):
+    """Drops the pads and vias mostly outside the board (in place); reports the rest."""
+    for what, solids in (("pad", pads), ("via", vias)):
+        kept, dropped = [], 0
+        for solid in solids:
+            part = _outside(solid, outline)
+            if part > OUTSIDE_DROP:
+                dropped += 1
+                continue
+            if part > OUTSIDE_TOLERANCE:
+                lo, hi = _bounds(solid)
+                x, y = (lo[:2] + hi[:2]) / 2
+                report.warnings.append(f"a {what} at ({x:.3f}, {y:.3f}) mm is {part:.0%} outside the board: kept")
+            kept.append(solid)
+        solids[:] = kept
+        if dropped:
+            report.lines.append(f"{what}s outside the board: {dropped} dropped (footprints left out)")
+    for solid in copper:
+        part = _outside(solid, outline)
+        if part > OUTSIDE_TOLERANCE:
+            lo, hi = _bounds(solid)
+            report.warnings.append(f"copper ({lo[0]:.2f}..{hi[0]:.2f}, {lo[1]:.2f}..{hi[1]:.2f}) mm "
+                                   f"is {part:.0%} outside the board: kept")
 
 
 # =====================================================

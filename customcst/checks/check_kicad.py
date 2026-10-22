@@ -14,6 +14,8 @@
 #     their layers, no "pads" body, and the undrilled one is reported;
 #   - a blind via (from F.Cu halfway down) is made through and counted;
 #     "vias" then holds 6 through vias: their volume, the copper's z range;
+#   - a footprint left out of the board (beside it): its pad and via are
+#     dropped; a pad a third outside the board's edge is kept and reported;
 #   - the result: bodies F.Cu (2 pieces, one body), B.Cu, vias, board; the
 #     pad cut to the copper's 35 um, no face at the pad's top left;
 #   - discretized at min step 0.08 mm, cells per feature 4, ~0.25 mm cells
@@ -97,6 +99,8 @@ def main():
         trace = BRepAlgoAPI_Cut(trace, box(-2, -1, top - 1, 0, 1, top + 1)).Shape()   # from the board's edge
         bottom = box(0, -4, -CU, 10, 4, 0)
         pad = box(2, -W / 2, top, 3, W / 2, top + 0.04)                                  # 40 um, on the trace
+        edge_pad = box(9.8, 1, top, 10.1, 1.3, top + 0.04)                               # a third outside
+        left_out = [box(12, -0.5, top, 13, 0.5, top + 0.04), disk(12.5, 2, -CU, 0.15, T + 2 * CU)]
         vias = [disk(8, 3, -CU, 0.15, T + 2 * CU), disk(8, -3, -CU, 0.15, T + 2 * CU)]
 
         def tube(x, y, z0, h, outer=0.15, inner=0.125):
@@ -114,8 +118,8 @@ def main():
             board = BRepAlgoAPI_Cut(board, disk(x, y, -1, 0.15, T + 2)).Shape()
         write_step(src, [("t_PCB", board, None),
                          ("t_copper", compound([pour, trace, bottom]), None),
-                         ("t_pad", compound([pad] + rings + barrels), None),
-                         ("t_via", compound(vias), None)])
+                         ("t_pad", compound([pad, edge_pad, left_out[0]] + rings + barrels), None),
+                         ("t_via", compound(vias + [left_out[1]]), None)])
 
         dst = os.path.join(folder, "board_prep.stp")
         report = prepare_kicad_step(src, dst)
@@ -141,6 +145,13 @@ def main():
         z = np.array(v.bounds)[:, 2] * 1e3
         check("vias span the copper exactly (the pads' 40 um cut)",
               np.allclose(z, [-CU, T + CU], atol=1e-6), f"z {z}")
+        dropped = [s for s in report.lines if "outside the board" in s]
+        check("the left-out footprint's pad and via dropped",
+              dropped == ["pads outside the board: 1 dropped (footprints left out)",
+                          "vias outside the board: 1 dropped (footprints left out)"], str(dropped))
+        edge = [w for w in report.warnings if "outside the board: kept" in w]
+        check("the pad a third outside kept and reported",
+              len(edge) == 1 and "(9.950, 1.150)" in edge[0] and "33%" in edge[0], str(edge))
         undrilled = [w for w in report.warnings if "no hole" in w]
         check("the undrilled plated hole is reported (only it)",
               len(undrilled) == 1 and "(3.000, 3.000)" in undrilled[0], str(report.warnings))

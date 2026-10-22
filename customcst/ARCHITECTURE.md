@@ -272,6 +272,15 @@ by hand. The usual Open STEP path is unchanged.
   axis is reported (KiCad drills the board for pads, not for vias). The
   test board exported both ways (pcb_solidvia, pcb_holesvia) and the older
   export (pcb): 21 / 21 / 22 columns of 0.1117 mm3 each.
+- Footprints left out of the board: KiCad exports the pads and vias of
+  every footprint, also of those put beside the board and disabled. A pad
+  or via more than half outside the board's outline is dropped: the outer
+  wire of the board's top face, extruded through all z (holes left out),
+  and the part of each solid outside it by volume (BRepAlgoAPI_Common).
+  One partly outside is kept and reported: a via fence along a slanted
+  edge reaches a little past it. Copper outside the outline is reported,
+  not cut. The real board (real_sim): 265 of 366 pads and 115 of 137 vias
+  dropped, one fence via 9% outside kept, ~1.5 s.
 - A layer's disjoint pieces (pour, a trace in its clearance) are one body:
   each solid is written named like its part, and read_step merges solids
   named like their part (Inventor names a part after its file and may
