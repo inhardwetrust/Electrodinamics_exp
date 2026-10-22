@@ -104,6 +104,7 @@ class MainWindow(QMainWindow):
         self._restoring = False
         self._project_mtime = None      # of the project file as last read or written here
         self.view = GeometryView()
+        self.view.view.camera.on_change = self._view_changed
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
         self.tabs.addTab(self.view.canvas.native, "3D View")
@@ -806,9 +807,14 @@ class MainWindow(QMainWindow):
         if "at" in view:
             self._mesh_coordinate = view["at"] * MM
 
+        if all(key in view for key in ("camera_center", "camera_distance", "camera_rotation")):
+            self.view.view.camera.set_state(view["camera_center"], view["camera_distance"],
+                                            view["camera_rotation"])
+
         self._refresh_model(center_slider="at" not in view)
         self._fill_tree()
         self._restore_hidden(view.get("hidden", []))
+        self._view_timer.stop()         # the camera reset above is no change of the user's
         self._fill_materials()
         self._load_runs(path)
         self._remember(path)
@@ -837,12 +843,16 @@ class MainWindow(QMainWindow):
             state["at"] = round(float(self._mesh_coordinate) / MM, 4)
         state["hidden"] = [item.data(0, Qt.UserRole)[1] for item in self._body_items()
                            if item.checkState(0) != Qt.Checked]
+        camera = self.view.view.camera.state()
+        state["camera_center"] = [round(v, 4) for v in camera["center"]]
+        state["camera_distance"] = round(camera["distance"], 4)
+        state["camera_rotation"] = [round(v, 6) for v in camera["rotation"]]
         return state
 
     def _view_changed(self):
         if self._restoring or self.project is None or self.geometry is None:
             return
-        self._view_timer.start()
+        self._view_timer.start()        # restarted by every camera move: one save after it stops
 
     def _save_view(self):
         """

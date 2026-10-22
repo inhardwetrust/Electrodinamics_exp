@@ -161,6 +161,7 @@ class TrackballCamera(scene.TurntableCamera):
     """
 
     space_down = False
+    on_change = None                # called after every view change (the window saves the camera)
     TRACKBALL_RADIUS = 0.8          # fraction of the half view size
 
     def __init__(self, **kwargs):
@@ -168,6 +169,25 @@ class TrackballCamera(scene.TurntableCamera):
         self._rotation = None
         self._last = None
         self._pan_start = None
+
+    def view_changed(self):
+        super().view_changed()
+        if self.on_change is not None:
+            self.on_change()
+
+    def state(self):
+        """{"center": [x, y, z] (scene units, mm), "distance": scale factor, "rotation": 3x3 rows}."""
+        rotation = self._rotation if self._rotation is not None else super()._get_rotation_tr()
+        return {"center": [float(v) for v in self.center[:3]], "distance": float(self.scale_factor),
+                "rotation": [float(v) for v in np.asarray(rotation)[:3, :3].ravel()]}
+
+    def set_state(self, center, distance, rotation):
+        matrix = np.eye(4)
+        matrix[:3, :3] = np.asarray(rotation, dtype=float).reshape(3, 3)
+        self._rotation = matrix
+        self.center = tuple(float(v) for v in center)
+        self.scale_factor = float(distance)
+        self.view_changed()
 
     def set_orientation(self, elevation, azimuth):
         """Reset to a turntable-style view (up axis vertical)."""

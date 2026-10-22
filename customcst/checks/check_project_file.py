@@ -230,7 +230,8 @@ def main():
         shown.set_up("y")
         shown.view = {"edges": False, "xray": True, "ref_planes": True, "mesh": False,
                       "materials": True, "section": True, "flip": True, "plane": "x", "at": -12.3456,
-                      "hidden": ["board", 'odd "name" ü']}
+                      "hidden": ["board", 'odd "name" ü'], "camera_center": [24.0, -1.5, 0.25],
+                      "camera_distance": 31.5, "camera_rotation": [1.0, 0.0, 0.0, 0.0, 0.6, -0.8, 0.0, 0.8, 0.6]}
         shown.save()
         back = Project.load(step)
         check("[view] round trip", back.view == shown.view and back.up == "y", str(back.view))
@@ -240,6 +241,8 @@ def main():
             "bad plane": ('[view]\nplane = "w"\n', "plane must be"),
             "bad coordinate": ('[view]\nat = "5"\n', "coordinate in mm"),
             "hidden not a list": ('[view]\nhidden = "board"\n', "list of body names"),
+            "camera rotation too short": ('[view]\ncamera_rotation = [1, 0, 0]\n', "list of 9 numbers"),
+            "camera distance <= 0": ('[view]\ncamera_distance = 0\n', "number > 0"),
         }.items():
             with open(os.path.join(folder, "model.toml"), "w", encoding="utf-8") as f:
                 f.write(text)

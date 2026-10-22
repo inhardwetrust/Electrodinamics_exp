@@ -982,8 +982,10 @@ UI, and the type is stored in `model.toml` next to the file.
 - The rest of `[view]` is the last display, restored on open, Reload and a
   KiCad re-import (to see at once what changed in a new export): the
   toolbar switches (edges, xray, ref_planes, mesh, materials, section,
-  flip), the plane (`plane` axis, `at` coordinate in mm) and the bodies
-  unticked in the tree (`hidden`). It is written a second after the last
+  flip), the plane (`plane` axis, `at` coordinate in mm), the bodies
+  unticked in the tree (`hidden`) and the camera (`camera_center`,
+  `camera_distance` in mm, `camera_rotation` 3x3 rows; every camera move
+  restarts the one-second timer). It is written a second after the last
   change and before another file is opened or the window closes, but never
   over a project file edited outside since it was read. It is not in the
   results' fingerprint.

@@ -25,6 +25,9 @@
 #   plane = "y"
 #   at = 25.9
 #   hidden = ["board"]
+#   camera_center = [24.0, 26.0, 1.5]     # mm, the pivot
+#   camera_distance = 30.0                # mm, the zoom (VisPy scale factor)
+#   camera_rotation = [1.0, 0.0, ...]     # 3x3 rotation, rows
 #
 #   [materials.FR4]     # the material library, see materials.py
 #   eps_r = 4.3 ...
@@ -61,7 +64,9 @@ from project.settings import SECTIONS, check_settings
 
 UP_AXES = ("x", "y", "z")
 VIEW_SWITCHES = ("edges", "xray", "ref_planes", "mesh", "materials", "section", "flip")
-VIEW_KEYS = ("up",) + VIEW_SWITCHES + ("plane", "at", "hidden")
+CAMERA_KEYS = {"camera_center": 3, "camera_rotation": 9}     # number lists and their lengths
+VIEW_KEYS = ("up",) + VIEW_SWITCHES + ("plane", "at", "hidden", "camera_center", "camera_distance",
+                                      "camera_rotation")
 
 
 class ProjectError(ValueError):
@@ -388,8 +393,14 @@ class Project:
         for key in VIEW_KEYS[1:]:
             if key in self.view:
                 value = self.view[key]
-                text = json.dumps(value, ensure_ascii=False) if key == "hidden" else _toml_value(value)
-                lines.append(f"{key} = {text}" + ("   # mm" if key == "at" else ""))
+                if key == "hidden":
+                    text = json.dumps(value, ensure_ascii=False)
+                elif key in CAMERA_KEYS:
+                    text = "[" + ", ".join(repr(float(v)) for v in value) + "]"
+                else:
+                    text = _toml_value(value)
+                unit = key in ("at", "camera_center", "camera_distance")
+                lines.append(f"{key} = {text}" + ("   # mm" if unit else ""))
         lines.append("")
 
         if self.hole_diameters:
@@ -484,6 +495,18 @@ def _parse_view(path, view):
     if "hidden" in view and not (isinstance(view["hidden"], list)
                                  and all(isinstance(n, str) for n in view["hidden"])):
         raise ProjectError(f"{where}: hidden must be a list of body names")
+    for key, length in CAMERA_KEYS.items():
+        if key in view:
+            value = view[key]
+            if not (isinstance(value, list) and len(value) == length
+                    and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in value)):
+                raise ProjectError(f"{where}: {key} must be a list of {length} numbers")
+            view[key] = [float(v) for v in value]
+    if "camera_distance" in view:
+        value = view["camera_distance"]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not value > 0:
+            raise ProjectError(f"{where}: camera_distance must be a number > 0, got {value!r}")
+        view["camera_distance"] = float(value)
     return view
 
 
