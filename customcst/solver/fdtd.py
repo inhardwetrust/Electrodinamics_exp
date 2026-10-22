@@ -53,8 +53,9 @@
 # f_max) / 2, its spectrum is 20 dB down at f_min and f_max.
 #
 # Lumped elements (discretize.DiscreteElement): R, L, C in series or in
-# parallel on a column of n edges; each edge carries the element scaled by
-# k = l_e / L (R, L times k, C divided by k), so the column sums to the
+# parallel on a path of n edges (a column, or a staircase along two axes:
+# one entry per axis); each edge carries the element scaled by
+# k = l_e / L (R, L times k, C divided by k), so the path sums to the
 # element. Edge voltage V = E l_e, current I along +axis, J = I / A_e.
 # The element is discretized with the trapezoidal rule (A-stable for any
 # R, L, C) as a companion model  I(n+1) = G V(n+1) + I_hist(n), and solved
@@ -237,35 +238,41 @@ class FdtdSolver:
         dt = self.dt
         self._elements = []
         for element in self.materials.elements:
-            edges = element.edges + self.pml
-            axis = element.axis
-            index = tuple(edges.T)
-            length = self.d[axis][edges[:, axis]]
-            area = self._dual_area(axis, edges)
-            k = length / element.length                    # share of the column
+            # A staircase has edges along two axes: one entry per axis.
+            for axis in np.unique(element.axes):
+                self._build_element(element, int(axis), dt)
 
-            e = {"name": element.name, "axis": axis, "index": index,
-                 "l": length, "area": area, "topology": element.topology,
-                 "cb": self.cb[axis][index].astype(np.float64)}
+    def _build_element(self, element, axis, dt):
+        """The entry of an element's edges along one axis."""
+        on_axis = element.axes == axis
+        edges = element.edges[on_axis] + self.pml
+        index = tuple(edges.T)
+        length = self.d[axis][edges[:, axis]]
+        area = self._dual_area(axis, edges)
+        k = length / element.length                    # share of the path
 
-            if element.topology == "parallel":
-                e["g_r"] = (1.0 / (element.r * k)) if element.r > 0 else np.zeros_like(k)
-                e["g_c"] = (2.0 * element.c / k / dt) if element.c > 0 else np.zeros_like(k)
-                e["g_l"] = (dt / (2.0 * element.l * k)) if element.l > 0 else np.zeros_like(k)
-                e["g"] = e["g_r"] + e["g_c"] + e["g_l"]
-            else:
-                z_r = element.r * k
-                z_l = (2.0 * element.l * k / dt) if element.l > 0 else np.zeros_like(k)
-                z_c = (dt / (2.0 * element.c / k)) if element.c > 0 else np.zeros_like(k)
-                z = z_r + z_l + z_c
-                if np.any(z <= 0):
-                    # R = L = C = 0 in series: a short -> PEC edges.
-                    self.ca[axis][index] = 0.0
-                    self.cb[axis][index] = 0.0
-                    continue
-                e.update(z_l=z_l, z_c=z_c, z=z, g=1.0 / z)
+        e = {"name": element.name, "axis": axis, "index": index, "sign": element.signs[on_axis],
+             "l": length, "area": area, "topology": element.topology,
+             "cb": self.cb[axis][index].astype(np.float64)}
 
-            self._elements.append(e)
+        if element.topology == "parallel":
+            e["g_r"] = (1.0 / (element.r * k)) if element.r > 0 else np.zeros_like(k)
+            e["g_c"] = (2.0 * element.c / k / dt) if element.c > 0 else np.zeros_like(k)
+            e["g_l"] = (dt / (2.0 * element.l * k)) if element.l > 0 else np.zeros_like(k)
+            e["g"] = e["g_r"] + e["g_c"] + e["g_l"]
+        else:
+            z_r = element.r * k
+            z_l = (2.0 * element.l * k / dt) if element.l > 0 else np.zeros_like(k)
+            z_c = (dt / (2.0 * element.c / k)) if element.c > 0 else np.zeros_like(k)
+            z = z_r + z_l + z_c
+            if np.any(z <= 0):
+                # R = L = C = 0 in series: a short -> PEC edges.
+                self.ca[axis][index] = 0.0
+                self.cb[axis][index] = 0.0
+                return
+            e.update(z_l=z_l, z_c=z_c, z=z, g=1.0 / z)
+
+        self._elements.append(e)
 
     def _reset_elements(self):
         for e in self._elements:
@@ -301,8 +308,15 @@ class FdtdSolver:
             field[e["index"]] = e1.astype(np.float32)
 
     def element_state(self):
-        """{element: (V, I)} now: total column voltage and mean current."""
-        return {e["name"]: (float(np.sum(e["v"])), float(np.mean(e["i"]))) for e in self._elements}
+        """{element: (V, I)} now: the voltage along its path (- to +) and the mean current."""
+        state = {}
+        for e in self._elements:
+            v, i = state.get(e["name"], ([], []))
+            v.append(e["sign"] * e["v"])
+            i.append(e["sign"] * e["i"])
+            state[e["name"]] = (v, i)
+        return {name: (float(np.sum(np.concatenate(v))), float(np.mean(np.concatenate(i))))
+                for name, (v, i) in state.items()}
 
     # =====================================================
     # Ports

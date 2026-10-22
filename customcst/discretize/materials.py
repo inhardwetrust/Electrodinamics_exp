@@ -55,6 +55,14 @@
 #     conductivity, so the effective tan_d scales as f_ref / f).
 #   - ports: the edges along the port axis whose midpoints lie in the gap.
 #     Both column ends must touch PEC edges, none of the column may be PEC.
+#   - lumped elements: the same column when the axis is along x, y or z.
+#     An axis slanted in a grid plane (a rotated 0402 on a board) gets a
+#     staircase of edges instead: from the node nearest the - end to the
+#     one nearest the + end, each step along whichever of the two axes
+#     keeps the step's midpoint nearer the axis line. Its edges whose
+#     midpoints project into the gap carry the element (the same rules as
+#     a column), each its share l_e / (path length). The path is longer
+#     than the gap (Manhattan), the element's value is exact.
 #   - waveguide ports: the grid plane of the port (a domain end) and the
 #     line's mode on it (solver/port_mode.py), found on the discretized
 #     materials, so it is the mode of the staircased line the FDTD sees.
@@ -90,17 +98,32 @@ class DiscretePort:
     resistance: float           # Ohm
     length: float               # m, sum of the edge lengths
 
+    @property
+    def axes(self):
+        return np.full(len(self.edges), self.axis)
+
+    @property
+    def ends(self):
+        """The two end nodes of the column [i, j, k]."""
+        first = self.edges[np.argmin(self.edges[:, self.axis])].copy()
+        last = self.edges[np.argmax(self.edges[:, self.axis])].copy()
+        last[self.axis] += 1
+        return first, last
+
 
 @dataclass
 class DiscreteElement:
     """
-    Lumped R, L, C on a column of E-edges (see solver/fdtd.py). Values in SI;
-    0 = that part is absent (series: shorted, parallel: open).
+    Lumped R, L, C on a path of E-edges (see solver/fdtd.py): a column, or
+    a staircase for a slanted axis. Values in SI; 0 = that part is absent
+    (series: shorted, parallel: open).
     """
     name: str
-    axis: int
-    edges: np.ndarray           # (n, 3)
-    length: float               # m
+    axes: np.ndarray            # (n,) each edge's direction
+    edges: np.ndarray           # (n, 3) in the E array of its axis, in path order from the - end
+    signs: np.ndarray           # (n,) +1: the path runs along +axis on that edge
+    length: float               # m, sum of the edge lengths
+    ends: tuple                 # the path's first and last node [i, j, k]
     topology: str               # "series" | "parallel"
     r: float                    # Ohm
     l: float                    # H
@@ -511,18 +534,108 @@ def _discretize_port(result, port, resistance, snap):
         result.ports.append(DiscretePort(port.name, axis, sign, edges, resistance, length))
 
 
+def _staircase(result, item, snap):
+    """
+    The edge path of a lumped element whose axis is slanted in a grid
+    plane (see the header): (axes, edges, signs, length, ends) or None (an
+    error is recorded).
+    """
+    lines = result.grid.lines
+    direction = item.plus - item.minus
+    size = np.linalg.norm(direction)
+    varying = [a for a in range(3) if abs(direction[a]) > 1e-9 * size]
+    if len(varying) == 3:
+        result.errors.append(f"{item.name}: the element axis must lie in a plane normal to x, y or z")
+        return None
+    fixed = next(a for a in range(3) if a not in varying)
+    i_fixed = int(np.argmin(np.abs(lines[fixed] - item.minus[fixed])))
+    if abs(lines[fixed][i_fixed] - item.minus[fixed]) > snap + 1e-12:
+        result.errors.append(f"{item.name}: the axis is not on a grid line ({AXES[fixed]})")
+        return None
+
+    def nearest(point):
+        node = [0, 0, 0]
+        node[fixed] = i_fixed
+        for a in varying:
+            node[a] = int(np.argmin(np.abs(lines[a] - point[a])))
+        return node
+
+    def position(node):
+        return np.array([lines[a][node[a]] for a in range(3)])
+
+    unit = direction / size
+
+    def off_line(point):
+        d = point - item.minus
+        return np.linalg.norm(d - np.dot(d, unit) * unit)
+
+    node, target = nearest(item.minus), nearest(item.plus)
+    path = []                               # (axis, edge [i, j, k], sign, midpoint)
+    while node != target:
+        best = None
+        for a in varying:
+            if node[a] == target[a]:
+                continue
+            sign = 1 if target[a] > node[a] else -1
+            step = list(node)
+            step[a] += sign
+            mid = 0.5 * (position(node) + position(step))
+            if best is None or off_line(mid) < best[0]:
+                edge = list(node)
+                edge[a] = min(node[a], step[a])
+                best = (off_line(mid), a, edge, sign, mid, step)
+        _, a, edge, sign, mid, node = best
+        path.append((a, edge, sign, mid))
+
+    t0, t1 = sorted(np.dot(p - item.minus, unit) for p in (item.gap_minus, item.gap_plus))
+    path = [p for p in path if t0 < np.dot(p[3] - item.minus, unit) < t1]
+    if not path:
+        result.errors.append(f"{item.name}: the gap is shorter than one cell")
+        return None
+    axes = np.array([a for a, _, _, _ in path])
+    edges = np.array([e for _, e, _, _ in path], dtype=np.int64)
+    signs = np.array([s for _, _, s, _ in path])
+    if any(result.pec[a][tuple(e)] for a, e in zip(axes, edges)):
+        result.errors.append(f"{item.name}: part of the element path is PEC (short circuit)")
+        return None
+
+    first = list(edges[0])
+    last = list(edges[-1])
+    last[axes[-1]] += 1
+    if signs[0] < 0:
+        first[axes[0]] += 1
+    if signs[-1] < 0:
+        last[axes[-1]] -= 1
+    for end, node in (("first", first), ("last", last)):
+        if not _node_on_metal(result.pec, node, result.grid.shape):
+            result.errors.append(f"{item.name}: the {end} end of the path does not touch PEC")
+            return None
+
+    length = float(sum(lines[a][e[a] + 1] - lines[a][e[a]] for a, e in zip(axes, edges)))
+    return axes, edges, signs, length, (np.array(first), np.array(last))
+
+
 def _discretize_element(result, element, values, snap):
-    column = _column(result, element, snap, "element")
-    if column is None:
-        return
-    axis, _, edges, length = column
+    direction = element.plus - element.minus
+    if np.count_nonzero(np.abs(direction) > 1e-9 * np.linalg.norm(direction)) == 1:
+        column = _column(result, element, snap, "element")
+        if column is None:
+            return
+        axis, sign, edges, length = column
+        port = DiscretePort(element.name, axis, sign, edges, 0.0, length)       # for its ends
+        path = (np.full(len(edges), axis), edges, np.full(len(edges), sign), length, port.ends)
+    else:
+        path = _staircase(result, element, snap)
+        if path is None:
+            return
+    axes, edges, signs, length, ends = path
     r, l, c = values["r"], values["l"] * 1e-9, values["c"] * 1e-12
     if values["topology"] == "series" and r == 0 and l == 0 and c == 0:
         result.warnings.append(f"{element.name}: series R = L = C = 0 is a plain short")
     if values["topology"] == "parallel" and r == 0 and l == 0 and c == 0:
         result.warnings.append(f"{element.name}: parallel R = L = C = 0 is an open circuit")
     result.elements.append(DiscreteElement(
-        element.name, axis, edges, length, values["topology"], r, l, c,
+        element.name, axes, edges, signs, length, ends, values["topology"], r, l, c,
     ))
 
 
@@ -546,9 +659,7 @@ def _find_shorts(result, min_step):
     hint = f"a gap narrower than the mesh resolves? (merge distance {min_step / 1e-3:.3g} mm, Mesh > min step)"
 
     for item in result.ports + result.elements:
-        first = item.edges[np.argmin(item.edges[:, item.axis])].copy()
-        last = item.edges[np.argmax(item.edges[:, item.axis])].copy()
-        last[item.axis] += 1
+        first, last = item.ends
         if piece[np.ravel_multi_index(tuple(first), nodes)] == piece[np.ravel_multi_index(tuple(last), nodes)]:
             what = "port" if item in result.ports else "element"
             result.shorts.append(f"{item.name}: both ends of the {what} are one piece of metal "

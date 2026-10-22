@@ -549,9 +549,8 @@ bigger one): `mesh/rectilinear.py` step 4, `Mesh > refine slanted metal`
 - Models with chamfers near the pin get refined too (08: 1.3 -> 1.9 M,
   the trace's taper at the SMA pin, feature 0.33 mm). A new setting
   changes every project's fingerprint: earlier runs show as outdated.
-- A lumped element must still lie along x, y or z: a rotated 0402 is an
-  error. A staircase of edges carrying shares of the element would do
-  it (next).
+- A lumped element on a slanted axis (a rotated 0402) sits on a staircase
+  of edges: see "Lumped elements".
 - `checks/check_slanted.py`: a 45 degree trace with 0.2 mm gaps is
   separate from the pour with the refinement and joined without; an
   axis-aligned one gets the same grid; a 0.5 um notch is not a feature.
@@ -796,6 +795,19 @@ across a gap between two PEC bodies, with no polarity.
   shared with the ports, and snaps the axis to the nearest grid line within
   the mesh min_step: an element drawn on top of 35 µm copper ends up on the
   merged copper plane. The result is a `DiscreteElement`.
+- **Slanted axis** (a 0402 rotated in the board plane): a staircase of
+  edges. From the grid node nearest the - end to the one nearest the +
+  end, each step goes along whichever of the axis's two grid axes keeps
+  the step's midpoint nearer the axis line; the steps whose midpoints
+  project into the gap carry the element, with the column's rules (none
+  PEC, both ends on metal). Each edge carries the share l_e / L of the
+  path length L (Manhattan, ~sqrt 2 x the gap at 45 degrees), so R, L, C
+  are exact in total; the current is not forced equal along the steps (a
+  corner can leak a little sideways). `DiscreteElement` has per-edge
+  `axes` and `signs` and its two `ends`; the solver keeps one entry per
+  axis. An axis along x, y or z keeps the plain column (bit-identical);
+  one slanted out of every grid plane is an error. Ports still need an
+  axis along x, y or z.
 - Both ends may lie on the same PEC body if the axis crosses a gap of it
   (a KiCad layer is one body with the trace and the pour; a slot feed);
   with no gap it is an error (shorted). The same holds for ports. On a

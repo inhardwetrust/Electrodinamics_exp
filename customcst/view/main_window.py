@@ -1354,6 +1354,17 @@ class MainWindow(QMainWindow):
                 ])
                 row.setData(0, Qt.UserRole, ("info", "mesh", None))
                 row.setForeground(1, QColor("#2a2"))
+            for element in m.elements:
+                axes = np.unique(element.axes)
+                along = AXES[axes[0]] if len(axes) == 1 else \
+                    " + ".join(f"{np.count_nonzero(element.axes == a)} {AXES[a]}" for a in axes) + " (staircase)"
+                row = QTreeWidgetItem(item, [
+                    f"{element.name} edges",
+                    (f"{len(element.edges)} along {along}" if len(axes) == 1 else along)
+                    + f", {element.length / MM:.3f}", "mm",
+                ])
+                row.setData(0, Qt.UserRole, ("info", "mesh", None))
+                row.setForeground(1, QColor("#2a2"))
             for port in m.waveports:
                 row = QTreeWidgetItem(item, [
                     f"{port.name} line",

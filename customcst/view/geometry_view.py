@@ -599,9 +599,7 @@ class GeometryView:
             is_element = np.zeros(pec.shape, dtype=bool)
             for items, mask in ((materials.ports, is_port), (materials.elements, is_element)):
                 for item in items:
-                    if item.axis != b:
-                        continue
-                    for e in item.edges:
+                    for e in item.edges[item.axes == b]:       # a staircase: its edges along b
                         if e[axis] == index:
                             mask[tuple(np.delete(e, axis))] = True
 

@@ -94,36 +94,22 @@ def abcd_12(s):
     return 50.0 * ((1 + s11) ** 2 - s21 ** 2) / (2 * s21)
 
 
-def main():
-    folder = tempfile.mkdtemp()
-    try:
-        path = os.path.join(folder, "gap.step")
-        write_step(path, [
-            ("gnd", box(-25, -15, 0, 25, 15, 0.035), None),
-            ("substrate", box(-25, -15, 0.035, 25, 15, 1.635), None),
-            ("line_a", box(-25, -1.5, 1.635, -0.5, 1.5, 1.67), None),
-            ("line_b", box(0.5, -1.5, 1.635, 25, 1.5, 1.67), None),
-            ("element", rod_x(-0.5, 0.5, 0, 1.67, 0.5), None),     # on top of the copper
-            ("port1", cone_z(-25, 0, 0, 1.67, 0.8, 0.5), None),
-            ("port2", cone_z(25, 0, 0, 1.67, 0.8, 0.5), None),
-        ])
+def calibrate(path):
+    """The runs on the model at `path` (bodies named as in TYPES) and the checks."""
+    runs = {
+        "short": {"topology": "series", "r": 0.001, "l": 0, "c": 0},
+        "open": {"topology": "parallel", "r": 0, "l": 0, "c": 0},
+        "R50": {"topology": "series", "r": 50, "l": 0, "c": 0},
+        "R100": {"topology": "series", "r": 100, "l": 0, "c": 0},
+        "C1p": {"topology": "series", "r": 0, "l": 0, "c": 1.0},
+        "L5n": {"topology": "series", "r": 0, "l": 5.0, "c": 0},
+    }
+    t = {name: abcd_12(simulate(path, values)) for name, values in runs.items()}
 
-        runs = {
-            "short": {"topology": "series", "r": 0.001, "l": 0, "c": 0},
-            "open": {"topology": "parallel", "r": 0, "l": 0, "c": 0},
-            "R50": {"topology": "series", "r": 50, "l": 0, "c": 0},
-            "R100": {"topology": "series", "r": 100, "l": 0, "c": 0},
-            "C1p": {"topology": "series", "r": 0, "l": 0, "c": 1.0},
-            "L5n": {"topology": "series", "r": 0, "l": 5.0, "c": 0},
-        }
-        t = {name: abcd_12(simulate(path, values)) for name, values in runs.items()}
-
-        extreme = [
-            simulate(path, {"topology": "series", "r": 0, "l": 0.001, "c": 0}),
-            simulate(path, {"topology": "parallel", "r": 0, "l": 0, "c": 1000.0}),
-        ]
-    finally:
-        shutil.rmtree(folder)
+    extreme = [
+        simulate(path, {"topology": "series", "r": 0, "l": 0.001, "c": 0}),
+        simulate(path, {"topology": "parallel", "r": 0, "l": 0, "c": 1000.0}),
+    ]
 
     a = t["R50"] - t["short"]
     b = t["open"] - t["short"]
@@ -159,6 +145,24 @@ def main():
     finite = all(np.all(np.isfinite(s[p])) and np.max(np.abs(s[p])) < 1.5
                  for s in extreme for p in s)
     check("stable with L = 1 pH and parallel C = 1 nF", finite)
+
+
+def main():
+    folder = tempfile.mkdtemp()
+    try:
+        path = os.path.join(folder, "gap.step")
+        write_step(path, [
+            ("gnd", box(-25, -15, 0, 25, 15, 0.035), None),
+            ("substrate", box(-25, -15, 0.035, 25, 15, 1.635), None),
+            ("line_a", box(-25, -1.5, 1.635, -0.5, 1.5, 1.67), None),
+            ("line_b", box(0.5, -1.5, 1.635, 25, 1.5, 1.67), None),
+            ("element", rod_x(-0.5, 0.5, 0, 1.67, 0.5), None),     # on top of the copper
+            ("port1", cone_z(-25, 0, 0, 1.67, 0.8, 0.5), None),
+            ("port2", cone_z(25, 0, 0, 1.67, 0.8, 0.5), None),
+        ])
+        calibrate(path)
+    finally:
+        shutil.rmtree(folder)
 
     print("FAILED: " + ", ".join(FAILED) if FAILED else "all checks passed")
     return 1 if FAILED else 0
