@@ -510,6 +510,52 @@ before running (default No). Not refused: a short can be meant (a shorted
 stub, a PIFA's short pin). `checks/check_kicad.py` (the bridged gap is
 reported, the resolved one is not).
 
+## Slanted metal (mesh refinement)
+
+A rectilinear grid gets lines only from faces normal to an axis. A trace
+at 45 degrees puts none, so its step is the wavelength's (1-3 mm on the
+first diagonal KiCad board, real_sim) and the staircase joined the trace
+to the pour across its 0.2 mm gaps: the whole top copper was one piece,
+the SMA's pin shorted. Other tools: CST's FIT keeps the hexahedral grid
+but cuts the cells by the true boundary (PBA, conformal); HFSS and CST's
+frequency solver use tetrahedra; openEMS staircases like we do and
+advises a fine mesh or axis-aligned routing.
+
+Here (path 1 of two; a conformal update like Dey-Mittra is the other,
+bigger one): `mesh/rectilinear.py` step 4, `Mesh > refine slanted metal`
+(on by default).
+- Each triangle of a planar conductor face not normal to an axis casts a
+  ray along its normal, out and in, against all conductor triangles
+  (Moller-Trumbore in numpy; ~300 rays x 40 k triangles on the real
+  board, under 1 s). Out is the gap, in the metal's width; the feature
+  is the shorter.
+- Not counted:
+  - hits on faces more than 45 degrees from facing the ray. A ray from a
+    triangle next to a corner of a polygonized pour outline hit the
+    corner's other wall a few um away;
+  - hits nearer than min_step: um notches of KiCad's polygons, not
+    resolvable anyway (a real gap that narrow shows as a short);
+  - triangles whose spread along their normal's main axis is under
+    min_step: KiCad's edges a hair off an axis are straight for the grid;
+  - curved faces: their extremes are fixpoints already.
+- Along each axis the face's normal has a component on, over its extent
+  +- the feature, the step is <= max(feature / cells_per_feature,
+  min_step). Regions with steps within 1.25x are united; they grade like
+  the intervals.
+- The real board at min step 0.05, 4 cells per feature: 1.8 M -> 6.1 M
+  cells, no shorts. The cost is the staircase's: 0.2 mm gaps want 0.05 mm
+  along x and y over the whole diagonal run. Axis-aligned routing keeps
+  the fine lines at the trace edges only.
+- Models with chamfers near the pin get refined too (08: 1.3 -> 1.9 M,
+  the trace's taper at the SMA pin, feature 0.33 mm). A new setting
+  changes every project's fingerprint: earlier runs show as outdated.
+- A lumped element must still lie along x, y or z: a rotated 0402 is an
+  error. A staircase of edges carrying shares of the element would do
+  it (next).
+- `checks/check_slanted.py`: a 45 degree trace with 0.2 mm gaps is
+  separate from the pour with the refinement and joined without; an
+  axis-aligned one gets the same grid; a 0.5 um notch is not a feature.
+
 ## Excited ports
 
 `[simulation] excite` is "all" (the default: one run per port, the full
@@ -835,8 +881,9 @@ switch to ray casting along the grid lines.
      face and the substrate thickness stays exact.
   3. Target step per interval: min(λ/N of the densest dielectric spanning
      it, interval / cells_per_feature).
-  4. Grading h(x) = min_j (h_j + (r-1) dist).
-  5. Lines are placed by inverting ∫dx/h.
+  4. Slanted metal faces: a step bound around them (see "Slanted metal").
+  5. Grading h(x) = min_j (h_j + (r-1) dist).
+  6. Lines are placed by inverting ∫dx/h.
 
   The result also reports the cells, the steps, dt (Courant), the merges
   and warnings.

@@ -16,6 +16,7 @@
 #   cells_per_feature = 4       # min cells across a gap between fixpoints
 #   max_ratio = 1.3             # max step ratio between neighbor cells
 #   min_step = 0.0              # mm, fixpoints closer than this merge; 0 = auto
+#   slanted = true              # refine the step around slanted metal faces
 
 from dataclasses import dataclass
 
@@ -79,6 +80,12 @@ SECTIONS = {
                 Param("cells_per_feature", "cells per feature", 4.0, minimum=1.0, maximum=50.0),
                 Param("max_ratio", "max step ratio", 1.3, minimum=1.05, maximum=3.0),
                 Param("min_step", "min step (0 = auto)", 0.0, minimum=0.0, unit="mm"),
+                Param("slanted", "refine slanted metal", True, boolean=True,
+                      tooltip="Slanted metal faces (a 45° trace, a rotated pad, a chamfer) put "
+                              "no grid lines: the step along x and y around them is set to "
+                              "(the gap or width there) / cells per feature, at least the min "
+                              "step. Off: such a trace may join the pour across its gap on "
+                              "the grid (see the shorts under Mesh)."),
             ),
             note="lines at body faces; step ≤ λ/N in each material",
         ),

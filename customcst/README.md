@@ -108,6 +108,7 @@ It shows which part of the feed is off 50 Ω.
   - lines at the body faces;
   - a step of at most λ/N in each material;
   - a number of cells per feature;
+  - a finer step around slanted metal (a 45° trace), sized by its gap;
   - a grading limit.
 - **Background discretization** with progress: staircase materials on the
   Yee grid, with PEC edges and a closure of thin metal.

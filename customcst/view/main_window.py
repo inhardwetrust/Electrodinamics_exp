@@ -1330,6 +1330,13 @@ class MainWindow(QMainWindow):
                     self._note_row(group, "mesh", f"{AXES[axis]}: {text} → {kept / MM:.4g} mm", "#888")
             group.setExpanded(False)
 
+        if mesh.slanted_faces:
+            finest = min(h for regions in mesh.slanted for _, _, h in regions)
+            row = self._note_row(item, "mesh", f"slanted metal: {mesh.slanted_faces} faces, narrowest "
+                                 f"{mesh.slanted_feature / MM:.3g} mm → step ≤ {finest / MM:.3g} mm", "#888")
+            row.setToolTip(0, "Slanted metal faces put no grid lines; the step around them follows "
+                              "the gap or width there (Mesh > refine slanted metal)")
+
         for warning in mesh.warnings:
             self._note_row(item, "mesh", f"⚠ {warning}", "#c80")
         self._z0_accuracy_rows(item)

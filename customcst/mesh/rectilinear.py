@@ -27,10 +27,22 @@
 #   3. Target step per interval between fixpoints:
 #        min( lambda(f_max) / N in the densest material spanning it,
 #             interval / cells_per_feature ),  but >= min_step.
-#   4. Grading: the step may grow by at most (max_ratio - 1) per unit
-#      distance from any interval with a smaller target:
+#   4. Slanted conductor faces (a 45 degree trace, a rotated pad) put no
+#      lines: on a grid sized for the straight parts their staircase
+#      joins a trace to the pour across a 0.2 mm gap. Each planar
+#      conductor face not normal to an axis (by more than min_step across
+#      a triangle: KiCad's edges a hair off an axis are straight) casts a ray from each of its
+#      triangles along its normal, out (the gap to the nearest conductor)
+#      and in (the metal's width), counting only faces within 45 degrees
+#      of facing it and hits beyond min_step; the shorter is the feature f. Along
+#      each axis its normal has a component on, over the face's extent
+#      +- f, the step is at most max(f / cells_per_feature, min_step).
+#      Curved faces (round pad ends, via holes) cast no rays: their
+#      extremes are fixpoints already.
+#   5. Grading: the step may grow by at most (max_ratio - 1) per unit
+#      distance from any interval (or slanted region) with a smaller target:
 #        h(x) = min_j ( h_j + (max_ratio - 1) * dist(x, interval_j) ).
-#   5. Lines: in each interval, n = ceil(integral dx / h) cells, placed by
+#   6. Lines: in each interval, n = ceil(integral dx / h) cells, placed by
 #      inverting that integral, so steps follow h(x) and hit both ends.
 #
 # Accuracy of narrow lines (z0_error_percent): a staircased conductor looks
@@ -58,6 +70,10 @@ PRIORITY_CONDUCTOR = 1
 PRIORITY_PORT = 0
 
 SAMPLES_PER_INTERVAL = 400
+RAY_CHUNK = 64              # rays per batch against all conductor triangles
+RAY_EPSILON = 1e-7          # m: hits nearer than this are the ray's own face
+RAY_FACING = math.cos(math.radians(45))     # a hit counts on a face within 45 deg of facing the ray
+SLANTED_BUCKET = 1.25       # slanted regions with steps within this ratio are united
 
 ACCURATE_CELLS_PER_FEATURE = 8      # below: the Z0 accuracy notice
 Z0_ERROR = ((4, 7.0), (6, 3.0), (8, 1.5), (12, 1.1), (24, 0.4), (48, 0.0))   # (cells, % low)
@@ -103,6 +119,9 @@ class MeshResult:
     warnings: list = field(default_factory=list)
     error: str = ""
     min_step: float = 0.0                           # merge distance actually used (m)
+    slanted: list = field(default_factory=list)     # per axis: [(lo, hi, step m)] refined regions
+    slanted_faces: int = 0                          # slanted conductor triangles that refine
+    slanted_feature: float = 0.0                    # their narrowest feature (m)
 
     @property
     def ok(self):
@@ -159,6 +178,10 @@ def build_grid(geometry, project, ports=None, waveports=None, vias=()):
     result.min_step = min_step
 
     valid_ports = [p for p in (ports or {}).values() if p.ok]
+    result.slanted = [[], [], []]
+    if mesh["slanted"]:
+        _slanted(result, [b for b, n in materials if n is None], mesh["cells_per_feature"], min_step,
+                 C0 / f_max / n_per_lambda)
 
     lines = []
     for axis in range(3):
@@ -171,7 +194,7 @@ def build_grid(geometry, project, ports=None, waveports=None, vias=()):
             axis, result.fixpoints[axis], materials, f_max, n_per_lambda,
             mesh["cells_per_feature"], min_step,
         )
-        lines.append(_place_lines(result.fixpoints[axis], targets, mesh["max_ratio"]))
+        lines.append(_place_lines(result.fixpoints[axis], targets, mesh["max_ratio"], result.slanted[axis]))
 
     result.grid = RectilinearGrid(tuple(lines))
     return result
@@ -240,6 +263,107 @@ def _merge(points, min_step):
 
 
 # =====================================================
+# Slanted conductor faces
+# =====================================================
+
+def _slanted(result, conductors, cells_per_feature, min_step, h_air):
+    """
+    Fills result.slanted: per axis the regions around slanted planar
+    conductor faces and their step (see the header, step 4). Regions whose
+    step is no finer than the air wavelength's are dropped.
+    """
+    solids = [p for body in conductors for p in (body.pieces or [body])]
+    if not solids:
+        return
+    tri = np.concatenate([p.vertices[p.triangles] for p in solids])          # (T, 3, 3) targets
+    faces = np.concatenate([p.vertices[p.triangles][_slanted_mask(p, min_step)] for p in solids])
+    if not len(faces):
+        return
+    normal = np.cross(faces[:, 1] - faces[:, 0], faces[:, 2] - faces[:, 0])
+    normal /= np.linalg.norm(normal, axis=1)[:, None]
+    origin = faces.mean(axis=1)
+
+    # A feature under the min step is not resolved (as fixpoints merge):
+    # um-sized notches of a polygonized pour outline. A real gap that
+    # narrow shows up as a short on the mesh.
+    out, inward = _ray_hits(origin, normal, tri), _ray_hits(origin, -normal, tri)
+    feature = np.minimum(np.where(out >= min_step, out, math.inf), np.where(inward >= min_step, inward, math.inf))
+    step = np.maximum(feature / cells_per_feature, min_step)
+    keep = step < h_air
+    result.slanted_faces = int(keep.sum())
+    result.slanted_feature = float(feature[keep].min()) if keep.any() else 0.0
+
+    for axis in range(3):
+        spans = keep & (np.abs(normal[:, axis]) > 1e-6)
+        if spans.any():
+            lo = faces[spans, :, axis].min(axis=1) - feature[spans]
+            hi = faces[spans, :, axis].max(axis=1) + feature[spans]
+            result.slanted[axis] = _unite(lo, hi, step[spans])
+
+
+def _slanted_mask(body, min_step):
+    """
+    Triangles of a body on planar CAD faces normal to no axis. A triangle
+    whose spread along its normal's main axis is under min_step is
+    straight for the grid (KiCad's polygon edges a hair off an axis).
+    """
+    v = body.vertices[body.triangles]
+    normal = np.cross(v[:, 1] - v[:, 0], v[:, 2] - v[:, 0])
+    length = np.linalg.norm(normal, axis=1)
+    flat = (length > 0) & (body.planar if body.planar is not None else True)
+    main = np.argmax(np.abs(normal), axis=1)
+    spread = np.ptp(v[np.arange(len(v)), :, main], axis=1)
+    return flat & (spread >= min_step)
+
+
+def _ray_hits(origins, directions, tri):
+    """
+    Distance along each ray to the nearest triangle (Moller-Trumbore) that
+    faces along the ray within 45 degrees (an opposite wall, a neighbor's
+    wall), inf if none. Without that, a ray from a triangle next to a
+    corner of a polygonized pour outline hits the corner's other wall a
+    few um away.
+    """
+    v0 = tri[:, 0]
+    e1, e2 = tri[:, 1] - v0, tri[:, 2] - v0
+    facing = np.cross(e1, e2)
+    facing /= np.maximum(np.linalg.norm(facing, axis=1), 1e-300)[:, None]
+    out = np.full(len(origins), math.inf)
+    for start in range(0, len(origins), RAY_CHUNK):
+        o = origins[start:start + RAY_CHUNK]
+        d = directions[start:start + RAY_CHUNK]
+        p = np.cross(d[:, None], e2[None])                                  # (R, T, 3)
+        det = np.einsum("rtk,tk->rt", p, e1)
+        ok = np.abs(det) > 1e-30
+        inv = np.where(ok, 1.0 / np.where(ok, det, 1.0), 0.0)
+        s = o[:, None] - v0[None]
+        u = np.einsum("rtk,rtk->rt", s, p) * inv
+        q = np.cross(s, e1[None])
+        w = np.einsum("rtk,rk->rt", q, d) * inv
+        t = np.einsum("rtk,tk->rt", q, e2) * inv
+        parallel = np.abs(d @ facing.T) >= RAY_FACING
+        hit = ok & parallel & (u >= 0) & (w >= 0) & (u + w <= 1) & (t > RAY_EPSILON)
+        out[start:start + RAY_CHUNK] = np.where(hit, t, math.inf).min(axis=1)
+    return out
+
+
+def _unite(lo, hi, step):
+    """[(lo, hi, step)]: overlapping regions with steps within SLANTED_BUCKET united (the finest step)."""
+    regions = []
+    bucket = np.floor(np.log(step) / math.log(SLANTED_BUCKET))
+    for b in np.unique(bucket):
+        sel = bucket == b
+        h = float(step[sel].min())
+        order = np.argsort(lo[sel])
+        for a, z in zip(lo[sel][order], hi[sel][order]):
+            if regions and regions[-1][2] == h and a <= regions[-1][1]:
+                regions[-1][1] = max(regions[-1][1], z)
+            else:
+                regions.append([float(a), float(z), h])
+    return [tuple(r) for r in regions]
+
+
+# =====================================================
 # Steps
 # =====================================================
 
@@ -261,14 +385,18 @@ def _interval_targets(axis, fixpoints, materials, f_max, n_per_lambda, cells_per
     return np.array(targets)
 
 
-def _place_lines(fixpoints, targets, max_ratio):
+def _place_lines(fixpoints, targets, max_ratio, slanted=()):
     growth = max_ratio - 1.0
     a_all, b_all = fixpoints[:-1], fixpoints[1:]
+    # The slanted regions grade like intervals.
+    extra = np.array(slanted, dtype=float).reshape(-1, 3)
+    a_h, b_h = np.concatenate((a_all, extra[:, 0])), np.concatenate((b_all, extra[:, 1]))
+    h_all = np.concatenate((targets, extra[:, 2]))
 
     def h_of(x):
         # Distance from each x to each interval (0 inside it).
-        d = np.maximum(0.0, np.maximum(a_all[None] - x[:, None], x[:, None] - b_all[None]))
-        return np.min(targets[None] + growth * d, axis=1)
+        d = np.maximum(0.0, np.maximum(a_h[None] - x[:, None], x[:, None] - b_h[None]))
+        return np.min(h_all[None] + growth * d, axis=1)
 
     lines = [fixpoints[0]]
     for a, b in zip(a_all, b_all):
