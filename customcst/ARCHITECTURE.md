@@ -433,9 +433,18 @@ CST's 2D port solver or a TDR picture.
 - Model 08 showed with it: pin over the board 50 Ohm, the 1 -> 0.3 mm
   taper over the L2 window 60-70 Ohm, the 0.3 mm line 48 Ohm (the grid
   put one gap at 0.2 instead of 0.25 mm), the model's coax 46.2 Ohm.
+- Z₀ convergence at the plane (arrow menu): the same plane on grids of its
+  own, cells per feature 4, 8, 16 (32 if 16 has not converged), the merge
+  distance scaled as 1 / level; each is the project's grid at that setting
+  cut to a two-cell slab around the plane, so the 3D grid is untouched and
+  only the plane is discretized (~3 s on the SMA board). The answer: the
+  mean of the last two levels +- half their difference, converged within
+  1 % (the staircase converges unevenly). It found the 0.3 mm trace of
+  the KiCad test board at 54 Ohm where the 3D grid (4) saw 51.7, and the
+  0.35 mm one at 49.5 (seen as 47.2).
 - `check_line_profile`: coax in a wider block (the fallback), Z0 within
   1.5 % of 60/sqrt(eps) ln(D/d), eps_eff, no-signal sections, one plane
-  = the profile.
+  = the profile; convergence within 1 % of the analytic value.
 
 ## Solver speed (numba kernels)
 

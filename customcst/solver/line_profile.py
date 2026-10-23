@@ -14,12 +14,28 @@
 #     impedance (that is the 3D run's Z in);
 #   - a plane with no signal, or with several (a lumped element, a pad
 #     beside the pin), has no Z0: NaN and the reason.
+#
+# Convergence (z0_convergence): the same plane on its own grids, finer and
+# finer (cells per feature 4, 8, 16, the merge distance scaled with them;
+# 32 only if 16 has not converged: its plane has ~4x the nodes of 16 and
+# took most of the time), without touching the 3D grid. Each grid is the
+# project's grid at that setting, cut to a slab of two cells around the
+# plane, so only the plane is discretized. The staircase converges
+# unevenly (a line's edges fall on the grid lines differently at each
+# level), so the answer is the mean of the last two levels, +- half their
+# difference; converged when that is within 1 %. On the KiCad boards the
+# 3D default (4) read a 0.3 mm trace as 51.7 Ohm, converged 54.
 
-from dataclasses import dataclass, field
+import copy
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
+from mesh.rectilinear import RectilinearGrid, build_grid
 from solver.port_mode import solve_port_mode
+
+CONVERGENCE_LEVELS = (4, 8, 16, 32)     # cells per feature
+CONVERGED = 0.01                        # relative half difference of the last two levels
 
 
 @dataclass
@@ -113,3 +129,65 @@ def impedance_profile(materials, axis, bounds, progress=None):
         if progress is not None and progress(n + 1, len(indices)) is False:
             break
     return profile
+
+
+@dataclass
+class Level:
+    cells_per_feature: float
+    min_step: float                 # m, the merge distance used
+    section: Section
+    nodes: int                      # nodes on the plane
+
+
+@dataclass
+class Convergence:
+    axis: int
+    coordinate: float               # m
+    levels: list = field(default_factory=list)
+
+    @property
+    def estimate(self):
+        """(Z0, +- Ohm) from the last two levels with a Z0, or None."""
+        z = [lv.section.z0 for lv in self.levels if np.isfinite(lv.section.z0)]
+        if len(z) < 2:
+            return None
+        return 0.5 * (z[-1] + z[-2]), 0.5 * abs(z[-1] - z[-2])
+
+    @property
+    def converged(self):
+        e = self.estimate
+        return e is not None and e[1] <= CONVERGED * e[0]
+
+
+def z0_convergence(geometry, project, axis, coordinate, min_step, cells_per_feature,
+                   waveports=None, vias=(), levels=CONVERGENCE_LEVELS, progress=None):
+    """
+    Z0 at the plane normal to `axis` at `coordinate` (m) on grids of each
+    level. min_step / cells_per_feature: the project's (its merge distance
+    in m as the 3D grid used it); the merge distance scales as 1 / level.
+    progress(done, total) after each level; returning False stops.
+    """
+    from discretize.materials import discretize      # discretize imports solver code
+    result = Convergence(axis, float(coordinate))
+    for n, level in enumerate(levels):
+        trial = copy.copy(project)
+        trial.settings = {name: dict(values) for name, values in project.settings.items()}
+        step = min_step * cells_per_feature / level
+        trial.settings["mesh"]["cells_per_feature"] = float(level)
+        trial.settings["mesh"]["min_step"] = step / 1e-3
+        mesh = build_grid(geometry, trial, {}, waveports, vias)
+        if not mesh.ok:
+            result.levels.append(Level(level, step, Section(float(coordinate), error=mesh.error), 0))
+            break
+        lines = list(mesh.grid.lines)
+        lines[axis] = np.array([coordinate - step, coordinate, coordinate + step])
+        slab = replace(mesh, grid=RectilinearGrid(tuple(lines)))
+        materials = discretize(slab, geometry, trial, vias=vias)
+        section = line_impedance(materials, axis, 1, geometry.bounds)
+        u, v = [len(lines[a]) for a in range(3) if a != axis]
+        result.levels.append(Level(level, step, section, u * v))
+        if progress is not None and progress(n + 1, len(levels)) is False:
+            break
+        if len(result.levels) >= 3 and result.converged:
+            break
+    return result

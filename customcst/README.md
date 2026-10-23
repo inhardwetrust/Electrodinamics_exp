@@ -132,6 +132,8 @@ It shows which part of the feed is off 50 Ω.
 - **Line impedance tools**:
   - Z0 at any grid plane;
   - a Z0 profile along an axis;
+  - Z0 convergence at a plane: the plane alone on finer and finer grids,
+    the converged value and how far the current 3D grid is from it;
   - an accuracy note for narrow gaps.
 - **3D view**:
   - CAD-style trackball navigation;

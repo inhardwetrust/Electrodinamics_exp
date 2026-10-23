@@ -31,7 +31,7 @@ from discretize.materials import discretize                              # noqa:
 from geometry.step_io import read_step, write_step                       # noqa: E402
 from mesh.rectilinear import build_grid                                  # noqa: E402
 from project.project_file import Project                                 # noqa: E402
-from solver.line_profile import impedance_profile, line_impedance        # noqa: E402
+from solver.line_profile import impedance_profile, line_impedance, z0_convergence  # noqa: E402
 
 FAILED = []
 MM = 1e-3
@@ -91,6 +91,18 @@ def main():
         one = line_impedance(m, 0, index, g.bounds)
         check("line_impedance at one grid line = the profile there", abs(one.z0 - profile.sections[k].z0) < 1e-9,
               f"{one.z0:.3f} Ω")
+
+        x_mid = profile.sections[k].coordinate
+        conv = z0_convergence(g, project, 0, x_mid, mesh.min_step, 8)
+        z_levels = [lv.section.z0 for lv in conv.levels]
+        check("convergence: levels 4, 8, 16 (32 only if needed), each with its own min step",
+              [lv.cells_per_feature for lv in conv.levels][:3] == [4, 8, 16]
+              and abs(conv.levels[1].min_step - mesh.min_step) < 1e-12,
+              " ".join(f"{z:.2f}" for z in z_levels))
+        z, spread = conv.estimate
+        check(f"convergence: estimate = {ideal:.1f} Ω within 1 %, converged",
+              conv.converged and abs(z / ideal - 1) < 0.01, f"{z:.2f} ± {spread:.2f} Ω")
+        check("convergence leaves the 3D grid alone", m.grid.lines[0].size == mesh.grid.lines[0].size)
     finally:
         shutil.rmtree(folder)
 

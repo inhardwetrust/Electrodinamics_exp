@@ -41,7 +41,7 @@ from project.settings import EXCITE_ALL, accuracy_db
 from solver.result_file import (delete_result, fingerprint, format_duration, list_results,
                                 rename_result, save_result)
 from view.sim_runner import SimulationRunner
-from solver.line_profile import impedance_profile, line_impedance
+from solver.line_profile import CONVERGED, impedance_profile, line_impedance, z0_convergence
 
 MM = 1e-3
 AXES = "xyz"
@@ -232,6 +232,7 @@ class MainWindow(QMainWindow):
         z0_menu = QMenu(self)
         z0_menu.addAction("Z₀ at the plane", self._z0_here)
         z0_menu.addAction("Z₀ profile along the axis…", self._z0_profile)
+        z0_menu.addAction("Z₀ convergence at the plane…", self._z0_convergence)
         self.z0_button.setMenu(z0_menu)
         bar.addWidget(self.z0_button)
 
@@ -1168,6 +1169,55 @@ class MainWindow(QMainWindow):
             self.profile_window.set_marker(self._mesh_coordinate)
         self.profile_window.show()
         self.profile_window.raise_()
+
+    def _z0_convergence(self):
+        """Z0 at the plane on finer and finer grids of its own (the 3D grid is not touched)."""
+        if self.mesh is None or not self.mesh.ok or self.geometry is None:
+            self.statusBar().showMessage("Z0 convergence: no mesh yet", 5000)
+            return
+        axis = self.mesh_axis.currentIndex()
+        coordinate = float(self.mesh.grid.lines[axis][self._grid_index()])
+        where = f"{AXES[axis]} = {coordinate / MM:.3f} mm"
+
+        def progress(done, total):
+            self.statusBar().showMessage(f"Z0 convergence at {where}: level {done} done")
+            QApplication.processEvents()
+
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            result = z0_convergence(self.geometry, self.project, axis, coordinate, self.mesh.min_step,
+                                    self.project.settings["mesh"]["cells_per_feature"],
+                                    self.waveports, self.via_bodies, progress=progress)
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.statusBar().clearMessage()
+
+        rows = "".join(
+            f"<tr><td align=right>{lv.cells_per_feature:g}</td><td align=right>{lv.min_step / MM:.4f}</td>"
+            f"<td align=right>{lv.nodes:,}</td>"
+            + (f"<td align=right>{lv.section.z0:.2f}</td><td align=right>{lv.section.eps_eff:.3f}</td>"
+               if not lv.section.error else f"<td colspan=2>{lv.section.error}</td>") + "</tr>"
+            for lv in result.levels)
+        estimate = result.estimate
+        if estimate is None:
+            verdict = "No Z0 here (see the table)."
+        else:
+            z, spread = estimate
+            state = ("converged" if result.converged
+                     else f"<b>not converged</b> (more than {CONVERGED:.0%} between the last two)")
+            verdict = f"Z0 = <b>{z:.1f} ± {spread:.1f} Ω</b>, {state}."
+            own = self.project.settings["mesh"]["cells_per_feature"]
+            same = [lv for lv in result.levels if lv.cells_per_feature == own and not lv.section.error]
+            if same:
+                verdict += (f" The 3D grid now (cells per feature {own:g}) sees the line as "
+                            f"{same[0].section.z0:.1f} Ω.")
+        QMessageBox.information(
+            self, "Z0 convergence",
+            f"<p>Z0 at {where} on grids of its own (only this plane, the 3D grid is unchanged):</p>"
+            "<table cellspacing=0 cellpadding=3 border=1>"
+            "<tr><th>cells per feature</th><th>min step, mm</th><th>nodes</th><th>Z0, Ω</th>"
+            "<th>eps_eff</th></tr>" + rows + "</table>"
+            f"<p>{verdict}</p>")
 
     def _profile_picked(self, coordinate):
         """The profile's marker moved: put the plane there (and make it visible)."""
