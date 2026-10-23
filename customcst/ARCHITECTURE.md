@@ -421,7 +421,8 @@ CST's 2D port solver or a TDR picture.
   menu: the profile along the plane's axis, every grid line inside the
   model (~2 s for 90 sections of the SMA + 4-layer board), in a tool
   window: Z0 curve, a 50 Ohm guide, a marker tied to the mesh slider both
-  ways (the wheel over the plot moves the 3D plane).
+  ways (the wheel over the plot moves the 3D plane). Each axis's profile
+  is kept until the mesh changes: reopening the window does not recompute.
 - The model's extent on the plane picks the conductors: what reaches its
   side is ground, the one other conductor is the signal. Where nothing
   reaches the side (a connector's shell beyond the board), the metal's own

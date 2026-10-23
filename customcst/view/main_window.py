@@ -88,6 +88,7 @@ class MainWindow(QMainWindow):
         self.mesh = None            # MeshResult
         self.materials = None       # MaterialGrid (solver's view)
         self._nets = None           # (materials, pec_nets of it) for the Z0 tools
+        self._profiles = None       # (materials, {axis: Profile}): Z0 profiles of this mesh
         self._mesh_coordinate = None    # where the mesh plane is (m)
         self.profile_window = None      # Z0 profile (ProfileWindow), made on first use
         self._mesh_pool = ThreadPoolExecutor(max_workers=1)    # background discretization
@@ -937,6 +938,7 @@ class MainWindow(QMainWindow):
         self.mesh = (build_grid(self.geometry, self.project, columns, self.waveports, self.via_bodies)
                      if self.project else None)
         self.materials = None
+        self._nets = self._profiles = None              # of the old mesh: free them
         self._center_slider = self._center_slider or center_slider
         if self.mesh is not None and self.mesh.ok:
             self._start_discretize()
@@ -1162,12 +1164,18 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Z0 profile along {AXES[axis]}: section {done} / {total}")
             QApplication.processEvents()
 
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            profile = impedance_profile(self.materials, axis, self.geometry.bounds, progress,
-                                        self._pec_nets())
-        finally:
-            QApplication.restoreOverrideCursor()
+        # A profile depends only on the mesh: kept until the materials change.
+        if self._profiles is None or self._profiles[0] is not self.materials:
+            self._profiles = (self.materials, {})
+        profile = self._profiles[1].get(axis)
+        if profile is None:
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                profile = impedance_profile(self.materials, axis, self.geometry.bounds, progress,
+                                            self._pec_nets())
+            finally:
+                QApplication.restoreOverrideCursor()
+            self._profiles[1][axis] = profile
         self.statusBar().showMessage(f"Z0 profile along {AXES[axis]}: {len(profile.sections)} sections", 5000)
         if self.profile_window is None:
             self.profile_window = ProfileWindow(self)
