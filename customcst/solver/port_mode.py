@@ -34,7 +34,14 @@
 #     the Poynting flux and S12 != S21 by ~0.4 dB. The plane's edge is a
 #     natural boundary (the padding to the absorber);
 #   - a circle port (coax) is solved inside the circle only (the shield
-#     closes it; nodes outside are left out).
+#     closes it; nodes outside are left out);
+#   - nets (the Z0 profile, solver/line_profile.py): the 3D net of each
+#     node, so what is joined out of the plane counts too. A conductor on a
+#     ground's net is ground (a pad tied to the pour beyond the plane, a
+#     paddle on its vias); with `driven` (the nets at a port, an element or
+#     a wave port), the signal is the conductor on a driven net and the
+#     other ones float (unconnected pads beside the line). Several
+#     conductors of the one signal net are all at 1 V.
 # Results (per unit length, for 1 V):
 #   C' = eps0 sum g (dphi)^2,  C0' the same with eps_r = 1,
 #   Z0 = 1 / (c0 sqrt(C' C0')),  eps_eff = C' / C0',
@@ -91,13 +98,15 @@ class _Edges:
     pec: np.ndarray
 
 
-def solve_port_mode(materials, axis, index, region=None, circle=None):
+def solve_port_mode(materials, axis, index, region=None, circle=None, nets=None, driven=frozenset()):
     """
     region: ((u0, u1), (v0, v1)) in meters on the plane (u, v = the other
     two axes in increasing order), the port face's extent: it picks the
     conductors, the mode is solved on the whole plane; or
     circle: (center_u, center_v, radius) in meters, solved inside it only;
     None = the whole plane, ground = conductors on the plane's edge.
+    nets: (nu+1, nv+1) int, each node's 3D net (-1: none); driven: the
+    nets with a source or a load on them (see the header).
     """
     lines = materials.grid.lines
     u_axis, v_axis = [a for a in range(3) if a != axis]
@@ -170,7 +179,24 @@ def solve_port_mode(materials, axis, index, region=None, circle=None):
     if not ground:
         mode.errors.append("no conductor touches the port border (no ground / outer conductor)")
         return mode
-    if len(signal) != 1:
+    joined = []
+    if nets is not None:
+        net = _conductor_nets(conductor, on_metal, nets[inside])
+        ground_nets = {net[c] for c in ground} - {-1}
+        joined = [c for c in net if c not in ground and net[c] in ground_nets]
+        found = [c for c in signal if c not in joined]
+        shorted = [c for c in signal if c in joined and net[c] in driven]    # a driven line on the ground
+        signal = [c for c in found if net[c] in driven] if driven else found
+        if not signal:
+            mode.errors.append(
+                "no signal conductor: the metal here is joined to the ground elsewhere in the model"
+                if shorted or not found else "no signal conductor: no port or element is on the metal here")
+            return mode
+        if len({net[c] for c in signal}) > 1:
+            mode.errors.append(f"{len({net[c] for c in signal})} separate signal conductors "
+                               "(multi-conductor ports not supported yet)")
+            return mode
+    elif len(signal) != 1:
         mode.errors.append(
             "no signal conductor inside the port: every conductor touches its border (make the "
             "port larger than the signal trace, with the air around it)" if not signal else
@@ -178,9 +204,8 @@ def solve_port_mode(materials, axis, index, region=None, circle=None):
         )
         return mode
 
-    signal_pieces, counts = np.unique(piece[on_metal & (conductor == signal[0])], return_counts=True)
-    hot_piece = signal_pieces[np.argmax(counts)]
-    grounded_pieces = set(piece[border])
+    hot_pieces = {_largest_piece(piece, on_metal & (conductor == c)) for c in signal}
+    grounded_pieces = set(piece[border]) | {_largest_piece(piece, on_metal & (conductor == c)) for c in joined}
 
     # Unknowns: one per metal piece, one per free node.
     supernode = np.where(on_metal, piece, -1)
@@ -194,12 +219,12 @@ def solve_port_mode(materials, axis, index, region=None, circle=None):
     for k, p in enumerate(ids):
         if p in grounded_pieces:
             fixed[k] = True
-        elif p == hot_piece:
+        elif p in hot_pieces:
             fixed[k] = True
             value[k] = 1.0
 
     mode.hot = np.zeros(uu.shape, dtype=bool)
-    mode.hot[inside] = on_metal & (piece == hot_piece)
+    mode.hot[inside] = on_metal & np.isin(piece, list(hot_pieces))
     mode.grounded = np.zeros(uu.shape, dtype=bool)
     mode.grounded[inside] = on_metal & np.isin(piece, list(grounded_pieces))
 
@@ -240,6 +265,25 @@ def _solve(a, b, g, active, n, fixed, value):
     phi[free_nodes] = spsolve(a_ff, rhs)
     energy = float(np.sum(w * (phi[a] - phi[b]) ** 2))
     return phi, EPS0 * energy
+
+
+def _largest_piece(piece, nodes):
+    pieces, counts = np.unique(piece[nodes], return_counts=True)
+    return pieces[np.argmax(counts)]
+
+
+def _conductor_nets(conductor, on_metal, nets):
+    """{conductor: its 3D net}: the most common net of its nodes (-1: none)."""
+    result = {}
+    for c in np.unique(conductor[on_metal]):
+        labels = nets[on_metal & (conductor == c)]
+        labels = labels[labels >= 0]
+        if len(labels):
+            values, counts = np.unique(labels, return_counts=True)
+            result[int(c)] = int(values[np.argmax(counts)])
+        else:
+            result[int(c)] = -1
+    return result
 
 
 def _dual(d):

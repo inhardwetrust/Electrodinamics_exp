@@ -41,7 +41,7 @@ from project.settings import EXCITE_ALL, accuracy_db
 from solver.result_file import (delete_result, fingerprint, format_duration, list_results,
                                 rename_result, save_result)
 from view.sim_runner import SimulationRunner
-from solver.line_profile import CONVERGED, impedance_profile, line_impedance, z0_convergence
+from solver.line_profile import CONVERGED, impedance_profile, line_impedance, pec_nets, z0_convergence
 
 MM = 1e-3
 AXES = "xyz"
@@ -87,6 +87,7 @@ class MainWindow(QMainWindow):
         self.via_bodies = []        # PEC cylinders of the holes assigned as vias
         self.mesh = None            # MeshResult
         self.materials = None       # MaterialGrid (solver's view)
+        self._nets = None           # (materials, pec_nets of it) for the Z0 tools
         self._mesh_coordinate = None    # where the mesh plane is (m)
         self.profile_window = None      # Z0 profile (ProfileWindow), made on first use
         self._mesh_pool = ThreadPoolExecutor(max_workers=1)    # background discretization
@@ -1135,11 +1136,17 @@ class MainWindow(QMainWindow):
             return False
         return True
 
+    def _pec_nets(self):
+        """The 3D nets of the current materials (found once per mesh)."""
+        if self._nets is None or self._nets[0] is not self.materials:
+            self._nets = (self.materials, pec_nets(self.materials))
+        return self._nets[1]
+
     def _z0_here(self):
         if not self._z0_ready():
             return
         axis = self.mesh_axis.currentIndex()
-        s = line_impedance(self.materials, axis, self._grid_index(), self.geometry.bounds)
+        s = line_impedance(self.materials, axis, self._grid_index(), self.geometry.bounds, self._pec_nets())
         where = f"{AXES[axis]} = {s.coordinate / MM:.3f} mm"
         note = self._z0_note()
         self.statusBar().showMessage(
@@ -1157,7 +1164,8 @@ class MainWindow(QMainWindow):
 
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            profile = impedance_profile(self.materials, axis, self.geometry.bounds, progress)
+            profile = impedance_profile(self.materials, axis, self.geometry.bounds, progress,
+                                        self._pec_nets())
         finally:
             QApplication.restoreOverrideCursor()
         self.statusBar().showMessage(f"Z0 profile along {AXES[axis]}: {len(profile.sections)} sections", 5000)
@@ -1187,7 +1195,8 @@ class MainWindow(QMainWindow):
         try:
             result = z0_convergence(self.geometry, self.project, axis, coordinate, self.mesh.min_step,
                                     self.project.settings["mesh"]["cells_per_feature"],
-                                    self.waveports, self.via_bodies, progress=progress)
+                                    self.waveports, self.via_bodies, progress=progress,
+                                    nets=self._pec_nets() if self.materials is not None else None)
         finally:
             QApplication.restoreOverrideCursor()
         self.statusBar().clearMessage()

@@ -426,6 +426,16 @@ CST's 2D port solver or a TDR picture.
   side is ground, the one other conductor is the signal. Where nothing
   reaches the side (a connector's shell beyond the board), the metal's own
   extent on the plane is used instead.
+- What joins out of the plane counts too (`pec_nets`: the 3D pieces of
+  metal, found once per mesh): a conductor tied to a ground elsewhere (a
+  GND pin to the pour, a chip's paddle on its vias) is ground; the signal
+  is the conductor a port, an element or a wave port is on, other ones
+  float (zero net charge: a chip's unconnected pins beside the signal
+  pin). Without it a section through a chip footprint had 2-4 "signal"
+  conductors and no Z0. With no port in the model the single other
+  conductor is the signal, as before. A driven line joined to the ground
+  elsewhere (a short) has no signal, with that reason. Convergence slabs
+  take the nets of the 3D grid's nearest nodes.
 - It is the impedance of a uniform line with that cross-section: exact on
   uniform stretches, indicative on tapers and steps, not the input
   impedance. Sections with no signal or several (a lumped element beside
@@ -445,6 +455,11 @@ CST's 2D port solver or a TDR picture.
 - `check_line_profile`: coax in a wider block (the fallback), Z0 within
   1.5 % of 60/sqrt(eps) ln(D/d), eps_eff, no-signal sections, one plane
   = the profile; convergence within 1 % of the analytic value.
+- `check_line_nets`: a microstrip with a via-tied pad and a free pad beside
+  it: no Z0 on the plane alone, with the nets Z0 below the bare line's,
+  the via in the plane gives the same within 1.5 %, removing the free pad
+  raises Z0 by < 3 %, a short beyond the plane and a model with no port
+  give their reasons.
 
 ## Solver speed (numba kernels)
 

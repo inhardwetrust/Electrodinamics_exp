@@ -309,7 +309,7 @@ def discretize(mesh, geometry, project, ports=None, elements=None, waveports=Non
 
     def pieces():
         if "pieces" not in cache:
-            cache["pieces"] = _pieces(result)
+            cache["pieces"] = pec_pieces(result)
         return cache["pieces"]
 
     for element in (elements or {}).values():
@@ -741,7 +741,7 @@ def _parallel_columns(result, element, axis, central, ends, pieces):
     return columns
 
 
-def _pieces(result):
+def pec_pieces(result):
     """Per node (raveled) the label of its piece of metal: nodes joined by PEC edges."""
     nodes = tuple(n + 1 for n in result.grid.shape)
     a, b = [], []
