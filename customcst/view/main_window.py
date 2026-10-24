@@ -32,7 +32,7 @@ from discretize.materials import discretize
 from mesh.rectilinear import ACCURATE_CELLS_PER_FEATURE, build_grid, z0_error_percent
 from project.materials import BUILTIN, CUSTOM, MATERIAL_PARAMS
 from project.object_types import OBJECT_TYPES
-from project.project_file import UP_AXES, Project, ProjectError
+from project.project_file import UP_AXES, Z0PATH_PARAMS, Project, ProjectError
 from project.settings import SECTIONS
 from view.geometry_view import GeometryView
 from view.profile_window import ProfileWindow
@@ -42,6 +42,7 @@ from solver.result_file import (delete_result, fingerprint, format_duration, lis
                                 rename_result, save_result)
 from view.sim_runner import SimulationRunner
 from solver.line_profile import CONVERGED, impedance_profile, line_impedance, pec_nets, z0_convergence
+from solver.path_profile import Path, path_profile
 
 MM = 1e-3
 AXES = "xyz"
@@ -88,7 +89,7 @@ class MainWindow(QMainWindow):
         self.mesh = None            # MeshResult
         self.materials = None       # MaterialGrid (solver's view)
         self._nets = None           # (materials, pec_nets of it) for the Z0 tools
-        self._profiles = None       # (materials, {axis: Profile}): Z0 profiles of this mesh
+        self._profiles = None       # (materials, {axis or "path": Profile}): Z0 profiles of this mesh
         self._mesh_coordinate = None    # where the mesh plane is (m)
         self.profile_window = None      # Z0 profile (ProfileWindow), made on first use
         self._mesh_pool = ThreadPoolExecutor(max_workers=1)    # background discretization
@@ -184,7 +185,12 @@ class MainWindow(QMainWindow):
         self.up_combo.setToolTip("Vertical axis of the CAD model (stored in the project)")
         self.up_combo.currentTextChanged.connect(self._up_changed)
         bar.addWidget(self.up_combo)
-        bar.addSeparator()
+
+        # A second row (one row did not fit): the plane, Z0 and the Z0 path.
+        self.addToolBarBreak()
+        bar = QToolBar("Plane")
+        bar.setMovable(False)
+        self.addToolBar(bar)
 
         # Mesh view: grid lines on one plane normal to an axis, at a grid line.
         self.mesh_check = QCheckBox("Mesh")
@@ -233,10 +239,19 @@ class MainWindow(QMainWindow):
         self.z0_button.clicked.connect(self._z0_here)
         z0_menu = QMenu(self)
         z0_menu.addAction("Z₀ at the plane", self._z0_here)
-        z0_menu.addAction("Z₀ profile along the axis…", self._z0_profile)
+        z0_menu.addAction("Z₀ profile…", self._z0_profile)
         z0_menu.addAction("Z₀ convergence at the plane…", self._z0_convergence)
         self.z0_button.setMenu(z0_menu)
         bar.addWidget(self.z0_button)
+
+        # The Z0 path ([z0path]): drawn and edited in the 3D view while checked.
+        self.path_check = QCheckBox("Z₀ path")
+        self.path_check.setToolTip(
+            "Draw the path for the Z0 profile along it (Z₀ ▸ Z₀ profile…, along Path), in the plane "
+            "of Project ▸ Z0 path: click adds a point, Ctrl + drag moves one, double click deletes "
+            "one, Shift + click on a segment inserts one. Measuring is off meanwhile.")
+        self.path_check.toggled.connect(self._path_mode_toggled)
+        bar.addWidget(self.path_check)
 
         for switch in self._view_switches().values():
             switch.toggled.connect(lambda _: self._view_changed())
@@ -259,6 +274,7 @@ class MainWindow(QMainWindow):
         self.pick_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.statusBar().addPermanentWidget(self.pick_label)
         self.view.on_pick = self._picked
+        self.view.on_path_changed = self._path_edited
 
         # Simulation progress: the field energy of the running port, full at
         # its peak, empty at the accuracy level below it (where the run stops).
@@ -790,6 +806,8 @@ class MainWindow(QMainWindow):
 
         self.geometry = geometry
         self.project = project
+        if project is not None and project.z0path is None:
+            project.z0path = project.default_z0path(geometry)     # saved with the next save
         self._project_mtime = self._file_mtime(project.path) if project else None
         self.holes = find_holes(geometry)
         self.view.highlight_holes([])
@@ -815,6 +833,7 @@ class MainWindow(QMainWindow):
                                             view["camera_rotation"])
 
         self._refresh_model(center_slider="at" not in view)
+        self._show_path()
         self._fill_tree()
         self._restore_hidden(view.get("hidden", []))
         self._view_timer.stop()         # the camera reset above is no change of the user's
@@ -1156,50 +1175,92 @@ class MainWindow(QMainWindow):
             if not s.error else f"Z0 at {where}: {s.error}", 15000)
 
     def _z0_profile(self):
-        """Open the profile window: the kept profile of this mesh, or Compute to make one."""
+        """
+        Open the profile window: along the path in path mode, else along
+        the mesh plane's axis (the window's along box switches): the kept
+        profile of this mesh, or Compute to make one.
+        """
         if not self._z0_ready():
             return
-        axis = self.mesh_axis.currentIndex()
         if self.profile_window is None:
             self.profile_window = ProfileWindow(self)
-            self.profile_window.coordinate_picked.connect(self._profile_picked)
+            self.profile_window.section_picked.connect(self._profile_picked)
             self.profile_window.compute_requested.connect(self._z0_profile_compute)
-        profile = self._kept_profiles().get(axis)
-        if profile is None:
-            self.profile_window.set_empty(AXES[axis])
-        else:
-            self._show_profile(profile)
+            self.profile_window.source_changed.connect(self._show_source)
+            self.profile_window.hidden.connect(self._show_path)
+        source = "path" if self.path_check.isChecked() else AXES[self.mesh_axis.currentIndex()]
         self.profile_window.show()
         self.profile_window.raise_()
+        self._show_source(source)
 
     def _kept_profiles(self):
-        """{axis: Profile} of the current materials (a profile depends only on the mesh)."""
+        """{axis or "path": Profile} of the current materials (cleared with the mesh; the path's also when it changes)."""
         if self._profiles is None or self._profiles[0] is not self.materials:
             self._profiles = (self.materials, {})
         return self._profiles[1]
 
-    def _z0_profile_compute(self):
+    @staticmethod
+    def _profile_key(source):
+        return "path" if source == "path" else AXES.index(source)
+
+    def _show_source(self, source):
+        """The profile window shows `source`: its kept profile, or the Compute state."""
+        if self.materials is None:
+            self.profile_window.set_empty(source, "No mesh yet: wait for the discretization.")
+        else:
+            profile = self._kept_profiles().get(self._profile_key(source))
+            if profile is not None:
+                self._show_profile(profile)
+            elif source == "path" and self._z0path() is None:
+                self.profile_window.set_empty(source, "No path: check Z₀ path on the toolbar and click "
+                                                      "at least two points in the 3D view.")
+            else:
+                self.profile_window.set_empty(source)
+        self._show_path()
+
+    def _z0_profile_compute(self, source):
         if not self._z0_ready():
             return
-        axis = self.mesh_axis.currentIndex()
+        path = self._z0path() if source == "path" else None
+        if source == "path" and path is None:
+            self._show_source(source)
+            return
+        where = "the path" if path is not None else source
 
-        def progress(done, total):
-            self.statusBar().showMessage(f"Z0 profile along {AXES[axis]}: section {done} / {total}")
+        def progress(done, total, what=""):
+            counted = f"section {done} / {total}" if total else ""
+            self.statusBar().showMessage(f"Z0 profile along {where}: "
+                                         + ", ".join(t for t in (counted, what) if t))
+            self.profile_window.set_progress(done, total, what)
             QApplication.processEvents()
 
         QApplication.setOverrideCursor(Qt.WaitCursor)
+        self.profile_window.start_compute()
+        QApplication.processEvents()
         try:
-            profile = impedance_profile(self.materials, axis, self.geometry.bounds, progress, self._pec_nets())
+            if path is not None:
+                profile = path_profile(self.geometry, self.project, path, self.via_bodies,
+                                       self._pec_nets(), progress)
+            else:
+                profile = impedance_profile(self.materials, AXES.index(source), self.geometry.bounds,
+                                            progress, self._pec_nets())
         finally:
             QApplication.restoreOverrideCursor()
-        self._kept_profiles()[axis] = profile
-        self.statusBar().showMessage(f"Z0 profile along {AXES[axis]}: {len(profile.sections)} sections", 5000)
+            self.profile_window.end_compute()
+        self._kept_profiles()[self._profile_key(source)] = profile
+        self.statusBar().showMessage(f"Z0 profile along {where}: {len(profile.sections)} sections", 5000)
         self._show_profile(profile)
 
     def _show_profile(self, profile):
-        self.profile_window.set_profile(profile, AXES[profile.axis], accuracy=self._z0_note())
-        if self._mesh_coordinate is not None:
-            self.profile_window.set_marker(self._mesh_coordinate)
+        window = self.profile_window
+        source = "path" if profile.axis < 0 else AXES[profile.axis]
+        window.set_profile(profile, source, accuracy=self._z0_note())
+        if profile.axis >= 0:
+            if self._mesh_coordinate is not None:
+                window.set_marker(self._mesh_coordinate)
+        elif profile.sections:
+            self._profile_picked(window.index)
+        self._show_path()
 
     def _z0_convergence(self):
         """Z0 at the plane on finer and finer grids of its own (the 3D grid is not touched)."""
@@ -1251,9 +1312,17 @@ class MainWindow(QMainWindow):
             "<th>eps_eff</th></tr>" + rows + "</table>"
             f"<p>{verdict}</p>")
 
-    def _profile_picked(self, coordinate):
-        """The profile's marker moved: put the plane there (and make it visible)."""
-        axis = self.profile_window.profile.axis
+    def _profile_picked(self, index):
+        """
+        The profile's marker moved: along an axis, put the plane there (and
+        make it visible); along the path, mark the section across it.
+        """
+        profile = self.profile_window.profile
+        axis = profile.axis
+        if axis < 0:
+            self.view.set_path_section(profile.points[index], profile.across[index], profile.half_width)
+            return
+        coordinate = profile.sections[index].coordinate
         if self.mesh is None or not self.mesh.ok:
             return
         if self.mesh_axis.currentIndex() != axis:
@@ -1262,6 +1331,99 @@ class MainWindow(QMainWindow):
                 or self.section_check.isChecked()):
             self.materials_check.setChecked(True)
         self.mesh_slider.setValue(int(np.argmin(np.abs(self._slider_positions() - coordinate))))
+
+    # =====================================================
+    # Z0 path (project [z0path], solver/path_profile.py)
+    # =====================================================
+
+    def _z0path(self):
+        """The project's path as a solver Path (m), or None without two points."""
+        z0path = self.project.z0path if self.project is not None else None
+        if z0path is None or len(z0path["points"]) < 2:
+            return None
+        return Path(UP_AXES.index(z0path["axis"]), z0path["at"] * MM,
+                    np.asarray(z0path["points"], dtype=float) * MM, z0path["half_width"] * MM)
+
+    def _path_on_profile(self):
+        window = self.profile_window
+        return window is not None and window.isVisible() and window.source == "path"
+
+    def _show_path(self):
+        """The path in the 3D view: while drawing it, or while the profile window reads along it."""
+        z0path = self.project.z0path if self.project is not None else None
+        if z0path is None:
+            return
+        self.view.set_path(UP_AXES.index(z0path["axis"]), z0path["at"] * MM,
+                           np.asarray(z0path["points"], dtype=float).reshape(-1, 2) * MM,
+                           shown=self._path_on_profile())
+        window = self.profile_window
+        if not (self._path_on_profile() and window.profile is not None and window.profile.sections):
+            self.view.set_path_section(None)
+
+    def _path_mode_toggled(self, on):
+        if on and self.project is None:
+            self.statusBar().showMessage("Z0 path: the project file has errors (fix it, then Reload)", 5000)
+        self.view.set_path_mode(on and self.project is not None)
+        if on:
+            self.view.set_picks([None, None])
+            self.statusBar().showMessage(
+                "Z0 path: click adds a point, Ctrl + drag moves one, double click deletes one, "
+                "Shift + click on a segment inserts one", 10000)
+        self._show_path()
+
+    def _path_edited(self, points):
+        """The path was edited in the 3D view: save it; its profile is outdated."""
+        if self.project is None:
+            return
+        self.project.set_z0path_points(np.asarray(points) / MM)
+        self._z0path_changed()
+
+    def _z0path_changed(self):
+        self._save()
+        self._fill_z0path()
+        if self._profiles is not None:
+            self._profiles[1].pop("path", None)
+        if self._path_on_profile() and self.profile_window.profile is not None:
+            self.profile_window.mark_outdated("the path changed")
+            self.view.set_path_section(None)
+        self._show_path()
+
+    def _fill_z0path(self):
+        """The Z0 path section of the tree: its plane, the section width and the points (rebuilt in place)."""
+        old = self._top_item("z0path", None)
+        if old is not None:
+            index = self.tree.indexOfTopLevelItem(old)
+            self.tree.takeTopLevelItem(index)
+        else:
+            mesh = self._top_item("section", "mesh")
+            index = self.tree.indexOfTopLevelItem(mesh) + 1 if mesh is not None else 0
+        if self.project is None or self.project.z0path is None:
+            return
+        self.tree.blockSignals(True)
+        z0path = self.project.z0path
+        section = QTreeWidgetItem(["Z0 path"])
+        section.setData(0, Qt.UserRole, ("z0path", None, None))
+        section.setToolTip(0, "The path of the Z0 profile along it: draw it with Z₀ path on the toolbar")
+        font = section.font(0)
+        font.setBold(True)
+        section.setFont(0, font)
+        self.tree.insertTopLevelItem(index, section)
+        for param in Z0PATH_PARAMS:
+            value = z0path[param.name]
+            row = QTreeWidgetItem(section, [param.label, _fmt_value(value), param.unit])
+            row.setData(0, Qt.UserRole, ("z0path_param", "z0path", param.name))
+            row.setFlags(row.flags() | Qt.ItemIsEditable)
+            row.setToolTip(0, param.tooltip)
+            row.setToolTip(1, "Double click to edit")
+        points = np.asarray(z0path["points"], dtype=float).reshape(-1, 2)
+        length = float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum()) if len(points) > 1 else 0.0
+        u, v = [a for a in AXES if a != z0path["axis"]]
+        row = QTreeWidgetItem(section, ["points", f"{len(points)}, length {length:.3f}", "mm"])
+        row.setData(0, Qt.UserRole, ("info", "z0path", None))
+        row.setForeground(1, QColor("#2a2"))
+        row.setToolTip(1, f"({u}, {v}) mm: " + ", ".join(f"({p[0]:g}, {p[1]:g})" for p in points))
+        section.setExpanded(True)
+        self.tree.blockSignals(False)
 
     def _show_section(self):
         """Section view at the plane of the slider (grid lines, or steps over the model without a mesh)."""
@@ -1304,6 +1466,9 @@ class MainWindow(QMainWindow):
                 self.tree.addTopLevelItem(item)
                 self._fill_section(item)
 
+        self.tree.blockSignals(False)
+        self._fill_z0path()
+        self.tree.blockSignals(True)
         self._fill_holes()
 
         for body in self.geometry.bodies:
@@ -1979,11 +2144,14 @@ class MainWindow(QMainWindow):
         if role == "run":
             self.tree.editItem(item, 0)             # rename in place
             return
-        if role not in ("param", "setting") or self.project is None:
+        if role not in ("param", "setting", "z0path_param") or self.project is None:
             return
 
-        param = (self.project.get(owner).object_type.param(name) if role == "param"
-                 else SECTIONS[owner].param(name))
+        if role == "z0path_param":
+            param = next(p for p in Z0PATH_PARAMS if p.name == name)
+        else:
+            param = (self.project.get(owner).object_type.param(name) if role == "param"
+                     else SECTIONS[owner].param(name))
         if param.boolean:
             return                                  # the check box is the editor
         if role == "setting" and name == "excite":
@@ -2056,6 +2224,21 @@ class MainWindow(QMainWindow):
 
         if role == "run" and column == 0:
             self._run_changed(item, owner)
+            return
+
+        if role == "z0path_param" and column == 1:
+            old = dict(self.project.z0path)
+            try:
+                self.project.set_z0path_value(param, item.text(1).strip().replace(",", "."))
+            except ValueError as error:
+                self.statusBar().showMessage(str(error), 5000)
+            if self.project.z0path != old:
+                # Rebuilds the rows: not under the editor's own commit.
+                QTimer.singleShot(0, self._z0path_changed)
+            else:
+                self.tree.blockSignals(True)
+                item.setText(1, _fmt_value(self.project.z0path[param]))
+                self.tree.blockSignals(False)
             return
 
         if role not in ("param", "setting") or column != 1:

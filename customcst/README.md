@@ -88,6 +88,15 @@ It shows which part of the feed is off 50 Ω.
 
 ![Z0 profile](docs/images/z0_profile.png)
 
+**The Z0 profile along a drawn path**: click the path along the trace in
+the 3D view (the plane in blue), and every cross-section is cut square to
+it, through the bends and diagonals. Here a KiCad board from the
+connector to the switch, the marker in the narrowing at the switch pin.
+
+![Z0 path](docs/images/z0_path.png)
+
+![Z0 profile along the path](docs/images/z0_path_profile.png)
+
 ## Features
 
 - **STEP import** (OpenCASCADE). Bodies keep their CAD names and colors.
@@ -132,6 +141,8 @@ It shows which part of the feed is off 50 Ω.
 - **Line impedance tools**:
   - Z0 at any grid plane;
   - a Z0 profile along an axis;
+  - a Z0 profile along a path drawn in the model (one per project, kept in
+    its file): cross-sections square to it, on a fine grid of their own;
   - Z0 convergence at a plane: the plane alone on finer and finer grids,
     the converged value and how far the current 3D grid is from it;
   - an accuracy note for narrow gaps.

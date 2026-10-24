@@ -19,8 +19,43 @@
 # a tiny offset (u, v) = (delta, 0.618 delta) times a sign pattern, which
 # no tessellation shares; a point within delta of a face parallel to the
 # lines is found by trying the offsets on both sides.
+#
+# With numba (ENABLED; CUSTOMCST_NUMPY=1 forces numpy, like the FDTD
+# kernels) the grid queries count straight on each line's sorted crossings,
+# the lines spread over the cores, in the (u, v, axis) layout transposed to
+# the grid's at the end. The numpy path packs every crossing as one sorted
+# key (line id + the coordinate mapped into [0.25, 0.75]) and binary
+# searches the whole grid's points in it; that was most of a Z0 path
+# section's ray casting (checks/check_discretize_kernels.py compares the
+# two).
+
+import os
 
 import numpy as np
+
+try:
+    from numba import njit, prange
+    ENABLED = os.environ.get("CUSTOMCST_NUMPY", "") != "1"
+except ImportError:                     # pragma: no cover - numba is optional
+    ENABLED = False
+NUMBA = ENABLED
+
+if NUMBA:
+    @njit(parallel=True, cache=True)
+    def _count_below(starts, coords, s, out):
+        """out[line, k]: crossings of the line below s[k]."""
+        for line in prange(len(starts) - 1):
+            c = coords[starts[line]:starts[line + 1]]
+            for k in range(len(s)):
+                out[line, k] = np.searchsorted(c, s[k])
+
+    @njit(parallel=True, cache=True)
+    def _count_between(starts, coords, lo, hi, out):
+        """out[line, k]: crossings of the line with lo[k] <= coordinate <= hi[k]."""
+        for line in prange(len(starts) - 1):
+            c = coords[starts[line]:starts[line + 1]]
+            for k in range(len(lo)):
+                out[line, k] = np.searchsorted(c, hi[k], side="right") - np.searchsorted(c, lo[k])
 
 _GOLDEN = 0.6180339887
 # Offsets on both sides of the line in u and in v (asymmetric: never along
@@ -42,14 +77,37 @@ class LineHits:
         self.u, self.v = [a for a in range(3) if a != axis]
         cu = np.asarray(cu, dtype=np.float64) + offset[0]
         cv = np.asarray(cv, dtype=np.float64) + offset[1]
-        self.nv = len(cv)
+        self.nu, self.nv = len(cu), len(cv)
 
         lo, hi = body.bounds
         self.lo = lo[axis] - 1e-9
         self.span = (hi[axis] + 1e-9) - self.lo
         lines, coords = self._crossings(body, cu, cv)
         order = np.lexsort((coords, lines))
-        self.keys = lines[order] + self._fraction(coords[order])
+        self.lines, self.coords = lines[order], coords[order]
+        self._keys = None
+
+    @property
+    def keys(self):
+        """The numpy path's sorted keys: line id + the coordinate's fraction."""
+        if self._keys is None:
+            self._keys = self.lines + self._fraction(self.coords)
+        return self._keys
+
+    def _on_lines(self, kernel, *along):
+        """kernel over every line and the 1D arrays `along` -> (nu, nv, len) counts."""
+        starts = np.searchsorted(self.lines, np.arange(self.nu * self.nv + 1))
+        out = np.empty((self.nu * self.nv, len(along[0])), dtype=np.int64)
+        kernel(starts, self.coords, *(np.ascontiguousarray(a, dtype=np.float64) for a in along), out)
+        return out.reshape(self.nu, self.nv, -1)
+
+    def below_grid(self, s):
+        """(nu, nv, len(s)): crossings below each s on each line (numba)."""
+        return self._on_lines(_count_below, s)
+
+    def between_grid(self, lo, hi):
+        """(nu, nv, len(lo)): crossings with lo <= coordinate <= hi on each line (numba)."""
+        return self._on_lines(_count_between, lo, hi)
 
     def _fraction(self, s):
         """Coordinate along the line -> [0.25, 0.75] inside the body's extent."""
@@ -142,6 +200,12 @@ def grid_ids(axis, n_u, n_v, n_axis):
     return iu * n_v + iv, ia
 
 
+def _to_grid(array, axis):
+    """(u, v, axis) layout -> the grid's (x, y, z)."""
+    u, v = [a for a in range(3) if a != axis]
+    return np.moveaxis(array, (0, 1, 2), (u, v, axis))
+
+
 def inside_on_grid(body, axis, coords, delta=0.0):
     """
     Bool array (len(coords[0]), len(coords[1]), len(coords[2])): grid points
@@ -153,6 +217,8 @@ def inside_on_grid(body, axis, coords, delta=0.0):
     u, v = [a for a in range(3) if a != axis]
     d = max(delta, 1e-12)
     hits = LineHits(body, axis, coords[u], coords[v], (d * OFFSETS[0][0], d * OFFSETS[0][1]))
+    if ENABLED:
+        return _to_grid(hits.below_grid(np.asarray(coords[axis], dtype=float)) % 2 == 1, axis)
     ids, ia = grid_ids(axis, len(coords[u]), len(coords[v]), len(coords[axis]))
     s = np.asarray(coords[axis])[ia]
     return (hits.count_below(ids, s) % 2 == 1) & np.ones(shape, dtype=bool)
@@ -166,6 +232,15 @@ def in_or_on_grid(body, axis, coords, delta):
     """
     shape = tuple(len(c) for c in coords)
     u, v = [a for a in range(3) if a != axis]
+    if ENABLED:
+        s = np.asarray(coords[axis], dtype=float)
+        result = np.zeros((len(coords[u]), len(coords[v]), len(s)), dtype=bool)
+        for ou, ov in OFFSETS:
+            hits = LineHits(body, axis, coords[u], coords[v], (delta * ou, delta * ov))
+            result |= hits.between_grid(s - delta, s + delta) > 0
+            if body.kind == "solid":
+                result |= hits.below_grid(s) % 2 == 1
+        return _to_grid(result, axis)
     ids, ia = grid_ids(axis, len(coords[u]), len(coords[v]), len(coords[axis]))
     s = np.asarray(coords[axis])[ia] * np.ones(shape)
     result = np.zeros(shape, dtype=bool)
@@ -187,6 +262,17 @@ def crossings_on_grid(body, axis, coords, half_length, delta, all_offsets=False)
     """
     shape = tuple(len(c) for c in coords)
     u, v = [a for a in range(3) if a != axis]
+    if ENABLED:
+        s = np.asarray(coords[axis], dtype=float)
+        if np.isscalar(half_length):
+            below = above = half_length
+        else:
+            below, above = (np.asarray(h, dtype=float) for h in half_length)
+        result = np.zeros((len(coords[u]), len(coords[v]), len(s)), dtype=np.int64)
+        for ou, ov in (OFFSETS if all_offsets else OFFSETS[:1]):
+            hits = LineHits(body, axis, coords[u], coords[v], (delta * ou, delta * ov))
+            result = np.maximum(result, hits.between_grid(s - below, s + above))
+        return _to_grid(result, axis)
     ids, ia = grid_ids(axis, len(coords[u]), len(coords[v]), len(coords[axis]))
     s = np.asarray(coords[axis])[ia] * np.ones(shape)
     if np.isscalar(half_length):

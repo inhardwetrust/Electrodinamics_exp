@@ -91,6 +91,7 @@ import numpy as np
 import scipy.sparse as sp
 from scipy.sparse.csgraph import connected_components
 
+from discretize import kernels
 from geometry.raycast import crossings_on_grid, in_or_on_grid, inside_on_grid
 from project.object_types import CONDUCTOR_TYPES
 from project.settings import GHZ
@@ -286,10 +287,15 @@ def discretize(mesh, geometry, project, ports=None, elements=None, waveports=Non
         # trace in its clearance; closed as one, a gap one cell wide
         # (a trace's rounded end) was bridged into a short.
         for piece in body.pieces or [body]:
+            nodes = _node_box(piece, lines, tolerance)
+            if nodes is None:
+                continue                            # nowhere near the grid
             own = [_edges_in_metal(piece, lines, axis, tolerance) for axis in range(3)]
-            _close_metal(own, shape)
+            _close_metal(own, shape, nodes)
             for axis in range(3):
-                pec[axis] |= own[axis]
+                block = tuple(slice(lo, hi - 1) if a == axis else slice(lo, hi)
+                              for a, (lo, hi) in enumerate(nodes))
+                pec[axis][block] |= own[axis][block]
         step(body.name)
 
     # --- H-edges: mu --------------------------------------------------------
@@ -402,7 +408,29 @@ def _box(body, coords, margin):
     return tuple(box)
 
 
-def _close_metal(edges, shape):
+def _node_box(body, lines, tolerance):
+    """
+    Per axis the node range (lo, hi) holding all of a body's PEC edges, or
+    None: no edges. The edges along each axis come from the box
+    _edges_in_metal looks in (its midpoints along the axis, the nodes
+    across); an edge spans its cell's two nodes.
+    """
+    reach = tolerance + 2e-6 * tolerance          # _edges_in_metal's tolerance + 2 delta
+    ranges = None
+    for axis in range(3):
+        coords = [0.5 * (l[1:] + l[:-1]) if a == axis else l for a, l in enumerate(lines)]
+        box = _box(body, coords, reach)
+        if box is None:
+            continue
+        spans = [(b.start, b.stop + (a == axis)) for a, b in enumerate(box)]
+        ranges = spans if ranges is None else [(min(r[0], q[0]), max(r[1], q[1]))
+                                               for r, q in zip(ranges, spans)]
+    if ranges is None:
+        return None
+    return tuple((max(lo - 1, 0), min(hi + 1, len(l))) for (lo, hi), l in zip(ranges, lines))
+
+
+def _close_metal(edges, shape, nodes=None):
     """
     Closure of one conductor's PEC edges (in place): its metal nodes are the
     nodes its PEC edges touch, and every edge between two of its metal
@@ -411,8 +439,14 @@ def _close_metal(edges, shape):
     conductor that carries no current along the line there, and the TEM
     mode of the staircased line is broken (a coax pin came out 11 % off in
     Z0). Per body (per piece of a multi-piece body), so a gap between two
-    conductors is never closed.
+    conductors is never closed. nodes: per axis the node range (lo, hi)
+    holding all the edges (_node_box): the closure runs on that block only
+    (a body of a board is small beside the grid).
     """
+    if nodes is not None:
+        edges = [e[tuple(slice(lo, hi - 1) if a == axis else slice(lo, hi)
+                         for a, (lo, hi) in enumerate(nodes))] for axis, e in enumerate(edges)]
+        shape = tuple(hi - lo - 1 for lo, hi in nodes)
     nodes = np.zeros(tuple(n + 1 for n in shape), dtype=bool)
     for axis, pec in enumerate(edges):
         lo = [slice(None)] * 3
@@ -434,8 +468,11 @@ def _edge_average(cell_values, axis, h, skip=None):
     Value on each E-edge along `axis`: weighted mean over the cells around
     it. Weight of a cell = its quarter of the dual face (h_u / 2 * h_v / 2).
     skip: bool cells left out of the mean (thick metal); an edge with only
-    skipped cells around it takes the plain mean.
+    skipped cells around it takes the plain mean. On numba when available
+    (discretize/kernels.py, the same result).
     """
+    if kernels.ENABLED:
+        return kernels.edge_average(cell_values, axis, h, skip)
     if skip is not None and skip.any():
         plain = _edge_average(cell_values, axis, h)
         kept = _edge_average(np.where(skip, 0.0, cell_values), axis, h)

@@ -464,6 +464,73 @@ CST's 2D port solver or a TDR picture.
   raises Z0 by < 3 %, a short beyond the plane and a model with no port
   give their reasons.
 
+### Z0 along a drawn path
+
+A profile along an axis cuts a diagonal trace obliquely (45 degrees reads
+~15 % low). The Z0 path (`solver/path_profile.py`) is a polyline the user
+clicks in the model, and its cross-sections are square to every segment.
+
+![Z0 path on the justswitch board](docs/images/z0_path.png)
+
+The justswitch board (KiCad): the path from the connector pin, around the
+bends and over the series capacitor to the switch pin, in orange; the
+path's plane (the top copper) in translucent blue; the green bar is the
+section under the profile's marker, in the narrowed trace at the switch.
+Its profile: the straight runs and the diagonals at 49.3 Ohm, the
+narrowing at the switch 36.8 Ohm, the switch pad 58 Ohm; the gap is the
+capacitor (its metal joins the ground elsewhere: no signal there).
+
+![Z0 profile along the path](docs/images/z0_path_profile.png)
+- Project `[z0path]`: `axis` (the plane's normal, x/y/z: a plain STEP may
+  lie in any orientation), `at` (mm), `half_width` (mm, default 2),
+  `points = [[u, v], ...]` (mm, the other two axes in order). One path per
+  model. A model without it gets the default on open: the up axis, the top
+  of the first body in the tree (F.Cu on a KiCad import), no points; the
+  user corrects the height in the tree ("Z0 path" after Mesh). It is a
+  display tool like `[view]`: not in the results' fingerprint.
+- Toolbar (second row, with the plane and Z₀) > Z₀ path switches the 3D
+  view to path mode (the line in orange, the first point in yellow, the
+  path's plane translucent blue over the model, like a reference plane): a click in the plane appends a point,
+  Shift+click inserts one into the nearest segment (within 8 px),
+  Ctrl+drag moves a point (the camera stays still), double-click deletes
+  one. No snapping to the trace: an imperfect path is fine, the
+  cross-section only has to cross the trace. Every edit saves the project
+  and drops the kept path profile.
+- The profile window's "along" box picks X, Y, Z or Path (it replaced the
+  plane's axis as the profile's axis). Each source keeps its own profile
+  until the mesh (or the path) changes; Compute computes it, with a
+  progress bar (along the path first each segment's grid and
+  discretization, then the sections done of all). The wheel
+  over a path profile marks its section in 3D (a green bar across the
+  path).
+- Each segment is solved in a frame of its own (the model rotated so the
+  segment runs along the third axis) on a fine grid of its own
+  (CELLS_PER_FEATURE 16, the merge distance scaled), one discretization
+  per segment; the sections are at the faces square to the segment, at
+  least 0.02 mm and at most 0.1 mm apart, none at a vertex. Each reaches
+  `half_width` to either side; the conductors cut by its sides are ground.
+  A window rides along the path: each segment is gridded and discretized
+  only in the box `half_width` across, above and below the plane and
+  beyond its ends (`build_grid(..., region=...)`: the domain ends there,
+  the slanted refinement looks only inside; bodies outside are dropped).
+  A section equal to the previous one (the same edges and nets, a uniform
+  run) reuses its answer.
+  The nodes take the 3D nets of the nearest nodes of the 3D grid, rotated
+  back. So it reads about the converged Z0, not the 3D grid's view.
+- Speed (idle CPU), justswitch_v3 (KiCad board, 5 segments, 18 mm, 180
+  sections): 147 s on the whole rotated board; 64 s with the window (Z0
+  within 0.4 Ohm, mean 0.007); 36 s with the discretization on numba
+  (the same profile bit for bit): the solves 16 s (157 of 180 sections,
+  two SuperLU solves of ~64 k nodes each, ~0.05 s), the discretization
+  14 s (now mostly the triangle-line crossings, numpy), the grids 2 s.
+  Threads do not help the solves (the GIL); a loaded CPU (an FDTD run
+  beside it) is several times slower.
+- `check_path_profile`: a microstrip, straight and turned 30 degrees: the
+  path reads the converged Z0 (within 1.5 %), sections at most 0.1 mm
+  apart, flat along the turned line, where the axis profile cuts it > 5 %
+  low; a path with a vertex has sections on both segments, none at the
+  vertex. `check_project_file` covers `[z0path]`.
+
 ## Solver speed (numba kernels)
 
 `solver/fdtd_kernels.py`: the H and E updates (both curl terms, their
@@ -481,6 +548,20 @@ check.
 - Without numba, or with CUSTOMCST_NUMPY=1, the numpy path runs. The first
   run compiles the kernels (a few seconds); numba caches them in
   `solver/__pycache__`.
+
+The discretization has numba paths too (for the Z0 path's sections first,
+the 3D mesh gains as well), bit-identical to numpy (`check_discretize_kernels`
+compares every material array on four models):
+- `discretize/kernels.py`: the edge average of a cell value in one pass
+  over the edges (the numpy path padded the grid and summed four shifted
+  copies, four times per field with thick metal skipped);
+- `geometry/raycast.py`: the grid queries count each line's sorted
+  crossings directly (binary search per point, the lines over the cores)
+  instead of searching packed keys (line id + coordinate fraction);
+- `_close_metal` (numpy) runs on the block of the piece's nodes, not the
+  whole grid, and a piece nowhere near the grid is skipped.
+On the board path above the discretization went 41 -> 14 s; on the SMA +
+4-layer board's 3D mesh 3.6 -> 1.4 s.
 
 ## Mesh rebuild speed and progress
 

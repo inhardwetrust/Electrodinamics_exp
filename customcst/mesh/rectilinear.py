@@ -137,13 +137,16 @@ class MeshResult:
         return self.grid is not None
 
 
-def build_grid(geometry, project, ports=None, waveports=None, vias=()):
+def build_grid(geometry, project, ports=None, waveports=None, vias=(), region=None):
     """
     MeshResult for the project's typed bodies; untyped bodies are ignored.
     ports: {name: PortGeometry} of everything that needs a grid line on its
     axis (ports and lumped elements).
     waveports: {name: WavePortGeometry}: their planes end the domain.
     vias: PEC bodies of the assigned vias (geometry.holes.via_body).
+    region: (lo, hi) (m): the grid of that box only (it ends the domain
+    where it is inside the model; the slanted faces outside it are not
+    looked at). The Z0 path's sections use it (solver/path_profile.py).
     """
     result = MeshResult()
     mesh = project.settings["mesh"]
@@ -173,6 +176,8 @@ def build_grid(geometry, project, ports=None, waveports=None, vias=()):
     hi = np.max([b.bounds[1] for b, _ in materials], axis=0)
     pad = padding_m(project.settings)
     lo, hi = lo - pad, hi + pad
+    if region is not None:
+        lo, hi = np.maximum(lo, region[0]), np.minimum(hi, region[1])
     for w in (waveports or {}).values():
         if w.ok:
             if w.direction > 0:
@@ -190,7 +195,7 @@ def build_grid(geometry, project, ports=None, waveports=None, vias=()):
     result.slanted = [[], [], []]
     if mesh["slanted"]:
         _slanted(result, [b for b, n in materials if n is None], mesh["cells_per_feature"], min_step,
-                 C0 / f_max / n_per_lambda)
+                 C0 / f_max / n_per_lambda, region)
 
     lines = []
     for axis in range(3):
@@ -280,11 +285,12 @@ def _merge(points, min_step):
 # Slanted conductor faces
 # =====================================================
 
-def _slanted(result, conductors, cells_per_feature, min_step, h_air):
+def _slanted(result, conductors, cells_per_feature, min_step, h_air, region=None):
     """
     Fills result.slanted: per axis the regions around slanted planar
     conductor faces and their step (see the header, step 4). Regions whose
-    step is no finer than the air wavelength's are dropped.
+    step is no finer than the air wavelength's are dropped. region: only
+    the triangles touching that box (lo, hi) count, as faces and targets.
     """
     solids = [p for body in conductors for p in (body.pieces or [body])]
     if not solids:
@@ -292,6 +298,11 @@ def _slanted(result, conductors, cells_per_feature, min_step, h_air):
     tri = np.concatenate([p.vertices[p.triangles] for p in solids])          # (T, 3, 3) targets
     owner = np.concatenate([np.full(len(p.triangles), k) for k, p in enumerate(solids)])
     masks = [_slanted_mask(p, min_step) for p in solids]
+    if region is not None:
+        near = [_touching(p.vertices[p.triangles], region) for p in solids]
+        masks = [m & t for m, t in zip(masks, near)]
+        near = np.concatenate(near)
+        tri, owner = tri[near], owner[near]
     faces = np.concatenate([p.vertices[p.triangles][m] for p, m in zip(solids, masks)])
     if not len(faces):
         return
@@ -321,6 +332,12 @@ def _slanted(result, conductors, cells_per_feature, min_step, h_air):
             lo = faces[spans, :, axis].min(axis=1) - feature[spans]
             hi = faces[spans, :, axis].max(axis=1) + feature[spans]
             result.slanted[axis] = _unite(lo, hi, step[spans])
+
+
+def _touching(tri, region):
+    """(T,) bool: the triangles (T, 3, 3) whose bounding box touches the box region (lo, hi)."""
+    lo, hi = region
+    return np.all((tri.min(axis=1) <= hi) & (tri.max(axis=1) >= lo), axis=1)
 
 
 def _slanted_mask(body, min_step):

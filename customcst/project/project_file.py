@@ -41,6 +41,14 @@
 #   [holes.single]      # one hole by its center, mm; beats the diameter rule
 #   "-6,0,0.8" = "none"
 #
+#   [z0path]            # the Z0 path (solver/path_profile.py): a polyline
+#   axis = "z"          #   in the plane normal to `axis` at `at` (mm),
+#   at = 1.5512         #   points in that plane's two other axes (mm, in
+#   half_width = 2.0    #   order: y, z for "x"), each cross-section
+#   points = [[27.5, 26.2], [22.4, 26.2]]   # reaching half_width to a side
+#   (a display tool like [view]: it never outdates a run). Without it the
+#   window makes a default one (default_z0path).
+#
 #   [simulation] / [mesh]: project-wide settings, see settings.py
 #
 # Bodies without a section have no type yet. Sections whose body is missing
@@ -57,7 +65,7 @@ from project.materials import BUILTIN, CUSTOM, MATERIAL_PARAMS, builtin_library
 HOLE_KINDS = ("via", "none")
 HOLE_DIAMETER_TOL_MM = 1e-4     # a rule's drill matches a hole within 0.1 um
 HOLE_CENTER_TOL_MM = 1e-3       # a single rule matches a hole center within 1 um
-from project.object_types import CONDUCTOR_TYPES, OBJECT_TYPES, Assignment
+from project.object_types import CONDUCTOR_TYPES, OBJECT_TYPES, Assignment, Param
 from project.ports import port_geometry
 from project.waveports import waveport_geometry
 from project.settings import SECTIONS, check_settings
@@ -67,6 +75,15 @@ VIEW_SWITCHES = ("edges", "xray", "ref_planes", "mesh", "materials", "section", 
 CAMERA_KEYS = {"camera_center": 3, "camera_rotation": 9}     # number lists and their lengths
 VIEW_KEYS = ("up",) + VIEW_SWITCHES + ("plane", "at", "hidden", "camera_center", "camera_distance",
                                       "camera_rotation")
+Z0PATH_PARAMS = (
+    Param("axis", "plane ⊥", "z", choices=UP_AXES,
+          tooltip="The path is drawn in the plane normal to this axis"),
+    Param("at", "plane at", 0.0, unit="mm", tooltip="The plane's coordinate along its axis"),
+    Param("half_width", "section half width", 2.0, minimum=0.05, unit="mm",
+          tooltip="How far each cross-section reaches to either side of the path: wider than "
+                  "the trace and its gaps, narrower than the distance to the next line "
+                  "(also above and below the plane: keep the ground planes inside)"),
+)
 
 
 class ProjectError(ValueError):
@@ -79,11 +96,12 @@ def project_path(step_path):
 
 class Project:
     def __init__(self, step_path, assignments=None, up="z", settings=None, materials=None,
-                 holes=None, view=None):
+                 holes=None, view=None, z0path=None):
         self.step_path = os.fspath(step_path)
         self.assignments = dict(assignments or {})     # {body name: Assignment}
         self.up = up                                   # vertical axis for the view
         self.view = dict(view or {})                   # last display: [view] keys but up; {} = defaults
+        self.z0path = z0path                           # [z0path] as a dict (points: [[u, v], ...]), or None
         self.materials = builtin_library()             # {preset name: {param: value}}
         # Hole rules: {drill mm: kind}, {(x, y, z) center mm: kind}.
         self.hole_diameters = dict((holes or {}).get("diameters", {}))
@@ -228,6 +246,27 @@ class Project:
         check_settings(trial)
         self.settings = trial
 
+    # --- the Z0 path ------------------------------------------------------------
+
+    def default_z0path(self, geometry):
+        """
+        A path without points in the plane normal to the up axis, at the top
+        of the first body (a KiCad board's F.Cu: its copper's top face).
+        """
+        axis = UP_AXES.index(self.up)
+        top = geometry.bodies[0].bounds[1][axis] * 1e3 if geometry.bodies else 0.0
+        return {"axis": self.up, "at": round(float(top), 4),
+                "half_width": Z0PATH_PARAMS[2].default, "points": []}
+
+    def set_z0path_value(self, name, value):
+        param = next((p for p in Z0PATH_PARAMS if p.name == name), None)
+        if param is None:
+            raise KeyError(name)
+        self.z0path[name] = param.validate(value)
+
+    def set_z0path_points(self, points):
+        self.z0path["points"] = _z0path_points(points)
+
     def set_up(self, axis):
         if axis not in UP_AXES:
             raise ProjectError(f"up axis must be one of {UP_AXES}, got {axis!r}")
@@ -327,7 +366,7 @@ class Project:
         except tomllib.TOMLDecodeError as error:
             raise ProjectError(f"{path}: {error}") from None
 
-        unknown = set(data) - {"bodies", "view", "materials", "holes"} - set(SECTIONS)
+        unknown = set(data) - {"bodies", "view", "materials", "holes", "z0path"} - set(SECTIONS)
         if unknown:
             raise ProjectError(f"{path}: unknown top-level keys {sorted(unknown)}")
 
@@ -362,7 +401,8 @@ class Project:
             raise ProjectError(f"{path}: {error}") from None
 
         holes = _parse_holes(path, data.get("holes", {}))
-        return cls(step_path, assignments, up, settings, library, holes, view)
+        z0path = _parse_z0path(path, data["z0path"]) if "z0path" in data else None
+        return cls(step_path, assignments, up, settings, library, holes, view, z0path)
 
     def save(self):
         """Writes atomically (temp file + replace): a crash never leaves half a file."""
@@ -402,6 +442,15 @@ class Project:
                 unit = key in ("at", "camera_center", "camera_distance")
                 lines.append(f"{key} = {text}" + ("   # mm" if unit else ""))
         lines.append("")
+
+        if self.z0path is not None:
+            lines.append("[z0path]")
+            for param in Z0PATH_PARAMS:
+                comment = f"   # {param.unit}" if param.unit else ""
+                lines.append(f"{param.name} = {_toml_value(self.z0path[param.name])}{comment}")
+            points = ", ".join(f"[{_fmt_number(u)}, {_fmt_number(v)}]" for u, v in self.z0path["points"])
+            lines.append(f"points = [{points}]   # mm")
+            lines.append("")
 
         if self.hole_diameters:
             lines.append("[holes.diameters]   # drill, mm")
@@ -474,6 +523,39 @@ def _parse_holes(path, section):
         if kind not in HOLE_KINDS:
             raise ProjectError(f"{where}.single: {key!r} = {kind!r}, expected one of {HOLE_KINDS}")
         out["single"][_center_key(center)] = kind
+    return out
+
+
+def _z0path_points(points):
+    """[[u, v], ...] in mm (0.1 um kept), or ValueError."""
+    out = []
+    for point in points:
+        if not (len(point) == 2 and all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                                         for v in point)):
+            raise ValueError(f"a path point must be two numbers (mm), got {point!r}")
+        out.append([round(float(point[0]), 4), round(float(point[1]), 4)])
+    return out
+
+
+def _parse_z0path(path, section):
+    """The [z0path] table: every key validated, missing ones from the defaults."""
+    where = f"{path}: [z0path]"
+    if not isinstance(section, dict):
+        raise ProjectError(f"{where}: expected a table")
+    unknown = set(section) - {p.name for p in Z0PATH_PARAMS} - {"points"}
+    if unknown:
+        raise ProjectError(f"{where}: unknown keys {sorted(unknown)}")
+    out = {p.name: p.default for p in Z0PATH_PARAMS}
+    try:
+        for param in Z0PATH_PARAMS:
+            if param.name in section:
+                out[param.name] = param.validate(section[param.name])
+        points = section.get("points", [])
+        if not isinstance(points, list):
+            raise ValueError("points must be a list of [u, v] pairs (mm)")
+        out["points"] = _z0path_points(points)
+    except (ValueError, TypeError) as error:
+        raise ProjectError(f"{where}: {error}") from None
     return out
 
 

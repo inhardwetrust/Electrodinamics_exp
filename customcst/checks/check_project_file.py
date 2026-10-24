@@ -14,7 +14,7 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from geometry.body import Body                                  # noqa: E402
+from geometry.body import Body, Geometry                        # noqa: E402
 from project.project_file import Project, ProjectError          # noqa: E402
 
 FAILED = []
@@ -243,6 +243,35 @@ def main():
             "hidden not a list": ('[view]\nhidden = "board"\n', "list of body names"),
             "camera rotation too short": ('[view]\ncamera_rotation = [1, 0, 0]\n', "list of 9 numbers"),
             "camera distance <= 0": ('[view]\ncamera_distance = 0\n', "number > 0"),
+        }.items():
+            with open(os.path.join(folder, "model.toml"), "w", encoding="utf-8") as f:
+                f.write(text)
+            ok, msg = raises(lambda: Project.load(step), needle)
+            check(f"bad file: {label}", ok, msg)
+
+        # --- the Z0 path in [z0path] -------------------------------------------
+        os.remove(os.path.join(folder, "model.toml"))
+        drawn = Project(step)
+        check("no [z0path] -> None", drawn.z0path is None)
+        board = Body("F.Cu", "solid", [[0, 0, 0.0015], [0.01, 0.01, 0.0015512], [0, 0.01, 0.0015]],
+                     [[0, 1, 2]], [[0, 0, 1]] * 3, [])
+        drawn.z0path = drawn.default_z0path(Geometry([board]))
+        check("default: the up axis at the first body's top, no points",
+              drawn.z0path == {"axis": "z", "at": 1.5512, "half_width": 2.0, "points": []}, str(drawn.z0path))
+        drawn.set_z0path_value("axis", "Y")
+        drawn.set_z0path_value("half_width", "1.5")
+        drawn.set_z0path_points([[27.5, 26.2], [22.37, 26.123456]])
+        drawn.save()
+        back = Project.load(step)
+        check("[z0path] round trip (points to 0.1 um)",
+              back.z0path == {"axis": "y", "at": 1.5512, "half_width": 1.5,
+                              "points": [[27.5, 26.2], [22.37, 26.1235]]}, str(back.z0path))
+        ok, msg = raises(lambda: drawn.set_z0path_value("half_width", 0), ">=")
+        check("half width <= 0 rejected", ok, msg)
+        for label, (text, needle) in {
+            "unknown z0path key": ('[z0path]\nwidth = 2\n', "unknown keys"),
+            "bad z0path axis": ('[z0path]\naxis = "w"\n', "must be one of"),
+            "bad z0path point": ('[z0path]\npoints = [[1, 2, 3]]\n', "two numbers"),
         }.items():
             with open(os.path.join(folder, "model.toml"), "w", encoding="utf-8") as f:
                 f.write(text)

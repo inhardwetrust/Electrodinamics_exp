@@ -45,6 +45,7 @@ class LinePlot(QWidget):
         self.y_label = ""
         self.y_range = None
         self.marker_x = None
+        self.empty_text = "no results shown: press Simulate, or tick a run in Project > Results"
 
     def set_data(self, curves, x_label="", y_label="", y_range=None, marker_x=None):
         """curves: [(label, x, y, color index, dim)]; dim = an older run (faded)."""
@@ -72,7 +73,7 @@ class LinePlot(QWidget):
 
         if not self._curves:
             p.setPen(QColor("#777"))
-            p.drawText(plot, Qt.AlignCenter, "no results shown: press Simulate, or tick a run in Project > Results")
+            p.drawText(plot, Qt.AlignCenter, self.empty_text)
             p.end()
             return
 

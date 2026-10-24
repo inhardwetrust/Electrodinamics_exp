@@ -87,6 +87,11 @@ class Nets:
         on_plane = self.label[tuple(take)]
         return on_plane[np.ix_(_nearest(self.lines[u], lines_u), _nearest(self.lines[v], lines_v))]
 
+    def at(self, points):
+        """(n,) labels at the nodes nearest the (n, 3) points (m)."""
+        points = np.asarray(points, dtype=float)
+        return self.label[tuple(_nearest(self.lines[a], points[:, a]) for a in range(3))]
+
 
 def pec_nets(materials):
     """Nets of the materials' PEC edges."""

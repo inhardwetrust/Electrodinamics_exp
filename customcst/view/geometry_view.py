@@ -31,6 +31,20 @@
 #   - a double click on nothing, or Esc, removes both;
 #   - the markers (A yellow, B cyan) and the line between them are drawn
 #     through the bodies; on_pick([A, B]) is called after every change.
+#
+# Z0 path (set_path, set_path_mode): a polyline in a plane normal to an
+# axis (solver/path_profile.py), drawn through the bodies in orange. In
+# path mode the clicks edit it instead of picking (points are where the
+# ray through the cursor meets the plane, whatever is under it):
+#   - a click appends a point (not on an existing point);
+#   - Ctrl + drag moves a point (the camera stays still meanwhile);
+#   - a double click on a point deletes it;
+#   - Shift + click near a segment inserts a point there;
+#   - on_path_changed(points) is called after every edit (m, in-plane).
+# set_path_section marks the cross-section the profile window reads: a
+# green bar across the path. In path mode the path's plane is shown over
+# the model's extent, translucent blue like the reference planes (through
+# the bodies: on a copper face it would z-fight).
 
 import numpy as np
 
@@ -38,7 +52,7 @@ from vispy import scene
 from vispy.util import keys, transforms
 from vispy.visuals.filters.clipping_planes import PlanesClipper
 
-from view.picking import Picker
+from view.picking import Picker, _project, _ray
 from view.section import MAX_PIXELS, section_fill, section_outline
 
 SCENE_UNIT = 1e-3      # one scene unit = 1 mm
@@ -79,6 +93,12 @@ REFERENCE_FILL = (0.05, 0.1, 0.5, 0.55)           # dark blue, translucent
 REFERENCE_EDGE = (0.3, 0.45, 1.0, 0.9)
 PICK_COLORS = ((1.0, 0.85, 0.1, 1.0), (0.2, 0.9, 1.0, 1.0))   # points A, B; black rim
 PICK_LINE_COLOR = (1.0, 1.0, 1.0, 0.9)
+PATH_COLOR = (1.0, 0.45, 0.1, 1.0)                # the Z0 path: orange
+PATH_START_COLOR = (1.0, 0.9, 0.2, 1.0)           # its first point
+PATH_SECTION_COLOR = (0.3, 1.0, 0.4, 1.0)         # the profile's section across it
+PATH_PLANE_FILL = (0.05, 0.15, 0.7, 0.25)         # the path's plane in path mode
+PATH_PLANE_EDGE = REFERENCE_EDGE
+PATH_PX = 8                 # a click this close to a path point or segment hits it
 CLICK_PX = 4                # a press and release closer than this is a click, not a drag
 
 
@@ -427,6 +447,26 @@ class GeometryView:
         self.on_pick = None             # callback([A, B])
         self._press = None
 
+        self.path_line = scene.visuals.Line(color=PATH_COLOR, width=2.0, parent=self.view.scene)
+        self.path_section = scene.visuals.Line(color=PATH_SECTION_COLOR, width=3.0, parent=self.view.scene)
+        self.path_markers = scene.visuals.Markers(parent=self.view.scene)
+        self.path_plane = scene.visuals.Mesh(color=PATH_PLANE_FILL, parent=self.view.scene)
+        self.path_plane_edge = scene.visuals.Line(color=PATH_PLANE_EDGE, width=2.0, connect="segments",
+                                                  parent=self.view.scene)
+        for visual in (self.path_plane, self.path_plane_edge):
+            visual.set_gl_state("translucent", depth_test=False, cull_face=False)
+            visual.order = 20
+            visual.visible = False
+        for order, visual in enumerate((self.path_line, self.path_section, self.path_markers)):
+            visual.set_gl_state("translucent", depth_test=False)
+            visual.order = 22 + order
+            visual.visible = False
+        self.path_mode = False
+        self._path = None               # (axis, plane coordinate mm, (n, 2) in-plane points mm)
+        self._path_shown = False        # drawn outside path mode too
+        self._path_drag = None          # index of the point being moved
+        self.on_path_changed = None     # callback((n, 2) points m)
+
         self._init_headlight()
         self._init_click()
 
@@ -463,6 +503,7 @@ class GeometryView:
 
     def _init_click(self):
         self.canvas.events.mouse_press.connect(self._mouse_press)
+        self.canvas.events.mouse_move.connect(self._mouse_move)
         self.canvas.events.mouse_release.connect(self._mouse_release)
         self.canvas.events.mouse_double_click.connect(self._double_click)
         self.canvas.events.key_press.connect(self._escape)
@@ -474,14 +515,34 @@ class GeometryView:
 
     def _mouse_press(self, event):
         self._press = np.array(event.pos[:2], float) if event.button == 1 else None
+        if self.path_mode and event.button == 1 and keys.CONTROL in event.modifiers:
+            self._path_drag = self._path_point_at(event.pos)
+            if self._path_drag is not None:
+                self.view.camera.interactive = False    # the drag moves the point, not the view
+
+    def _mouse_move(self, event):
+        if self._path_drag is None:
+            return
+        uv = self._plane_hit(event.pos)
+        if uv is not None:
+            self._path[2][self._path_drag] = uv
+            self._draw_path()
 
     def _mouse_release(self, event):
         press, self._press = self._press, None
+        if self._path_drag is not None:
+            self._path_drag = None
+            self.view.camera.interactive = True
+            self._path_edited()
+            return
         modifiers = set(event.modifiers)
         if press is None or event.button != 1 or self.view.camera.space_down                 or modifiers - {keys.SHIFT}:
             return
         if np.linalg.norm(np.array(event.pos[:2], float) - press) >= CLICK_PX:
             return                      # a drag: rotated or panned
+        if self.path_mode:
+            self._path_click(event.pos, keys.SHIFT in modifiers)
+            return
         pick = self.pick_at(event.pos)
         if pick is not None:
             picks = list(self.picks)
@@ -489,6 +550,12 @@ class GeometryView:
             self.set_picks(picks)
 
     def _double_click(self, event):
+        if self.path_mode:
+            index = self._path_point_at(event.pos) if event.button == 1 else None
+            if index is not None:
+                self._path = (*self._path[:2], np.delete(self._path[2], index, axis=0))
+                self._path_edited()
+            return
         if event.button == 1 and any(self.picks) and self.pick_at(event.pos) is None:
             self.set_picks([None, None])
 
@@ -519,6 +586,152 @@ class GeometryView:
         self.canvas.update()
         if self.on_pick is not None:
             self.on_pick(self.picks)
+
+    # =====================================================
+    # Z0 path
+    # =====================================================
+
+    def set_path(self, axis, at, points, shown=False):
+        """
+        The Z0 path: in the plane normal to `axis` (0..2) at `at` (m), (n, 2)
+        in-plane points (m, the other two axes in order). shown: drawn
+        outside path mode too.
+        """
+        self._path = (int(axis), float(at) / SCENE_UNIT,
+                      np.asarray(points, dtype=float).reshape(-1, 2) / SCENE_UNIT)
+        self._path_shown = bool(shown)
+        self._draw_path()
+
+    def set_path_shown(self, on):
+        self._path_shown = bool(on)
+        self._draw_path()
+
+    def set_path_mode(self, on):
+        """Clicks edit the path (see the header) instead of picking points."""
+        self.path_mode = bool(on)
+        self._path_drag = None
+        self.view.camera.interactive = True
+        self._draw_path()
+
+    def set_path_section(self, center=None, across=None, half_width=0.0):
+        """The profile's cross-section: a bar from center - half_width * across to + (m); None hides it."""
+        if center is None:
+            self.path_section.visible = False
+        else:
+            ends = (np.asarray(center) + np.outer([-half_width, half_width], across)) / SCENE_UNIT
+            self.path_section.set_data(pos=ends.astype(np.float32))
+            self.path_section.visible = True
+        self.canvas.update()
+
+    def path_points(self):
+        """(n, 2) in-plane points of the path (m)."""
+        return self._path[2] * SCENE_UNIT if self._path is not None else np.zeros((0, 2))
+
+    def _path_world(self, uv):
+        """(n, 2) in-plane mm -> (n, 3) scene mm."""
+        axis, at, _ = self._path
+        u, v = [a for a in range(3) if a != axis]
+        out = np.empty((len(uv), 3))
+        out[:, u], out[:, v], out[:, axis] = uv[:, 0], uv[:, 1], at
+        return out
+
+    def _draw_path(self):
+        shown = self._path is not None and (self._path_shown or self.path_mode)
+        points = self._path[2] if shown else np.zeros((0, 2))
+        world = self._path_world(points).astype(np.float32) if shown else None
+        self.path_line.visible = len(points) >= 2
+        if self.path_line.visible:
+            self.path_line.set_data(pos=world)
+        self.path_markers.visible = len(points) >= 1
+        if self.path_markers.visible:
+            colors = np.array([PATH_START_COLOR] + [PATH_COLOR] * (len(points) - 1))
+            self.path_markers.set_data(world, size=9, edge_width=1.5, face_color=colors, edge_color=(0, 0, 0, 1))
+        if not shown:
+            self.path_section.visible = False
+        self._draw_path_plane()
+        self.canvas.update()
+
+    def _draw_path_plane(self):
+        """In path mode: the path's plane over the model's extent (5 % margin)."""
+        on = self.path_mode and self._path is not None
+        self.path_plane.visible = self.path_plane_edge.visible = on
+        if not on:
+            return
+        axis, at, _ = self._path
+        u, v = [a for a in range(3) if a != axis]
+        lo, hi = (np.asarray(b, dtype=float) for b in self._bounds)
+        margin = 0.05 * (hi - lo)
+        lo, hi = lo - margin, hi + margin
+        corners = np.zeros((4, 3))
+        corners[:, axis] = at
+        corners[:, u] = [lo[u], hi[u], hi[u], lo[u]]
+        corners[:, v] = [lo[v], lo[v], hi[v], hi[v]]
+        corners = corners.astype(np.float32)
+        self.path_plane.set_data(vertices=corners, faces=np.array([[0, 1, 2], [0, 2, 3]], np.uint32),
+                                 color=PATH_PLANE_FILL)
+        self.path_plane_edge.set_data(pos=corners[[0, 1, 1, 2, 2, 3, 3, 0]])
+
+    def _view_transform(self):
+        """Scene (mm) -> canvas pixels, or None without bodies."""
+        if not self._bodies:
+            return None
+        return next(iter(self._bodies.values())).mesh.get_transform("visual", "canvas")
+
+    def _plane_hit(self, pos):
+        """In-plane point (mm) where the ray through canvas pixel `pos` meets the path's plane, or None."""
+        transform = self._view_transform()
+        if transform is None or self._path is None:
+            return None
+        axis, at, _ = self._path
+        origin, direction = _ray(transform, np.asarray(pos[:2], dtype=float))
+        if abs(direction[axis]) < 1e-9:
+            return None                 # the plane seen edge-on
+        t = (at - origin[axis]) / direction[axis]
+        if t <= 0:
+            return None
+        hit = origin + t * direction
+        return hit[[a for a in range(3) if a != axis]]
+
+    def _path_point_at(self, pos):
+        """Index of the path point within PATH_PX of canvas pixel `pos`, or None."""
+        transform = self._view_transform()
+        if transform is None or self._path is None or not len(self._path[2]):
+            return None
+        xy, front = _project(transform, self._path_world(self._path[2]))
+        distance = np.where(front, np.linalg.norm(xy - np.asarray(pos[:2], float), axis=1), np.inf)
+        k = int(np.argmin(distance))
+        return k if distance[k] <= PATH_PX else None
+
+    def _path_click(self, pos, insert):
+        if self._path is None or self._path_point_at(pos) is not None:
+            return                      # on a point: a double click deletes it
+        uv = self._plane_hit(pos)
+        if uv is None:
+            return
+        points = self._path[2]
+        if insert:
+            if len(points) < 2:
+                return
+            click = np.asarray(pos[:2], float)
+            xy, front = _project(self._view_transform(), self._path_world(points))
+            a, ab = xy[:-1], xy[1:] - xy[:-1]
+            t = np.clip(np.einsum("ij,ij->i", click - a, ab)
+                        / np.maximum(np.einsum("ij,ij->i", ab, ab), 1e-12), 0.0, 1.0)
+            distance = np.linalg.norm(a + t[:, None] * ab - click, axis=1)
+            distance[~(front[:-1] & front[1:])] = np.inf
+            k = int(np.argmin(distance))
+            if distance[k] > PATH_PX:
+                return
+            points = np.insert(points, k + 1, uv, axis=0)
+        else:
+            points = np.vstack([points, uv])
+        self._path = (*self._path[:2], points)
+        self._path_edited()
+
+    def _path_edited(self):
+        self._draw_path()
+        if self.on_path_changed is not None:
+            self.on_path_changed(self.path_points())
 
     def _init_headlight(self):
         """The light follows the camera, so no side of a model stays dark."""
