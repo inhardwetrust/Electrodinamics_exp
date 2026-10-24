@@ -5,12 +5,14 @@
 # the mesh plane of the 3D view. The mouse wheel over the plot moves the
 # marker (one section per notch, ten with Ctrl) and asks the main window
 # to move the plane there (coordinate_picked), so the 3D view shows the
-# section whose Z0 is read.
+# section whose Z0 is read. Nothing is computed on opening: the Compute
+# button asks the main window (compute_requested), which keeps the result
+# until the mesh changes.
 
 import numpy as np
 from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtGui import QFont
-from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from view.plot import LinePlot
 
@@ -21,6 +23,7 @@ COLOR_Z0, COLOR_GUIDE = 0, 6
 
 class ProfileWindow(QWidget):
     coordinate_picked = Signal(float)       # m along the profile's axis
+    compute_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent, Qt.Tool)
@@ -42,8 +45,17 @@ class ProfileWindow(QWidget):
         self.info.setStyleSheet("color: gray")
         self.info.setWordWrap(True)
 
+        self.compute_button = QPushButton("Compute")
+        self.compute_button.setToolTip("Z0 of every grid section along the mesh plane's axis")
+        self.compute_button.clicked.connect(self.compute_requested)
+        self.state = QLabel()
+        bar = QHBoxLayout()
+        bar.addWidget(self.compute_button)
+        bar.addWidget(self.state, 1)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
+        layout.addLayout(bar)
         layout.addWidget(self.plot, 1)
         layout.addWidget(self.readout)
         layout.addWidget(self.info)
@@ -61,13 +73,26 @@ class ProfileWindow(QWidget):
             + (f"Gaps: {missing} section{'s' * (missing > 1)} without a single signal conductor."
                if missing else ""))
         self._index = min(self._index, max(len(profile.sections) - 1, 0))
+        self.compute_button.setEnabled(False)
+        self.state.setText(f"{len(profile.sections)} sections along {axis_name}")
+        self._redraw()
+
+    def set_empty(self, axis_name):
+        """No profile of the current mesh along `axis_name` yet."""
+        self.profile = None
+        self.axis_name = axis_name
+        self.setWindowTitle(f"Z0 profile along {axis_name.upper()}")
+        self.compute_button.setEnabled(True)
+        self.state.setText(f"Not computed for this mesh: press Compute (every section along {axis_name}).")
+        self.info.setText("")
         self._redraw()
 
     def mark_outdated(self):
         """The model changed after the profile was computed."""
+        self.compute_button.setEnabled(True)
         if self.profile is not None:
-            self.setWindowTitle(f"Z0 profile along {self.axis_name.upper()} - outdated (model changed, "
-                                "compute it again)")
+            self.setWindowTitle(f"Z0 profile along {self.axis_name.upper()} - outdated (model changed)")
+            self.state.setText("Outdated: the mesh changed. Press Compute for the new one.")
 
     def set_marker(self, coordinate):
         """Move the marker to the section nearest `coordinate` (m), without signalling."""

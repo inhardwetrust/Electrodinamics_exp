@@ -1156,6 +1156,29 @@ class MainWindow(QMainWindow):
             if not s.error else f"Z0 at {where}: {s.error}", 15000)
 
     def _z0_profile(self):
+        """Open the profile window: the kept profile of this mesh, or Compute to make one."""
+        if not self._z0_ready():
+            return
+        axis = self.mesh_axis.currentIndex()
+        if self.profile_window is None:
+            self.profile_window = ProfileWindow(self)
+            self.profile_window.coordinate_picked.connect(self._profile_picked)
+            self.profile_window.compute_requested.connect(self._z0_profile_compute)
+        profile = self._kept_profiles().get(axis)
+        if profile is None:
+            self.profile_window.set_empty(AXES[axis])
+        else:
+            self._show_profile(profile)
+        self.profile_window.show()
+        self.profile_window.raise_()
+
+    def _kept_profiles(self):
+        """{axis: Profile} of the current materials (a profile depends only on the mesh)."""
+        if self._profiles is None or self._profiles[0] is not self.materials:
+            self._profiles = (self.materials, {})
+        return self._profiles[1]
+
+    def _z0_profile_compute(self):
         if not self._z0_ready():
             return
         axis = self.mesh_axis.currentIndex()
@@ -1164,27 +1187,19 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Z0 profile along {AXES[axis]}: section {done} / {total}")
             QApplication.processEvents()
 
-        # A profile depends only on the mesh: kept until the materials change.
-        if self._profiles is None or self._profiles[0] is not self.materials:
-            self._profiles = (self.materials, {})
-        profile = self._profiles[1].get(axis)
-        if profile is None:
-            QApplication.setOverrideCursor(Qt.WaitCursor)
-            try:
-                profile = impedance_profile(self.materials, axis, self.geometry.bounds, progress,
-                                            self._pec_nets())
-            finally:
-                QApplication.restoreOverrideCursor()
-            self._profiles[1][axis] = profile
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            profile = impedance_profile(self.materials, axis, self.geometry.bounds, progress, self._pec_nets())
+        finally:
+            QApplication.restoreOverrideCursor()
+        self._kept_profiles()[axis] = profile
         self.statusBar().showMessage(f"Z0 profile along {AXES[axis]}: {len(profile.sections)} sections", 5000)
-        if self.profile_window is None:
-            self.profile_window = ProfileWindow(self)
-            self.profile_window.coordinate_picked.connect(self._profile_picked)
-        self.profile_window.set_profile(profile, AXES[axis], accuracy=self._z0_note())
+        self._show_profile(profile)
+
+    def _show_profile(self, profile):
+        self.profile_window.set_profile(profile, AXES[profile.axis], accuracy=self._z0_note())
         if self._mesh_coordinate is not None:
             self.profile_window.set_marker(self._mesh_coordinate)
-        self.profile_window.show()
-        self.profile_window.raise_()
 
     def _z0_convergence(self):
         """Z0 at the plane on finer and finer grids of its own (the 3D grid is not touched)."""
