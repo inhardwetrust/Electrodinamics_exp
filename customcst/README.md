@@ -91,7 +91,8 @@ It shows which part of the feed is off 50 Ω.
 **The Z0 profile along a drawn path**: click the path along the trace in
 the 3D view (the plane in blue), and every cross-section is cut square to
 it, through the bends and diagonals. Here a KiCad board from the
-connector to the switch, the marker in the narrowing at the switch pin.
+connector to the switch; the green window is what the section under the
+profile's marker takes in.
 
 ![Z0 path](docs/images/z0_path.png)
 

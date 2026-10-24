@@ -81,8 +81,9 @@ Z0PATH_PARAMS = (
     Param("at", "plane at", 0.0, unit="mm", tooltip="The plane's coordinate along its axis"),
     Param("half_width", "section half width", 2.0, minimum=0.05, unit="mm",
           tooltip="How far each cross-section reaches to either side of the path: wider than "
-                  "the trace and its gaps, narrower than the distance to the next line "
-                  "(also above and below the plane: keep the ground planes inside)"),
+                  "the trace and its gaps, narrower than the distance to the next line. "
+                  "It must reach the ground: at a connector, its legs (half the connector's "
+                  "width or a bit more)"),
 )
 
 

@@ -13,6 +13,10 @@
 #   - its profile along x cuts it obliquely (1 / cos 30 wider): Z0 low by
 #     more than 5 %;
 #   - sections at most SECTION_STEP apart on a uniform run;
+#   - the plane drawn high above the board (half_width over its height
+#     above the ground) reads the same Z0: the section spans the model's
+#     height whatever the plane (cut in height, an SMA's coax above a
+#     board lost its shield);
 #   - a path with a vertex (the turned line, then back along x) gives
 #     sections on both segments, none at the vertex, coordinates growing
 #     along the path.
@@ -111,6 +115,12 @@ def main():
         check("straight line: the path profile reads the converged Z0",
               len(z) > 5 and abs(np.median(z) / reference - 1) < 0.015,
               f"{np.median(z):.2f} Ω vs {reference:.2f} ± {converged.estimate[1]:.2f} Ω converged")
+        high = line_path([(-2, 0), (2, 0)])
+        high.at += 1.5 * HALF_WIDTH
+        z_high = finite(path_profile(g, project, high, nets=nets))
+        check("the plane high above the board reads the same Z0",
+              len(z_high) > 5 and abs(np.median(z_high) / np.median(z) - 1) < 0.002,
+              f"{np.median(z_high):.2f} Ω at {high.at / MM:.2f} mm vs {np.median(z):.2f} Ω")
         gaps = np.diff(straight.coordinates)
         check("sections at most SECTION_STEP apart", gaps.max() <= SECTION_STEP * 1.0001,
               f"{len(straight.sections)} sections over 4 mm, largest gap {gaps.max() / MM:.3f} mm")

@@ -30,13 +30,13 @@
 #     hold the trace and its gaps, narrow enough not to cut a neighboring
 #     line: a conductor on the path's net cut by the side reads as ground;
 #   - a window rides along the path: each segment's grid and
-#     discretization cover only the box half_width across, half_width
-#     above and below the plane and half_width beyond its ends (bodies
-#     outside it are dropped, the slanted refinement looks only inside;
-#     build_grid's region). The whole rotated board took 2.3x as long, for
-#     the same Z0 within 0.4 Ohm (justswitch_v3). The box ends the section
-#     above and below too: the field of a line over its ground does not
-#     reach that far;
+#     discretization cover only the box half_width across and beyond its
+#     ends, over the model's whole height (bodies outside it are dropped,
+#     the slanted refinement looks only inside; build_grid's region). The
+#     whole rotated board took 2.3x as long, for the same Z0 within 0.4 Ohm
+#     (justswitch_v3). Cut in height too (half_width above and below the
+#     plane) it was 30 % faster again, but cut an SMA's coax shield above
+#     the board open: 59 Ohm for 49, and the answer moved with the plane;
 #   - a section whose discretization (and nets) equals the previous one's
 #     on the segment (a uniform run) takes its answer without a solve;
 #   - what joins out of the plane counts as in the axis profile: each node
@@ -157,8 +157,8 @@ def path_profile(geometry, project, path, vias=(), nets=None, progress=None):
         a0, a1 = float(rotation[2] @ p0), float(rotation[2] @ p1)
         s_c, w_at = float(rotation[0] @ p0), float(rotation[1] @ p0)
         reach = path.half_width
-        region = (np.array([s_c - reach, w_at - reach, a0 - reach]),
-                  np.array([s_c + reach, w_at + reach, a1 + reach]))
+        region = (np.array([s_c - reach, -np.inf, a0 - reach]),     # the whole height
+                  np.array([s_c + reach, np.inf, a1 + reach]))
         frame = Geometry(_inside([rotated_body(b, rotation) for b in geometry.bodies], region),
                          geometry.source)
         frame_vias = _inside([rotated_body(b, rotation) for b in vias], region)

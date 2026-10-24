@@ -41,8 +41,11 @@
 #   - a double click on a point deletes it;
 #   - Shift + click near a segment inserts a point there;
 #   - on_path_changed(points) is called after every edit (m, in-plane).
-# set_path_section marks the cross-section the profile window reads: a
-# green bar across the path. In path mode the path's plane is shown over
+# The section window (set_path_section): what one cross-section of the
+# path profile takes in, a translucent green rectangle square to the path,
+# half_width to either side of it and over the model's whole height. Shown
+# with two points or more: at the path's start, or at the section under
+# the profile window's marker. In path mode the path's plane is shown over
 # the model's extent, translucent blue like the reference planes (through
 # the bodies: on a copper face it would z-fight).
 
@@ -95,7 +98,8 @@ PICK_COLORS = ((1.0, 0.85, 0.1, 1.0), (0.2, 0.9, 1.0, 1.0))   # points A, B; bla
 PICK_LINE_COLOR = (1.0, 1.0, 1.0, 0.9)
 PATH_COLOR = (1.0, 0.45, 0.1, 1.0)                # the Z0 path: orange
 PATH_START_COLOR = (1.0, 0.9, 0.2, 1.0)           # its first point
-PATH_SECTION_COLOR = (0.3, 1.0, 0.4, 1.0)         # the profile's section across it
+PATH_SECTION_COLOR = (0.3, 1.0, 0.4, 1.0)         # the section window's edge
+PATH_SECTION_FILL = (0.3, 1.0, 0.4, 0.15)         # and its fill
 PATH_PLANE_FILL = (0.05, 0.15, 0.7, 0.25)         # the path's plane in path mode
 PATH_PLANE_EDGE = REFERENCE_EDGE
 PATH_PX = 8                 # a click this close to a path point or segment hits it
@@ -448,7 +452,12 @@ class GeometryView:
         self._press = None
 
         self.path_line = scene.visuals.Line(color=PATH_COLOR, width=2.0, parent=self.view.scene)
-        self.path_section = scene.visuals.Line(color=PATH_SECTION_COLOR, width=3.0, parent=self.view.scene)
+        self.path_section = scene.visuals.Line(color=PATH_SECTION_COLOR, width=2.0, connect="segments",
+                                               parent=self.view.scene)
+        self.path_section_fill = scene.visuals.Mesh(color=PATH_SECTION_FILL, parent=self.view.scene)
+        self.path_section_fill.set_gl_state("translucent", depth_test=False, cull_face=False)
+        self.path_section_fill.order = 21
+        self.path_section_fill.visible = False
         self.path_markers = scene.visuals.Markers(parent=self.view.scene)
         self.path_plane = scene.visuals.Mesh(color=PATH_PLANE_FILL, parent=self.view.scene)
         self.path_plane_edge = scene.visuals.Line(color=PATH_PLANE_EDGE, width=2.0, connect="segments",
@@ -465,6 +474,8 @@ class GeometryView:
         self._path = None               # (axis, plane coordinate mm, (n, 2) in-plane points mm)
         self._path_shown = False        # drawn outside path mode too
         self._path_drag = None          # index of the point being moved
+        self._path_half_width = 0.0     # mm
+        self._path_section = None       # (center mm, across unit) of the profile's section, None: the start
         self.on_path_changed = None     # callback((n, 2) points m)
 
         self._init_headlight()
@@ -591,15 +602,16 @@ class GeometryView:
     # Z0 path
     # =====================================================
 
-    def set_path(self, axis, at, points, shown=False):
+    def set_path(self, axis, at, points, shown=False, half_width=0.0):
         """
         The Z0 path: in the plane normal to `axis` (0..2) at `at` (m), (n, 2)
         in-plane points (m, the other two axes in order). shown: drawn
-        outside path mode too.
+        outside path mode too. half_width (m): the section window's.
         """
         self._path = (int(axis), float(at) / SCENE_UNIT,
                       np.asarray(points, dtype=float).reshape(-1, 2) / SCENE_UNIT)
         self._path_shown = bool(shown)
+        self._path_half_width = float(half_width) / SCENE_UNIT
         self._draw_path()
 
     def set_path_shown(self, on):
@@ -613,15 +625,11 @@ class GeometryView:
         self.view.camera.interactive = True
         self._draw_path()
 
-    def set_path_section(self, center=None, across=None, half_width=0.0):
-        """The profile's cross-section: a bar from center - half_width * across to + (m); None hides it."""
-        if center is None:
-            self.path_section.visible = False
-        else:
-            ends = (np.asarray(center) + np.outer([-half_width, half_width], across)) / SCENE_UNIT
-            self.path_section.set_data(pos=ends.astype(np.float32))
-            self.path_section.visible = True
-        self.canvas.update()
+    def set_path_section(self, center=None, across=None):
+        """The section window at the profile's section: its point on the path (m), the unit across; None: the start."""
+        self._path_section = None if center is None else (np.asarray(center, dtype=float) / SCENE_UNIT,
+                                                          np.asarray(across, dtype=float))
+        self._draw_path()
 
     def path_points(self):
         """(n, 2) in-plane points of the path (m)."""
@@ -646,10 +654,35 @@ class GeometryView:
         if self.path_markers.visible:
             colors = np.array([PATH_START_COLOR] + [PATH_COLOR] * (len(points) - 1))
             self.path_markers.set_data(world, size=9, edge_width=1.5, face_color=colors, edge_color=(0, 0, 0, 1))
-        if not shown:
-            self.path_section.visible = False
+        self._draw_path_section(shown and len(points) >= 2)
         self._draw_path_plane()
         self.canvas.update()
+
+    def _draw_path_section(self, on):
+        """The section window: half_width across the path either side, the model's height."""
+        on = on and self._path_half_width > 0
+        self.path_section.visible = self.path_section_fill.visible = on
+        if not on:
+            return
+        axis, _, points = self._path
+        if self._path_section is not None:
+            center, across = self._path_section
+        else:
+            ends = self._path_world(points[:2])
+            along = ends[1] - ends[0]
+            normal = np.zeros(3)
+            normal[axis] = 1.0
+            across = np.cross(normal, along) / max(np.linalg.norm(along), 1e-12)
+            center = ends[0]
+        lo, hi = self._bounds
+        corners = np.empty((4, 3))
+        for n, (side, height) in enumerate(((-1, lo), (1, lo), (1, hi), (-1, hi))):
+            corners[n] = center + side * self._path_half_width * across
+            corners[n, axis] = height[axis]
+        corners = corners.astype(np.float32)
+        self.path_section_fill.set_data(vertices=corners, faces=np.array([[0, 1, 2], [0, 2, 3]], np.uint32),
+                                        color=PATH_SECTION_FILL)
+        self.path_section.set_data(pos=corners[[0, 1, 1, 2, 2, 3, 3, 0]])
 
     def _draw_path_plane(self):
         """In path mode: the path's plane over the model's extent (5 % margin)."""

@@ -1320,7 +1320,7 @@ class MainWindow(QMainWindow):
         profile = self.profile_window.profile
         axis = profile.axis
         if axis < 0:
-            self.view.set_path_section(profile.points[index], profile.across[index], profile.half_width)
+            self.view.set_path_section(profile.points[index], profile.across[index])
             return
         coordinate = profile.sections[index].coordinate
         if self.mesh is None or not self.mesh.ok:
@@ -1355,7 +1355,7 @@ class MainWindow(QMainWindow):
             return
         self.view.set_path(UP_AXES.index(z0path["axis"]), z0path["at"] * MM,
                            np.asarray(z0path["points"], dtype=float).reshape(-1, 2) * MM,
-                           shown=self._path_on_profile())
+                           shown=self._path_on_profile(), half_width=z0path["half_width"] * MM)
         window = self.profile_window
         if not (self._path_on_profile() and window.profile is not None and window.profile.sections):
             self.view.set_path_section(None)
@@ -1422,6 +1422,12 @@ class MainWindow(QMainWindow):
         row.setData(0, Qt.UserRole, ("info", "z0path", None))
         row.setForeground(1, QColor("#2a2"))
         row.setToolTip(1, f"({u}, {v}) mm: " + ", ".join(f"({p[0]:g}, {p[1]:g})" for p in points))
+        note = self._note_row(section, "z0path", "half width ≥ half the widest part (connector: its legs)",
+                              "#888")
+        note.setToolTip(0, "Each cross-section spans the half width to either side of the path. What its "
+                           "side cuts counts as ground, but a ground beyond it is left out and Z0 reads "
+                           "high (an SMA launch with 2 mm: 54.5 Ω for 49.2). Not wider than needed: a "
+                           "neighboring line inside it would be a second conductor.")
         section.setExpanded(True)
         self.tree.blockSignals(False)
 

@@ -474,8 +474,9 @@ clicks in the model, and its cross-sections are square to every segment.
 
 The justswitch board (KiCad): the path from the connector pin, around the
 bends and over the series capacitor to the switch pin, in orange; the
-path's plane (the top copper) in translucent blue; the green bar is the
-section under the profile's marker, in the narrowed trace at the switch.
+path's plane (the top copper) in translucent blue; in green the section
+window under the profile's marker (half_width 2 mm to either side, the
+model's whole height), on the first diagonal at 7.5 mm.
 Its profile: the straight runs and the diagonals at 49.3 Ohm, the
 narrowing at the switch 36.8 Ohm, the switch pad 58 Ohm; the gap is the
 capacitor (its metal joins the ground elsewhere: no signal there).
@@ -501,8 +502,11 @@ capacitor (its metal joins the ground elsewhere: no signal there).
   until the mesh (or the path) changes; Compute computes it, with a
   progress bar (along the path first each segment's grid and
   discretization, then the sections done of all). The wheel
-  over a path profile marks its section in 3D (a green bar across the
-  path).
+  over a path profile moves the section window in 3D to its
+  section: a translucent green rectangle square to the path, half_width
+  to either side and the model's whole height, i.e. what one section takes
+  in (shown from two points on, at the path's start until a profile's
+  marker moves it).
 - Each segment is solved in a frame of its own (the model rotated so the
   segment runs along the third axis) on a fine grid of its own
   (CELLS_PER_FEATURE 16, the merge distance scaled), one discretization
@@ -510,21 +514,26 @@ capacitor (its metal joins the ground elsewhere: no signal there).
   least 0.02 mm and at most 0.1 mm apart, none at a vertex. Each reaches
   `half_width` to either side; the conductors cut by its sides are ground.
   A window rides along the path: each segment is gridded and discretized
-  only in the box `half_width` across, above and below the plane and
-  beyond its ends (`build_grid(..., region=...)`: the domain ends there,
+  only in the box `half_width` across and beyond its ends, over the
+  model's whole height (cut in height too, an SMA's coax above the board
+  lost its shield's top: 59 Ohm for 49) (`build_grid(..., region=...)`: the domain ends there,
   the slanted refinement looks only inside; bodies outside are dropped).
   A section equal to the previous one (the same edges and nets, a uniform
   run) reuses its answer.
   The nodes take the 3D nets of the nearest nodes of the 3D grid, rotated
   back. So it reads about the converged Z0, not the 3D grid's view.
+- `half_width` must reach the ground: what the window's side cuts is
+  ground, but a side in the gap between the signal and its ground leaves
+  that ground out. On test_prep's SMA launch (legs ~3.25 mm from the pin)
+  2 mm read 54.5 Ohm for 49.2 (the plane's convergence); 4 mm reads 49.7.
 - Speed (idle CPU), justswitch_v3 (KiCad board, 5 segments, 18 mm, 180
   sections): 147 s on the whole rotated board; 64 s with the window (Z0
   within 0.4 Ohm, mean 0.007); 36 s with the discretization on numba
-  (the same profile bit for bit): the solves 16 s (157 of 180 sections,
-  two SuperLU solves of ~64 k nodes each, ~0.05 s), the discretization
-  14 s (now mostly the triangle-line crossings, numpy), the grids 2 s.
-  Threads do not help the solves (the GIL); a loaded CPU (an FDTD run
-  beside it) is several times slower.
+  (the same profile bit for bit); 51 s with the window over the whole
+  height (within 0.13 Ohm): the solves (two SuperLU solves a section,
+  ~0.05-0.1 s each), the discretization (now mostly the triangle-line
+  crossings, numpy), the grids 2 s. Threads do not help the solves (the
+  GIL); a loaded CPU (an FDTD run beside it) is several times slower.
 - `check_path_profile`: a microstrip, straight and turned 30 degrees: the
   path reads the converged Z0 (within 1.5 %), sections at most 0.1 mm
   apart, flat along the turned line, where the axis profile cuts it > 5 %
