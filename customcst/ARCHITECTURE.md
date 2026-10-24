@@ -520,6 +520,10 @@ capacitor (its metal joins the ground elsewhere: no signal there).
   the slanted refinement looks only inside; bodies outside are dropped).
   A section equal to the previous one (the same edges and nets, a uniform
   run) reuses its answer.
+  A segment is discretized in chunks up to 2 mm long (CHUNK_LENGTH): as
+  one box, test_prep's 22 mm straight run with a 4 mm window needed
+  +7.3 GiB (two runs side by side ran out of memory); in chunks +1.05 GiB,
+  the same time and the same profile bit for bit.
   The nodes take the 3D nets of the nearest nodes of the 3D grid, rotated
   back. So it reads about the converged Z0, not the 3D grid's view.
 - `half_width` must reach the ground: what the window's side cuts is

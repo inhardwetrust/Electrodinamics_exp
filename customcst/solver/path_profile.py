@@ -20,10 +20,11 @@
 #   - the sections are at the faces square to the segment (the rotated
 #     grid's fixpoints: a pad's or a taper's edges), between its ends (none
 #     at a vertex: there the cross-section is not a line's), at most
-#     SECTION_STEP apart. A segment's sections come from one
-#     discretization: a box the section's width across, each section a
-#     slab two cells thick in it (one per section took seconds each on a
-#     board);
+#     SECTION_STEP apart. A segment's sections come from a few
+#     discretizations: boxes the section's width across and up to
+#     CHUNK_LENGTH along, each section a slab two cells thick in one (one
+#     per section took seconds each on a board; one per segment, a 22 mm
+#     straight run on a 4 mm window needed 65 M cells, out of memory);
 #   - each section reaches half_width to either side of the path: the
 #     conductors touching its sides (the pour, the planes) are ground, as
 #     the model's sides are for the profile along an axis. Wide enough to
@@ -58,6 +59,7 @@ from solver.line_profile import Profile, Section, line_impedance
 PATH = -1                   # Profile.axis of a path profile
 CELLS_PER_FEATURE = 16.0    # the sections' own grid (at least the project's)
 SECTION_STEP = 0.1e-3       # m, the longest distance between two sections
+CHUNK_LENGTH = 2e-3         # m, the longest stretch of a segment discretized at once
 SECTION_GAP = 0.02e-3       # m, the shortest (faces closer than this give one section)
 
 
@@ -172,15 +174,18 @@ def path_profile(geometry, project, path, vias=(), nets=None, progress=None):
     for k, (rotation, frame, frame_vias, mesh, p0, start, a0, positions) in enumerate(plans):
         segment = f"segment {k + 1}/{segments}"
         s_c, w_at = float(rotation[0] @ p0), float(rotation[1] @ p0)
-        if mesh.ok:
-            setup = None
-            if progress is not None:
-                def setup(_step, _steps, what, done=done):
-                    progress(done, total, f"{segment}: discretizing {what}")
-            materials, indices, bounds = _segment(frame, frame_vias, project, mesh, s_c, positions,
-                                                  path.half_width, discretize, setup)
+        chunks = _chunks(positions)
         previous = (None, None)
         for n, a in enumerate(positions):
+            if mesh.ok and chunks and n == chunks[0][0]:
+                first, last = chunks.pop(0)
+                setup = None
+                if progress is not None:
+                    def setup(_step, _steps, what, done=done):
+                        progress(done, total, f"{segment}: discretizing {what}")
+                materials, indices, bounds = _segment(frame, frame_vias, project, mesh, s_c,
+                                                      positions[first:last], path.half_width, discretize, setup)
+                indices = np.r_[np.zeros(first, dtype=int), indices]        # by the segment's position index
             if mesh.ok:
                 joins = _SectionNets(nets, rotation, a) if nets is not None else None
                 key = _section_key(materials, int(indices[n]), joins)
@@ -199,6 +204,16 @@ def path_profile(geometry, project, path, vias=(), nets=None, progress=None):
             if progress is not None and progress(done, total, segment) is False:
                 return profile
     return profile
+
+
+def _chunks(positions):
+    """[(first, last)]: runs of positions at most CHUNK_LENGTH long, each discretized on its own."""
+    chunks, first = [], 0
+    for n in range(1, len(positions) + 1):
+        if n == len(positions) or positions[n] - positions[first] > CHUNK_LENGTH:
+            chunks.append((first, n))
+            first = n
+    return chunks
 
 
 def _inside(bodies, region):
