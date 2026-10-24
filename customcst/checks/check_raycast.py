@@ -4,7 +4,10 @@
 # the brute-force reference (geometry/queries.py: every point / segment x
 # every triangle, the original implementation, kept here):
 #   - cells inside each body (dielectric fill, cell_body);
-#   - PEC E-edges per conductor (inside or on, plus the thin-body rule).
+#   - PEC E-edges per conductor (inside or on, plus the thin-body rule:
+#     a segment across the edge, reaching the tolerance but under half the
+#     neighbouring cell either side, so a thin body belongs to its nearest
+#     grid line only; materials.py, since 449867a).
 # Models: the coax with ports, the microstrip lines with port / capacitor,
 # the patch antenna and the dipole (boxes, cylinders, cones, merged thin
 # copper, sheets). Exact agreement is expected; ties on the order of 1e-6
@@ -43,7 +46,7 @@ def check(label, ok, detail=""):
 
 # --- reference (brute force) -------------------------------------------------
 
-def reference_edges_in_metal(body, midpoints, axis, tolerance):
+def reference_edges_in_metal(body, midpoints, axis, tolerance, lines):
     result = np.zeros(len(midpoints), dtype=bool)
     lo, hi = body.bounds
     near = np.nonzero(np.all((midpoints >= lo - tolerance) & (midpoints <= hi + tolerance), axis=1))[0]
@@ -55,11 +58,17 @@ def reference_edges_in_metal(body, midpoints, axis, tolerance):
     for u in range(3):
         if u == axis:
             continue
-        offset = np.zeros(3)
-        offset[u] = tolerance
+        # The reach: the tolerance, under half the cell on each side.
+        node = np.searchsorted(lines[u], m[:, u])            # the midpoints lie on lines[u]
+        gaps = 0.4999 * np.diff(lines[u])
+        below = np.minimum(tolerance, np.r_[np.inf, gaps][node])
+        above = np.minimum(tolerance, np.r_[gaps, np.inf][node])
         rest = ~hit
         if rest.any():
-            hit[rest] |= segment_crossings(body, m[rest] - offset, m[rest] + offset) >= needed
+            start, end = m[rest].copy(), m[rest].copy()
+            start[:, u] -= below[rest]
+            end[:, u] += above[rest]
+            hit[rest] |= segment_crossings(body, start, end) >= needed
     result[near] = hit
     return result
 
@@ -117,7 +126,7 @@ def main():
                     fast = dm._edges_in_metal(body, lines, axis, tolerance)
                     t_fast += time.perf_counter() - t
                     t = time.perf_counter()
-                    ref = reference_edges_in_metal(body, midpoints(lines, axis), axis, tolerance)
+                    ref = reference_edges_in_metal(body, midpoints(lines, axis), axis, tolerance, lines)
                     ref = ref.reshape(dm.edge_shape(shape, axis))
                     t_ref += time.perf_counter() - t
                     fast_n += int(fast.sum())
