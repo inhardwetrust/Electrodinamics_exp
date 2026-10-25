@@ -98,6 +98,14 @@ profile's marker takes in.
 
 ![Z0 profile along the path](docs/images/z0_path_profile.png)
 
+**TDR on the Z0 profile**: the time domain transform of the runs' S11,
+like a VNA's, laid on the profile's own axis (the time from each
+section's eps_eff). Where each run reflects, next to the profile and to
+what a TDR would see of the profile alone. Here the justswitch input:
+the switch pin's reflection at the path's end shrinks from run to run.
+
+![TDR](docs/images/tdr.png)
+
 ## Features
 
 - **STEP import** (OpenCASCADE). Bodies keep their CAD names and colors.
@@ -139,11 +147,16 @@ profile's marker takes in.
   - Touchstone `.sNp` export;
   - every run is saved, can be compared with the others, and is marked
     outdated when the model changes.
+- **TDR** of the shown runs: low pass (step as Z, impulse) with a causal
+  continuation to DC, or band pass; on a Z0 profile's axis, with the
+  profile as a TDR would see it.
 - **Line impedance tools**:
   - Z0 at any grid plane;
   - a Z0 profile along an axis;
   - a Z0 profile along a path drawn in the model (one per project, kept in
     its file): cross-sections square to it, on a fine grid of their own;
+  - computed profiles are saved with the runs: a model reopened unchanged
+    shows them without computing again;
   - Z0 convergence at a plane: the plane alone on finer and finer grids,
     the converged value and how far the current 3D grid is from it;
   - an accuracy note for narrow gaps.

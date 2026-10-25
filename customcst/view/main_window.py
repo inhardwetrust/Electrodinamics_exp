@@ -37,12 +37,14 @@ from project.settings import SECTIONS
 from view.geometry_view import GeometryView
 from view.profile_window import ProfileWindow
 from view.results_panel import ResultsPanel
+from view.tdr_window import TdrWindow
 from project.settings import EXCITE_ALL, accuracy_db
 from solver.result_file import (delete_result, fingerprint, format_duration, list_results,
                                 rename_result, save_result)
 from view.sim_runner import SimulationRunner
 from solver.line_profile import CONVERGED, impedance_profile, line_impedance, pec_nets, z0_convergence
 from solver.path_profile import Path, path_profile
+from solver.profile_file import load_profile, profile_key, save_profile
 
 MM = 1e-3
 AXES = "xyz"
@@ -92,6 +94,7 @@ class MainWindow(QMainWindow):
         self._profiles = None       # (materials, {axis or "path": Profile}): Z0 profiles of this mesh
         self._mesh_coordinate = None    # where the mesh plane is (m)
         self.profile_window = None      # Z0 profile (ProfileWindow), made on first use
+        self.tdr_window = None          # TDR of the shown runs (TdrWindow), made on first use
         self._mesh_pool = ThreadPoolExecutor(max_workers=1)    # background discretization
         self._mesh_job = None
         self._center_slider = False
@@ -241,6 +244,7 @@ class MainWindow(QMainWindow):
         z0_menu.addAction("Z₀ at the plane", self._z0_here)
         z0_menu.addAction("Z₀ profile…", self._z0_profile)
         z0_menu.addAction("Z₀ convergence at the plane…", self._z0_convergence)
+        z0_menu.addAction("TDR of the shown runs…", self._tdr)
         self.z0_button.setMenu(z0_menu)
         bar.addWidget(self.z0_button)
 
@@ -492,6 +496,7 @@ class MainWindow(QMainWindow):
     def _build_results_panel(self):
         self.results = ResultsPanel()
         self.results.shifts_changed.connect(self._show_reference_planes)
+        self.results.tdr_requested.connect(self._tdr)
         self.tabs.addTab(self.results, "Results")
 
     def _picked(self, picks):
@@ -1047,6 +1052,7 @@ class MainWindow(QMainWindow):
         self._show_mesh_plane()
         if self.profile_window is not None and self.profile_window.isVisible():
             self.profile_window.mark_outdated()
+        self._update_tdr()
 
     def _on_grid(self):
         """The plane is on the grid lines: the mesh or materials plane is shown."""
@@ -1194,10 +1200,30 @@ class MainWindow(QMainWindow):
         self._show_source(source)
 
     def _kept_profiles(self):
-        """{axis or "path": Profile} of the current materials (cleared with the mesh; the path's also when it changes)."""
+        """
+        {axis or "path": Profile} of the current materials (cleared with the
+        mesh; the path's also when it changes). A new mesh starts with the
+        profiles saved for it (solver/profile_file.py: the same model,
+        types and settings, and path).
+        """
         if self._profiles is None or self._profiles[0] is not self.materials:
-            self._profiles = (self.materials, {})
+            self._profiles = (self.materials, self._saved_profiles())
         return self._profiles[1]
+
+    def _saved_profiles(self):
+        if self.project is None or self.materials is None:
+            return {}
+        try:
+            model = fingerprint(self.project)
+        except OSError:
+            return {}
+        kept = {}
+        for source in ("x", "y", "z", "path"):
+            key = profile_key(self.project, source, self.project.z0path, model)
+            profile = load_profile(self.project.step_path, source, key)
+            if profile is not None:
+                kept[self._profile_key(source)] = profile
+        return kept
 
     @staticmethod
     def _profile_key(source):
@@ -1248,8 +1274,15 @@ class MainWindow(QMainWindow):
             QApplication.restoreOverrideCursor()
             self.profile_window.end_compute()
         self._kept_profiles()[self._profile_key(source)] = profile
-        self.statusBar().showMessage(f"Z0 profile along {where}: {len(profile.sections)} sections", 5000)
+        saved = ""
+        try:
+            save_profile(self.project.step_path, source, profile,
+                         profile_key(self.project, source, self.project.z0path))
+        except OSError as error:
+            saved = f" (not saved: {error})"
+        self.statusBar().showMessage(f"Z0 profile along {where}: {len(profile.sections)} sections{saved}", 5000)
         self._show_profile(profile)
+        self._update_tdr()
 
     def _show_profile(self, profile):
         window = self.profile_window
@@ -1317,7 +1350,10 @@ class MainWindow(QMainWindow):
         The profile's marker moved: along an axis, put the plane there (and
         make it visible); along the path, mark the section across it.
         """
-        profile = self.profile_window.profile
+        self._mark_section(self.profile_window.profile, index)
+
+    def _mark_section(self, profile, index):
+        """A profile's section in 3D: the mesh plane there (along an axis), the section window (along the path)."""
         axis = profile.axis
         if axis < 0:
             self.view.set_path_section(profile.points[index], profile.across[index])
@@ -1331,6 +1367,38 @@ class MainWindow(QMainWindow):
                 or self.section_check.isChecked()):
             self.materials_check.setChecked(True)
         self.mesh_slider.setValue(int(np.argmin(np.abs(self._slider_positions() - coordinate))))
+
+    # =====================================================
+    # TDR (solver/tdr.py, view/tdr_window.py)
+    # =====================================================
+
+    def _tdr(self):
+        """The TDR window: the runs shown in Results, on a kept Z0 profile of this mesh."""
+        if self.tdr_window is None:
+            self.tdr_window = TdrWindow(self)
+            self.tdr_window.section_picked.connect(self._mark_section)
+            self.tdr_window.profile_changed.connect(self._show_path)
+            self.tdr_window.hidden.connect(self._show_path)
+            self.tdr_window.profile_requested.connect(self._tdr_profile)
+        self.tdr_window.show()
+        self.tdr_window.raise_()
+        self._update_tdr()
+
+    def _update_tdr(self):
+        window = self.tdr_window
+        if window is None or not window.isVisible():
+            return
+        profiles = self._kept_profiles() if self.materials is not None else {}
+        window.path_drawn = self._z0path() is not None
+        window.set_data(self.results.runs, profiles, self.waveports)
+
+    def _tdr_profile(self, source):
+        """The TDR window asks for a profile: open the profile window on `source` and compute it."""
+        if not self._z0_ready():
+            return
+        self._z0_profile()
+        self._show_source(source)
+        self._z0_profile_compute(source)
 
     # =====================================================
     # Z0 path (project [z0path], solver/path_profile.py)
@@ -1348,16 +1416,22 @@ class MainWindow(QMainWindow):
         window = self.profile_window
         return window is not None and window.isVisible() and window.source == "path"
 
+    def _path_on_tdr(self):
+        window = self.tdr_window
+        return window is not None and window.isVisible() and window.on_path
+
     def _show_path(self):
-        """The path in the 3D view: while drawing it, or while the profile window reads along it."""
+        """The path in the 3D view: while drawing it, or while the profile or the TDR window reads along it."""
         z0path = self.project.z0path if self.project is not None else None
         if z0path is None:
             return
         self.view.set_path(UP_AXES.index(z0path["axis"]), z0path["at"] * MM,
                            np.asarray(z0path["points"], dtype=float).reshape(-1, 2) * MM,
-                           shown=self._path_on_profile(), half_width=z0path["half_width"] * MM)
+                           shown=self._path_on_profile() or self._path_on_tdr(),
+                           half_width=z0path["half_width"] * MM)
         window = self.profile_window
-        if not (self._path_on_profile() and window.profile is not None and window.profile.sections):
+        if not (self._path_on_profile() and window.profile is not None and window.profile.sections
+                or self._path_on_tdr()):
             self.view.set_path_section(None)
 
     def _path_mode_toggled(self, on):
@@ -1383,6 +1457,7 @@ class MainWindow(QMainWindow):
         self._fill_z0path()
         if self._profiles is not None:
             self._profiles[1].pop("path", None)
+        self._update_tdr()
         if self._path_on_profile() and self.profile_window.profile is not None:
             self.profile_window.mark_outdated("the path changed")
             self.view.set_path_section(None)
@@ -1909,6 +1984,7 @@ class MainWindow(QMainWindow):
             self.results.set_message("no run ticked in Project > Simulation > Results")
         self._update_result_status()
         self._fill_results()
+        self._update_tdr()
 
     def _is_current(self, run):
         return self.project is not None and run.fingerprint == self._current_fingerprint()

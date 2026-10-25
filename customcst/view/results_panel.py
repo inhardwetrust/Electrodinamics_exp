@@ -53,6 +53,7 @@ TEXT_HEIGHT = 170           # px: the readout / status / info area under the plo
 
 class ResultsPanel(QWidget):
     shifts_changed = Signal()           # a reference plane moved (self.shifts)
+    tdr_requested = Signal()            # the TDR button: the main window opens its window
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -79,6 +80,9 @@ class ResultsPanel(QWidget):
         self.save_button.setToolTip("Touchstone file of the newest shown run")
         self.save_button.clicked.connect(self._save_touchstone)
         self.save_button.setEnabled(False)
+        self.tdr_button = QPushButton("TDR…")
+        self.tdr_button.setToolTip("Time domain reflectometry of the shown runs, along a Z0 profile")
+        self.tdr_button.clicked.connect(self.tdr_requested.emit)
 
         controls = QHBoxLayout()
         controls.addWidget(QLabel("Format:"))
@@ -101,6 +105,7 @@ class ResultsPanel(QWidget):
         controls.addWidget(self.normalize_check)
         controls.addWidget(self.normalize_box)
         controls.addSpacing(12)
+        controls.addWidget(self.tdr_button)
         controls.addWidget(self.save_button)
 
         self.line_plot = LinePlot()

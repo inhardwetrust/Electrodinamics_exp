@@ -425,6 +425,16 @@ CST's 2D port solver or a TDR picture.
   computes nothing: its Compute button does. Each axis's profile is kept
   until the mesh changes (reopening shows it again); after a remesh the
   open window says outdated and Compute is enabled again.
+- Computed profiles are saved with the runs (`solver/profile_file.py`:
+  `model.results/z0profiles/x.npz` ... `path.npz`, one per source) under
+  a key: the results' fingerprint (STEP bytes, body types and values,
+  hole rules, [simulation] / [mesh]: all the mesh is made of), the
+  source, the Z0 path for the path's one, a format version. A new mesh
+  starts with the ones whose key matches, so a model reopened unchanged
+  shows them without a Compute (the justswitch input's X profile: 68 s
+  once). Another key: not loaded, overwritten by the next Compute; a
+  damaged file: not loaded. `check_profile_file`: round trips (axis,
+  path), the key's parts, a damaged file, the run listing unaffected.
 - The model's extent on the plane picks the conductors: what reaches its
   side is ground, the one other conductor is the signal. Where nothing
   reaches the side (a connector's shell beyond the board), the metal's own
@@ -543,6 +553,66 @@ capacitor (its metal joins the ground elsewhere: no signal there).
   apart, flat along the turned line, where the axis profile cuts it > 5 %
   low; a path with a vertex has sections on both segments, none at the
   vertex. `check_project_file` covers `[z0path]`.
+
+## TDR (time domain reflectometry)
+
+Results > TDR… or Z₀ ▸ TDR of the shown runs (`solver/tdr.py`,
+`view/tdr_window.py`): a VNA's time domain transform of the shown runs'
+S_jj, on the Z0 profile's own axis. No new simulation.
+
+![TDR along the path, the justswitch input](docs/images/tdr.png)
+
+The justswitch input (SMA, 23 mm of CPW, the switch pin as a 50 Ohm
+lumped): three runs and the path profile. The pin's inductive doublet at
+the path's end (impulse + then -) halves with the lumped's 0.03 pF; the
+launch (10-14 mm), deep dips in the quasi-static profile, is flat in all
+runs.
+- Low pass: the band (uniform, 1-10 GHz in the runs) on its harmonic
+  grid, continued down to DC, a Kaiser window over -f_max..f_max
+  (Minimum / Normal / Maximum: beta 0 / 6 / 13), the inverse FFT. The
+  impulse is scaled so a single reflection reads its rho at the peak;
+  the step (its running sum) reads as Z = R (1 + rho) / (1 - rho).
+- The continuation to DC is causal: the structure answers only for a
+  while (its support: where the band pass envelope, which needs no DC,
+  is above 3e-3 of its peak), so the missing bins below f_min are the
+  least squares ones that leave the windowed response nil outside it.
+  A polynomial fit of the low end (Re even, Im odd in f) failed: a
+  reflection 300 ps away turns 2 rad by 1 GHz, and on the justswitch
+  input it drew a 70 Ohm bump where the causal one (and the profile) has
+  51. A slow tail mostly below f_min (a DC block's RC) is not determined
+  by the band: the fit is repeated with a shorter and a longer reach,
+  their spread of S(DC) is its uncertainty, and above 0.03 the window
+  warns that the step's level drifts (band pass there).
+- Band pass: the envelope |rho| over the band alone (any band; behind a
+  DC block), no sign.
+- Resolution: the step's 10-90 % rise, 99 ps for 10 GHz with the normal
+  window, ~1 cm of board line; written under the plot. A 1 mm 60 Ohm pad
+  reads 51 Ohm.
+- On a profile (one the main window keeps for the mesh: X, Y, Z or Path):
+  a waveguide port on it ties the time to the profile's coordinate by
+  the sections' eps_eff (`port_origin`, `line_map`: along the port's axis
+  its plane; on a path the point nearest the port's center, the way in
+  from the port's direction; a coax then a board each at its own speed).
+  Without one (no profile, another axis, a discrete port) the axis is the
+  round trip time.
+- The profile box lists X, Y, Z (and Path when one is drawn) whether
+  computed or not. On one not computed for this mesh, the window says so
+  and its "Compute Z₀ profile along ..." button computes it (the profile
+  window opens with its progress); by default the path's, else the port's
+  axis.
+- With a profile the window also draws its Z0 (thin) and "profile as
+  TDR": the sections as a cascade of uniform lossless lines (pieces of
+  at most 0.02 mm, terminated in the port's R) through the same
+  transform on the newest run's band. Where a run and it differ, the 3D
+  field differs from the cross-sections (a pin, a launch, a lumped).
+- The wheel moves the marker over the profile's sections and the 3D
+  plane or the path's section with it (the path shows in 3D while the
+  window reads along it), as the profile window does.
+- `check_tdr`: a single reflection (low pass impulse and step, band pass
+  envelope, at its time), S(DC) of a load behind a line and the doubt
+  behind a DC block, a 20 mm 60 Ohm line (60 Ohm in the middle, its edges
+  at the round trips), the cascade against the exact steps, a 1 mm pad
+  smeared, the delays of a coax then a board line, ports on profiles.
 
 ## Solver speed (numba kernels)
 
