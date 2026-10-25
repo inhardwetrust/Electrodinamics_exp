@@ -685,6 +685,24 @@ On the board path above the discretization went 41 -> 14 s; on the SMA +
   rows are rebuilt). The first version ran discretize in the GUI thread
   with processEvents and crashed: the tree's editor could be deleted
   under its own commit. `wait_for_mesh()` for scripts and --screenshot.
+- What runs before the background job (in the GUI thread, no bar) was
+  18.7 s on the justswitch input after an element's value edit, now
+  0.2 s:
+  - an element's (or port's) ends: 2001 axis samples, each tested against
+    every triangle of every conductor (F.Cu: 10^4 triangles), 16.5 s.
+    `points_in_or_on` now takes only the triangles that can matter: for
+    the distance those whose boxes reach the points' box (+ tolerance);
+    for the ray parity those ahead of the points (the ray runs + in every
+    component) whose projections across the ray cover the points' (every
+    crossed triangle stays, so the parity is unchanged). The triangles'
+    corners and boxes are kept per body. 16.5 -> 0.7 s; and the result is
+    kept per body name and conductor set for the loaded geometry
+    (`Project.ports/elements(cache=)`): a value edit takes none;
+  - the slanted refinement (`_slanted`, 1.8 s) is kept by its inputs
+    (a hash of the conductors' triangles, cells per feature, min step,
+    the air step, the region; the last 4).
+  A type change (another conductor set) or a new mesh setting still
+  computes them (~2.5 s there).
 
 ## Z0 accuracy of narrow lines
 

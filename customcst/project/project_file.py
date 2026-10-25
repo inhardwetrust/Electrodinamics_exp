@@ -273,29 +273,38 @@ class Project:
             raise ProjectError(f"up axis must be one of {UP_AXES}, got {axis!r}")
         self.up = axis
 
-    def ports(self, geometry):
-        """{port body name: PortGeometry}, checked against the current conductors."""
-        conductors = [
-            b for b in geometry.bodies
-            if self.get(b.name) is not None and self.get(b.name).type in CONDUCTOR_TYPES
-        ]
-        return {
-            b.name: port_geometry(b, conductors)
-            for b in geometry.bodies
-            if self.get(b.name) is not None and self.get(b.name).type == "port"
-        }
+    def ports(self, geometry, cache=None):
+        """
+        {port body name: PortGeometry}, checked against the current conductors.
+        cache: a dict kept with the geometry (cleared when it is reloaded): a
+        port's geometry depends only on its body and the conductors, so an
+        edit of values does not repeat it.
+        """
+        return self._port_geometries(geometry, "port", True, cache)
 
-    def elements(self, geometry):
-        """{lumped element body name: PortGeometry (no polarity)}."""
+    def elements(self, geometry, cache=None):
+        """{lumped element body name: PortGeometry (no polarity)}; cache: as ports()."""
+        return self._port_geometries(geometry, "lumped", False, cache)
+
+    def _port_geometries(self, geometry, kind, polar, cache):
         conductors = [
             b for b in geometry.bodies
             if self.get(b.name) is not None and self.get(b.name).type in CONDUCTOR_TYPES
         ]
-        return {
-            b.name: port_geometry(b, conductors, polar=False)
-            for b in geometry.bodies
-            if self.get(b.name) is not None and self.get(b.name).type == "lumped"
-        }
+        names = tuple(c.name for c in conductors)
+        out = {}
+        for b in geometry.bodies:
+            if self.get(b.name) is None or self.get(b.name).type != kind:
+                continue
+            key = (b.name, polar, names)
+            if cache is None or key not in cache:
+                found = port_geometry(b, conductors, polar=polar)
+                if cache is None:
+                    out[b.name] = found
+                    continue
+                cache[key] = found
+            out[b.name] = cache[key]
+        return out
 
     def waveports(self, geometry):
         """{waveguide port body name: WavePortGeometry}."""

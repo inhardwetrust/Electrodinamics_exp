@@ -13,6 +13,10 @@
 # copper, sheets). Exact agreement is expected; ties on the order of 1e-6
 # of the tolerance may flip a handful of edges, so up to 0.1 % of the
 # body's PEC edges may differ. Prints the speedup.
+# Also points_in_or_on's triangle prefilter (only the triangles near the
+# points, and those their rays can cross; ports and elements find their
+# ends with it) against every triangle: points spread over each body and
+# clustered, a third on its vertices (on the surface): identical.
 #
 #   python checks/check_raycast.py      (~1-2 min, mostly the reference)
 
@@ -27,7 +31,9 @@ sys.stdout.reconfigure(encoding="utf-8")
 import numpy as np                                                       # noqa: E402
 
 from discretize import materials as dm                                   # noqa: E402
-from geometry.queries import points_in_or_on, points_inside, segment_crossings  # noqa: E402
+from geometry.queries import (                                           # noqa: E402
+    points_in_or_on, points_inside, segment_crossings, surface_distances,
+)
 from geometry.step_io import read_step                                   # noqa: E402
 from mesh.rectilinear import build_grid                                  # noqa: E402
 from project.object_types import CONDUCTOR_TYPES                         # noqa: E402
@@ -71,6 +77,27 @@ def reference_edges_in_metal(body, midpoints, axis, tolerance, lines):
             hit[rest] |= segment_crossings(body, start, end) >= needed
     result[near] = hit
     return result
+
+
+def check_prefilter():
+    rng = np.random.default_rng(7)
+    for name in MODELS:
+        for body in read_step(os.path.join(ROOT, "models", name)).bodies:
+            if len(body.triangles) == 0:
+                continue
+            lo, hi = body.bounds
+            span = np.maximum(hi - lo, 1e-6)
+            differ = count = 0
+            tolerance = 1e-7
+            for scale in (1.2, 0.03):                       # spread, clustered (an element's axis)
+                points = lo + span * rng.random(3) + (rng.random((150, 3)) - 0.5) * span * scale
+                points[:50] = body.vertices[rng.integers(0, len(body.vertices), 50)]
+                near_box = np.all((points >= lo - tolerance) & (points <= hi + tolerance), axis=1)
+                plain = near_box & ((surface_distances(body, points) <= tolerance) | points_inside(body, points))
+                differ += int(np.sum(points_in_or_on(body, points, tolerance) != plain))
+                count += len(points)
+            check(f"{name} {body.name}: points_in_or_on prefilter = all triangles", differ == 0,
+                  f"{count} points, {differ} differ")
 
 
 def reference_inside(body, points):
@@ -138,6 +165,7 @@ def main():
             total_ref += t_ref
         print(f"    {name}: grid {shape}")
 
+    check_prefilter()
     print(f"time: fast {total_fast:.2f} s, reference {total_ref:.1f} s "
           f"({total_ref / max(total_fast, 1e-9):.0f}x)")
     print("FAILED: " + ", ".join(FAILED) if FAILED else "all checks passed")

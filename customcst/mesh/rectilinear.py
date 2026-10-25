@@ -61,6 +61,8 @@
 # model 08 at min step 0.05: 48.8 Ohm), 6: -3 %, 8: -1.5 %, 12: -1.1 %,
 # 24: -0.4 %. Good for comparing variants; absolute Z0 needs >= 8.
 
+import copy
+import hashlib
 import math
 from dataclasses import dataclass, field
 
@@ -194,8 +196,8 @@ def build_grid(geometry, project, ports=None, waveports=None, vias=(), region=No
     valid_ports = [p for p in (ports or {}).values() if p.ok]
     result.slanted = [[], [], []]
     if mesh["slanted"]:
-        _slanted(result, [b for b, n in materials if n is None], mesh["cells_per_feature"], min_step,
-                 C0 / f_max / n_per_lambda, region)
+        _slanted_kept(result, [b for b, n in materials if n is None], mesh["cells_per_feature"], min_step,
+                      C0 / f_max / n_per_lambda, region)
 
     lines = []
     for axis in range(3):
@@ -284,6 +286,36 @@ def _merge(points, min_step):
 # =====================================================
 # Slanted conductor faces
 # =====================================================
+
+_SLANTED_KEPT = {}          # key -> (slanted, faces, feature): the last few refinements
+SLANTED_KEPT = 4
+
+
+def _slanted_kept(result, conductors, cells_per_feature, min_step, h_air, region=None):
+    """
+    _slanted, kept by its inputs (the conductors' triangles, the settings
+    it uses, the region): an edit that leaves them (an element's value, a
+    port's type, a dielectric's eps_r at the same densest material) does
+    not repeat it (1.8 s on the justswitch board of 2.7 s of an edit).
+    """
+    digest = hashlib.blake2b(digest_size=16)
+    for body in conductors:
+        for piece in body.pieces or [body]:
+            digest.update(np.ascontiguousarray(piece.vertices).tobytes())
+            digest.update(np.ascontiguousarray(piece.triangles).tobytes())
+    digest.update(repr((cells_per_feature, min_step, h_air,
+                        None if region is None else [list(map(float, r)) for r in region])).encode())
+    key = digest.digest()
+    kept = _SLANTED_KEPT.get(key)
+    if kept is None:
+        _slanted(result, conductors, cells_per_feature, min_step, h_air, region)
+        kept = (copy.deepcopy(result.slanted), result.slanted_faces, result.slanted_feature)
+        _SLANTED_KEPT[key] = kept
+        while len(_SLANTED_KEPT) > SLANTED_KEPT:
+            _SLANTED_KEPT.pop(next(iter(_SLANTED_KEPT)))
+    result.slanted = copy.deepcopy(kept[0])
+    result.slanted_faces, result.slanted_feature = kept[1], kept[2]
+
 
 def _slanted(result, conductors, cells_per_feature, min_step, h_air, region=None):
     """

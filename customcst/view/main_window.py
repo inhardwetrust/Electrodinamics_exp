@@ -86,6 +86,7 @@ class MainWindow(QMainWindow):
         self.project = None
         self.ports = {}             # {port body name: PortGeometry}
         self.elements = {}          # {lumped element body name: PortGeometry}
+        self._port_cache = {}       # ports' and elements' geometry of this geometry (Project.ports)
         self.waveports = {}         # {waveguide port body name: WavePortGeometry}
         self.holes = []             # geometry.holes.Hole: open through holes of the model
         self.via_bodies = []        # PEC cylinders of the holes assigned as vias
@@ -812,6 +813,7 @@ class MainWindow(QMainWindow):
             project = None
 
         self.geometry = geometry
+        self._port_cache = {}
         self.project = project
         if project is not None and project.z0path is None:
             project.z0path = project.default_z0path(geometry)     # saved with the next save
@@ -948,8 +950,8 @@ class MainWindow(QMainWindow):
         background (_start_discretize): self.materials is None until it is
         done, then _mesh_ready() updates the plane and the tree.
         """
-        self.ports = self.project.ports(self.geometry) if self.project else {}
-        self.elements = self.project.elements(self.geometry) if self.project else {}
+        self.ports = self.project.ports(self.geometry, self._port_cache) if self.project else {}
+        self.elements = self.project.elements(self.geometry, self._port_cache) if self.project else {}
         self.waveports = self.project.waveports(self.geometry) if self.project else {}
         self.view.set_ports(list(self.ports.values()), list(self.elements.values()))
         self._show_reference_planes()

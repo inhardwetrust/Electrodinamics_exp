@@ -5,6 +5,9 @@
 # triangle intersection will later drive the voxelizer (grid lines x
 # surfaces).
 
+import weakref
+from types import SimpleNamespace
+
 import numpy as np
 
 # An irrational-ish direction: rays practically never hit a triangle edge or
@@ -13,6 +16,9 @@ _RAY = np.array([0.5773503, 0.5773491, 0.5773519])
 _RAY /= np.linalg.norm(_RAY)
 
 _CHUNK = 2_000_000      # points x triangles per batch (memory bound)
+# Two unit axes square to the ray: a triangle the ray from a point crosses
+# covers that point's projection on their plane.
+_ACROSS = np.linalg.svd(_RAY[None, :])[2][1:]
 
 
 def points_inside(body, points):
@@ -125,9 +131,58 @@ def points_in_or_on(body, points, tolerance):
         return result
 
     candidates = points[idx]
-    near = surface_distances(body, candidates) <= tolerance
-    result[idx] = near | points_inside(body, candidates)
+    near = surface_distances(_near(body, candidates, tolerance), candidates) <= tolerance
+    result[idx] = near | points_inside(_on_rays(body, candidates), candidates)
     return result
+
+
+def _triangles(body, keep):
+    """The body with only its triangles `keep` (bool), for the queries above."""
+    return SimpleNamespace(kind=body.kind, vertices=body.vertices, triangles=body.triangles[keep],
+                           bounds=body.bounds)
+
+
+# id(body) -> (a weak reference to it, its triangles' corners and boxes):
+# bodies do not change once read; a dataclass body is not hashable, so by
+# id, dropped when the body goes.
+_CORNERS = {}
+
+
+def _corner_bounds(body):
+    key = id(body)
+    entry = _CORNERS.get(key)
+    if entry is None or entry[0]() is not body:
+        corners = body.vertices[body.triangles]                 # (T, 3, 3)
+        data = (corners, corners.min(axis=1), corners.max(axis=1), corners @ _ACROSS.T)
+        entry = (weakref.ref(body, lambda _, k=key: _CORNERS.pop(k, None)), data)
+        _CORNERS[key] = entry
+    return entry[1]
+
+
+def _near(body, points, tolerance):
+    """
+    Only the triangles that can be within `tolerance` of the points: their
+    boxes reach the points' box. A port or an element on a board layer of
+    ~10^5 triangles took 16 s with all of them, for a few hundred nearby.
+    """
+    _, lo, hi, _ = _corner_bounds(body)
+    p_lo, p_hi = points.min(axis=0) - tolerance, points.max(axis=0) + tolerance
+    return _triangles(body, np.all((hi >= p_lo) & (lo <= p_hi), axis=1))
+
+
+def _on_rays(body, points):
+    """
+    Only the triangles the points' rays (along _RAY, every component > 0)
+    can cross: ahead of the points (their box's top reaches the points'
+    lowest corner), and covering the points' projections across the ray.
+    The parity is unchanged: every crossed triangle stays.
+    """
+    _, lo, hi, across = _corner_bounds(body)                    # across: (T, 3, 2)
+    ahead = np.all(hi >= points.min(axis=0) - 1e-12, axis=1)
+    seen = points @ _ACROSS.T
+    a_lo, a_hi = across.min(axis=1), across.max(axis=1)
+    s_lo, s_hi = seen.min(axis=0) - 1e-12, seen.max(axis=0) + 1e-12
+    return _triangles(body, ahead & np.all((a_hi >= s_lo) & (a_lo <= s_hi), axis=1))
 
 
 def touches(body, point, tolerance):
