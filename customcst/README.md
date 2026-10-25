@@ -173,6 +173,38 @@ the switch pin's reflection at the path's end shrinks from run to run.
   port modes, the FDTD against analytic lines and a cavity, lumped elements,
   vias, the KiCad import.
 
+## Exporting a board from KiCad
+
+1. **Cut the board to what is simulated.** Draw an Edge.Cuts outline
+   around the part of the board the run needs: the connector, the line,
+   the chip's pin and the ground around them. Remove the copper outside it
+   (tracks, zones beyond the outline) and refill the zones (B), so the
+   pours end at the outline. The import drops footprints' pads and vias
+   left outside the outline, but only reports other copper outside it,
+   it does not cut it.
+2. **Export the STEP**: File > Export > STEP, with these settings:
+
+   ![KiCad STEP export settings](docs/images/kicad_export_settings.png)
+
+   - Board options: Export board body on; Cut vias in board body off (the
+     import makes every via a solid copper cylinder); silkscreen and
+     solder mask off (not modeled).
+   - Export components: only the ones that belong in the model (Components
+     matching filter): the connector, whose 3D model gives the coax, and
+     the parts whose 3D models are the lumped elements' cylinders. On the
+     justswitch board: `J4, R6, C6`.
+   - Conductor options: tracks and vias, pads, zones, inner conductor
+     layers on; Fill all vias on; Fuse shapes off (the import fuses each
+     layer itself, faster).
+   - Coordinates: Drill/place file origin, so every re-export lands at the
+     same coordinates (the project's Z0 path, view and planes stay valid).
+   - Other options: Substitute similarly named models, Overwrite old file
+     and Don't write P-curves on; board outline chaining tolerance Tight
+     (0.001 mm).
+3. **Import it**: Toolbar > Import KiCad turns `board.step` into
+   `board_prep.stp` with its project file. A re-export imported again keeps
+   the types of the bodies that are still there and reports what changed.
+
 ## Running
 
 ```bash
