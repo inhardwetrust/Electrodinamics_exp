@@ -47,6 +47,9 @@ Context for future Claude sessions. Read this first, then `ARCHITECTURE.md`.
   - Space + left drag (or Shift + left drag) pans; the model at the pivot
     depth follows the cursor exactly;
   - the wheel or a right drag zooms;
+  - the buttons over the view's corner (`view/view_buttons.py`) look from
+    a side along an axis, framed like Reset view; Ortho drops the
+    perspective;
   - Reset view (and a change of the Up axis) restores an isometric view
     with the up axis vertical;
   - key autorepeat is ignored. The canvas takes the focus when the mouse

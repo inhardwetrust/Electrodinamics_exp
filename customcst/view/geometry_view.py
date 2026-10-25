@@ -48,6 +48,17 @@
 # the profile window's marker. In path mode the path's plane is shown over
 # the model's extent, translucent blue like the reference planes (through
 # the bodies: on a copper face it would z-fight).
+#
+# Standard views (look_from, view/view_buttons.py): the camera reset to
+# the model as Reset view does, looking along an axis from one side. Top
+# is from +up; the sides follow the CAD habit for the up axis (z up: Front
+# from -Y, Right from +X; y up: Front from +Z, Right from +X). VisPy's
+# turntable turns its azimuth with the up axis, so each view tries the
+# axis-aligned orientations and keeps the one whose camera looks from that
+# side with the right axis up the screen: the up axis on the sides, the
+# back (-front) on Top, the front on Bottom (z up: Top has X right, Y up,
+# as in CAD; y up: X right, -Z up). Orthographic (set_orthographic): fov 0, no perspective: a flat top
+# view for drawing a Z0 path.
 
 import numpy as np
 
@@ -373,6 +384,19 @@ class _BodyVisual:
                             width=2.0 if selected else 1.0)
 
 
+# Up axis -> view -> the world direction from the model toward the viewer.
+STANDARD_VIEWS = {
+    "z": {"Top": (0, 0, 1), "Bottom": (0, 0, -1), "Front": (0, -1, 0), "Back": (0, 1, 0),
+          "Right": (1, 0, 0), "Left": (-1, 0, 0)},
+    "y": {"Top": (0, 1, 0), "Bottom": (0, -1, 0), "Front": (0, 0, 1), "Back": (0, 0, -1),
+          "Right": (1, 0, 0), "Left": (-1, 0, 0)},
+    "x": {"Top": (1, 0, 0), "Bottom": (-1, 0, 0), "Front": (0, 0, 1), "Back": (0, 0, -1),
+          "Right": (0, -1, 0), "Left": (0, 1, 0)},
+}
+AXIS_VIEWS = [(e, a) for e in (90.0, -90.0, 0.0) for a in (0.0, 90.0, 180.0, -90.0)]    # elevation, azimuth
+PERSPECTIVE_FOV = 30.0
+
+
 class GeometryView:
     """
     Owns a SceneCanvas. Bodies are addressed by name.
@@ -385,7 +409,7 @@ class GeometryView:
         _skip_redundant_qt_swap(self.canvas)
 
         self.view = self.canvas.central_widget.add_view()
-        self.view.camera = TrackballCamera(fov=30, elevation=25, azimuth=-50)
+        self.view.camera = TrackballCamera(fov=PERSPECTIVE_FOV, elevation=25, azimuth=-50)
         # Near / far planes at distance / sqrt(d) and * sqrt(d). VisPy's
         # default d = 1e6 left too little depth precision: 15 um copper on
         # FR4 flickered through (z-fighting). 200 keeps the whole model.
@@ -997,6 +1021,39 @@ class GeometryView:
         camera.center = tuple(center)
         camera.scale_factor = 1.25 * size
         camera.set_orientation(25.0, -50.0)
+
+    def look_from(self, name):
+        """A standard view (STANDARD_VIEWS: Top, Bottom, Front, Back, Left, Right), framed as Reset view."""
+        camera = self.view.camera
+        views = STANDARD_VIEWS[camera.up[-1]]
+        toward = np.asarray(views[name], dtype=float)
+        screen_up = {"Top": -np.asarray(views["Front"], dtype=float),
+                     "Bottom": np.asarray(views["Front"], dtype=float)}.get(name, np.asarray(views["Top"], dtype=float))
+        self.reset_view()
+        transform = self.view.scene.transform
+        center = np.asarray(camera.center, dtype=float)
+        size = 0.25 * camera.scale_factor               # a quarter of the view, in scene mm
+
+        def moved(direction):
+            a, b = transform.map(center), transform.map(center + size * direction)
+            return b[:3] / b[3] - a[:3] / a[3]          # px on the screen (y down), depth
+
+        for elevation, azimuth in AXIS_VIEWS:
+            camera.set_orientation(elevation, azimuth)
+            d, u = moved(toward), moved(screen_up)
+            # Straight at the viewer (no move on the screen, nearer), screen_up straight up.
+            if abs(d[0]) + abs(d[1]) < 1.0 and d[2] < 0 and abs(u[0]) < 1.0 and u[1] < 0:
+                return
+        raise ValueError(f"no orientation looks from {toward}")
+
+    def set_orthographic(self, on):
+        """No perspective (fov 0): flat standard views."""
+        self.view.camera.fov = 0.0 if on else PERSPECTIVE_FOV
+        self.canvas.update()
+
+    @property
+    def orthographic(self):
+        return self.view.camera.fov == 0.0
 
     # =====================================================
     # Style

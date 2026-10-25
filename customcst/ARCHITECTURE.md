@@ -386,6 +386,27 @@ For checking a geometry inside the program instead of the CAD tool.
 - `check_section`: fill colors at known points, a plane on a face, the
   outline's length and coordinate.
 
+## Standard views
+
+Buttons over the 3D view's top right corner (`view/view_buttons.py`, a
+child of the canvas widget, a 3 x 3 grid of equal buttons: Iso, Top,
+Back / Left, Front, Right / Ortho, Bottom): Top, Bottom, Front, Back,
+Left, Right, Iso (= Reset view) and Ortho.
+- A view resets the camera to the model as Reset view does and looks
+  along an axis (`GeometryView.look_from`). Top is from +up; the sides
+  follow the CAD habit for the up axis (z up: Front from -Y, Right from
+  +X, Top with X right and Y up; y up: Front from +Z, Top with X right and
+  -Z up; x up: Front from +Z, Right from -Y).
+- VisPy's turntable maps its azimuth through the up axis, so each view
+  tries the 12 axis-aligned (elevation, azimuth) pairs and keeps the one
+  where the side's direction does not move on the screen and comes nearer,
+  and the axis meant to point up the screen does.
+- Ortho: fov 0 (no perspective; 30 degrees otherwise), a flat top view to
+  draw a Z0 path on. Path clicks land within a pixel there too (the ray
+  comes from the transform's inverse at two depths). Not saved with the
+  camera.
+- The buttons take no focus (Space keeps panning).
+
 ## Picking points (for measurements)
 
 A left click without a drag (press and release within 4 px) picks a point

@@ -162,6 +162,8 @@ the switch pin's reflection at the path's end shrinks from run to run.
   - an accuracy note for narrow gaps.
 - **3D view**:
   - CAD-style trackball navigation;
+  - standard views (top, bottom, front, back, left, right, iso) and an
+    orthographic projection, from buttons over the view;
   - edges and X-ray modes;
   - a section plane;
   - the mesh plane;

@@ -38,6 +38,7 @@ from view.geometry_view import GeometryView
 from view.profile_window import ProfileWindow
 from view.results_panel import ResultsPanel
 from view.tdr_window import TdrWindow
+from view.view_buttons import ViewButtons
 from project.settings import EXCITE_ALL, accuracy_db
 from solver.result_file import (delete_result, fingerprint, format_duration, list_results,
                                 rename_result, save_result)
@@ -114,6 +115,7 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
         self.tabs.addTab(self.view.canvas.native, "3D View")
+        self.view_buttons = ViewButtons(self.view)        # standard views over the 3D view
         self.setCentralWidget(self.tabs)
 
         self.runner = SimulationRunner(self)
