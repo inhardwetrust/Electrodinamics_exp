@@ -1,0 +1,684 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Согласование СВЧ-тракта</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@500;700&family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,600;1,7..72,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a lab notebook. One reading column, a sticky contents rail on wide screens, demos as instrument panels. */
+:root {
+  --bg: #f3f5f4;
+  --paper: #fbfcfb;
+  --ink: #17232b;
+  --muted: #5b6970;
+  --rule: #d5dcdc;
+  --accent: #0b6f80;      /* the incident wave, the line */
+  --warm: #b85f00;        /* the reflected wave, the warnings */
+  --band: rgba(11, 111, 128, 0.10);
+  --good: #2f7d32;
+  --f-display: "Unbounded", "Trebuchet MS", sans-serif;
+  --f-body: "Literata", Georgia, "Times New Roman", serif;
+  --f-mono: "IBM Plex Mono", Consolas, "Courier New", monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1417; --paper: #141c20; --ink: #dfe7e8; --muted: #93a3a8; --rule: #2a383d;
+    --accent: #4fc0d0; --warm: #f0a14a; --band: rgba(79, 192, 208, 0.12); --good: #7cc47f;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1417; --paper: #141c20; --ink: #dfe7e8; --muted: #93a3a8; --rule: #2a383d;
+  --accent: #4fc0d0; --warm: #f0a14a; --band: rgba(79, 192, 208, 0.12); --good: #7cc47f;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { margin: 0; }
+body {
+  background: var(--bg); color: var(--ink); font-family: var(--f-body); font-size: 17px; line-height: 1.62;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 32px 80px;
+}
+.wrap { max-width: 1180px; margin: 0 auto; display: grid; grid-template-columns: 1fr; gap: 40px; }
+@media (min-width: 1100px) { .wrap { grid-template-columns: 220px minmax(0, 1fr); } }
+nav.toc { display: none; }
+@media (min-width: 1100px) {
+  nav.toc { display: block; position: sticky; top: calc(24px + env(safe-area-inset-top, 0px)); align-self: start;
+    font-family: var(--f-mono); font-size: 12.5px; line-height: 1.5; }
+  nav.toc a { display: block; color: var(--muted); text-decoration: none; padding: 4px 0 4px 10px; border-left: 2px solid var(--rule); }
+  nav.toc a:hover, nav.toc a:focus-visible { color: var(--accent); border-left-color: var(--accent); }
+}
+main { min-width: 0; max-width: 820px; }
+header.hero { padding-bottom: 28px; border-bottom: 1px solid var(--rule); margin-bottom: 8px; }
+.eyebrow { font-family: var(--f-mono); font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); }
+h1 { font-family: var(--f-display); font-weight: 700; font-size: clamp(30px, 5vw, 46px); line-height: 1.1; margin: 10px 0 14px; text-wrap: balance; letter-spacing: -0.01em; }
+h2 { font-family: var(--f-display); font-weight: 500; font-size: 24px; line-height: 1.25; margin: 0 0 14px; text-wrap: balance; }
+h2 .num { color: var(--accent); margin-right: 10px; }
+h3 { font-family: var(--f-body); font-weight: 600; font-size: 19px; margin: 26px 0 8px; }
+section { padding-top: 44px; scroll-margin-top: 16px; }
+p { margin: 0 0 14px; max-width: 68ch; }
+.lead { font-size: 19px; color: var(--muted); max-width: 62ch; }
+a { color: var(--accent); }
+code, .mono { font-family: var(--f-mono); font-size: 0.86em; }
+ul, ol { padding-left: 22px; margin: 0 0 14px; max-width: 66ch; }
+li { margin-bottom: 6px; }
+strong { font-weight: 600; }
+
+.formula { font-family: var(--f-body); font-style: italic; font-size: 20px; background: var(--paper); border: 1px solid var(--rule);
+  padding: 14px 18px; margin: 4px 0 16px; overflow-x: auto; display: flex; flex-wrap: wrap; gap: 8px 28px; align-items: center; }
+.formula .note { font-style: normal; font-size: 14px; color: var(--muted); font-family: var(--f-mono); }
+.frac { display: inline-flex; flex-direction: column; vertical-align: middle; text-align: center; margin: 0 4px; }
+.frac > span:first-child { border-bottom: 1px solid currentColor; padding: 0 4px; }
+.frac > span:last-child { padding: 0 4px; }
+.sqrt { border-top: 1px solid currentColor; padding: 0 2px; margin-left: 1px; }
+.sqrt::before { content: "√"; margin-right: 1px; }
+
+.callout { border-left: 3px solid var(--warm); background: var(--paper); padding: 12px 16px; margin: 6px 0 18px; max-width: 72ch; }
+.callout.info { border-left-color: var(--accent); }
+.callout p:last-child { margin-bottom: 0; }
+.callout .tag { font-family: var(--f-mono); font-size: 11.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--warm); display: block; margin-bottom: 4px; }
+.callout.info .tag { color: var(--accent); }
+
+.tablebox { overflow-x: auto; margin: 6px 0 18px; }
+table { border-collapse: collapse; font-size: 15px; min-width: 420px; }
+th, td { text-align: left; padding: 7px 14px 7px 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-family: var(--f-mono); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+td.n { font-family: var(--f-mono); font-variant-numeric: tabular-nums; font-size: 14px; white-space: nowrap; }
+
+.panel { background: var(--paper); border: 1px solid var(--rule); padding: 18px; margin: 10px 0 22px; }
+.panel .ptitle { font-family: var(--f-mono); font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent); margin-bottom: 12px; }
+.panel .plots { display: grid; grid-template-columns: 1fr; gap: 14px; }
+@media (min-width: 760px) { .panel .plots.two { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); } }
+.cv { width: 100%; height: 300px; display: block; }
+.cv.sq { aspect-ratio: 1 / 1; height: auto; max-width: 100%; }
+.cv.tall { height: 340px; }
+.controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px 22px; margin-top: 14px; }
+.ctl { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; font-family: var(--f-mono); font-size: 13px; align-items: center; }
+.ctl label { color: var(--muted); }
+.ctl output { font-variant-numeric: tabular-nums; color: var(--ink); }
+.ctl input[type=range] { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); }
+.readout { display: flex; flex-wrap: wrap; gap: 8px 22px; margin-top: 14px; font-family: var(--f-mono); font-size: 13.5px; font-variant-numeric: tabular-nums; }
+.readout b { font-weight: 500; color: var(--accent); }
+.readout .warn b { color: var(--warm); }
+.btns { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+button { font-family: var(--f-mono); font-size: 13px; padding: 7px 12px; background: transparent; color: var(--accent); border: 1px solid var(--accent); cursor: pointer; }
+button:hover { background: var(--band); }
+button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-family: var(--f-mono); font-size: 12.5px; color: var(--muted); margin-top: 8px; }
+.legend i { display: inline-block; width: 18px; height: 3px; vertical-align: middle; margin-right: 6px; }
+.svgbox { overflow-x: auto; margin: 6px 0 18px; }
+.svgbox svg { min-width: 640px; width: 100%; height: auto; display: block; }
+svg .ink { stroke: var(--ink); fill: none; }
+svg .inkfill { fill: var(--ink); }
+svg .acc { stroke: var(--accent); fill: none; }
+svg .accfill { fill: var(--accent); }
+svg .warm { stroke: var(--warm); fill: none; }
+svg .warmfill { fill: var(--warm); }
+svg .mut { fill: var(--muted); }
+svg .paper { fill: var(--paper); stroke: var(--rule); }
+svg text { font-family: var(--f-mono); font-size: 12px; }
+.steps { counter-reset: s; list-style: none; padding: 0; max-width: 72ch; }
+.steps > li { counter-increment: s; position: relative; padding: 0 0 14px 44px; margin: 0; }
+.steps > li::before { content: counter(s); position: absolute; left: 0; top: 0; font-family: var(--f-display); font-size: 15px; color: var(--accent);
+  width: 30px; height: 30px; border: 1px solid var(--accent); display: grid; place-items: center; }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; font-size: 15.5px; max-width: 72ch; margin-bottom: 14px; }
+.kv dt { font-family: var(--f-mono); font-size: 13.5px; color: var(--accent); }
+.kv dd { margin: 0; }
+@media (max-width: 520px) { .kv { grid-template-columns: 1fr; } .kv dd { margin-bottom: 8px; } }
+footer { margin-top: 56px; padding-top: 18px; border-top: 1px solid var(--rule); color: var(--muted); font-size: 14px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; scroll-behavior: auto !important; } }
+</style>
+
+</head>
+<body>
+<div class="wrap">
+<nav class="toc" aria-label="Содержание">
+  <a href="#map">0. Карта</a>
+  <a href="#db">1. S11 и децибелы</a>
+  <a href="#line">2. Линия и Z0</a>
+  <a href="#step">3. Отражение на скачке</a>
+  <a href="#lumped">4. Короткий кусок = L или C</a>
+  <a href="#compensate">5. Компенсация: блямба у пина</a>
+  <a href="#phase">6. Сложение отражений</a>
+  <a href="#cap">7. Конденсатор в линии</a>
+  <a href="#smith">8. Трансформация и Smith</a>
+  <a href="#strategy">9. Две стратегии</a>
+  <a href="#route">10. Наш маршрут</a>
+  <a href="#diagnose">11. Как я ставлю диагноз</a>
+  <a href="#limits">12. Границы моделей</a>
+  <a href="#sheet">13. Шпаргалка</a>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">customcst · методичка · плата justswitch_v3</div>
+  <h1>Согласование СВЧ-тракта</h1>
+  <p class="lead">Что физически происходит между SMA-разъёмом и пином ключа, почему S11 проваливается в одном месте и поднимается в другом, и как мы этим управляем: ширина дорожки, блямба у пина, место конденсатора.</p>
+</header>
+
+<section id="map">
+<h2><span class="num">0</span>Карта</h2>
+<p>Весь наш тракт — это одна линия передачи с несколькими местами, где её импеданс отличается от 50 Ом. Каждое такое место отражает часть волны. Отражения бегут обратно к разъёму и складываются. Где они гасят друг друга, S11 проваливается. Где складываются, S11 растёт.</p>
+<div class="svgbox">
+<svg viewBox="0 0 760 210" role="img" aria-label="Схема тракта: разъём, линия, конденсатор, линия, блямба, площадка пина, ключ. От каждого неоднородного места идёт отражённая волна.">
+  <rect x="10" y="70" width="90" height="56" class="paper"/>
+  <text x="55" y="102" text-anchor="middle" class="mut">SMA</text>
+  <line x1="100" y1="98" x2="330" y2="98" class="acc" stroke-width="6"/>
+  <text x="215" y="86" text-anchor="middle" class="mut">49.3 Ом</text>
+  <rect x="330" y="84" width="26" height="28" class="paper"/><line x1="340" y1="88" x2="340" y2="108" class="ink" stroke-width="2"/><line x1="346" y1="88" x2="346" y2="108" class="ink" stroke-width="2"/>
+  <text x="343" y="76" text-anchor="middle" class="mut">C</text>
+  <line x1="356" y1="98" x2="560" y2="98" class="acc" stroke-width="6"/>
+  <text x="458" y="86" text-anchor="middle" class="mut">49.3 Ом, d</text>
+  <rect x="560" y="88" width="46" height="20" class="accfill"/>
+  <text x="583" y="76" text-anchor="middle" class="mut">блямба 37 Ом</text>
+  <line x1="606" y1="98" x2="650" y2="98" class="acc" stroke-width="3"/>
+  <text x="628" y="130" text-anchor="middle" class="mut">пин 58 Ом</text>
+  <rect x="650" y="70" width="96" height="56" class="paper"/>
+  <text x="698" y="102" text-anchor="middle" class="mut">ключ (50 Ом)</text>
+  <g class="warm" stroke-width="1.6">
+    <path d="M100 150 h-40" /><path d="M343 150 h-283" /><path d="M583 168 h-523" /><path d="M640 186 h-580"/>
+  </g>
+  <g class="warmfill">
+    <path d="M60 145 l-10 5 l10 5z"/><path d="M60 145 l-10 5 l10 5z" transform="translate(0,0)"/>
+    <path d="M60 163 l-10 5 l10 5z"/><path d="M60 181 l-10 5 l10 5z"/>
+  </g>
+  <text x="104" y="154" class="mut">Γ разъёма</text>
+  <text x="347" y="154" class="mut">Γ конденсатора</text>
+  <text x="587" y="172" class="mut">Γ блямбы</text>
+  <text x="644" y="190" class="mut">Γ пина</text>
+  <text x="10" y="30" class="inkfill">к разъёму возвращается сумма: Γ = Γ₁ + Γ₂·e^(−j2βd₂) + Γ₃·e^(−j2βd₃) + …</text>
+</svg>
+</div>
+<p>Дальше по порядку: сначала язык (S11, децибелы, Z0), потом физика одного скачка, потом что делают короткие куски линии, потом как отражения складываются, и в конце наш маршрут по плате с цифрами.</p>
+</section>
+
+<section id="db">
+<h2><span class="num">1</span>S11 и децибелы</h2>
+<p><strong>S11</strong> — это коэффициент отражения на входе: какая доля амплитуды волны вернулась обратно. Его модуль |Γ| лежит от 0 (всё прошло) до 1 (всё отразилось). В децибелах это <span class="mono">20·log10|Γ|</span>; минус потому что |Γ| &lt; 1. «Возвратные потери» (return loss) — то же число без минуса.</p>
+<div class="tablebox"><table>
+<thead><tr><th>S11</th><th>|Γ|</th><th>отражённая мощность</th><th>КСВ (VSWR)</th><th>как это читать</th></tr></thead>
+<tbody>
+<tr><td class="n">−10 dB</td><td class="n">0.316</td><td class="n">10 %</td><td class="n">1.92</td><td>граница «работает» для антенн</td></tr>
+<tr><td class="n">−15 dB</td><td class="n">0.178</td><td class="n">3.2 %</td><td class="n">1.43</td><td>посредственный тракт</td></tr>
+<tr><td class="n">−20 dB</td><td class="n">0.100</td><td class="n">1 %</td><td class="n">1.22</td><td>хороший тракт, наша планка в полосе</td></tr>
+<tr><td class="n">−30 dB</td><td class="n">0.032</td><td class="n">0.1 %</td><td class="n">1.07</td><td>очень хорошо</td></tr>
+<tr><td class="n">−40 dB</td><td class="n">0.010</td><td class="n">0.01 %</td><td class="n">1.02</td><td>дно провала, на практике уже уровень погрешности</td></tr>
+</tbody></table></div>
+<div class="callout info"><span class="tag">важно</span><p>Глубина провала (−36 или −42 dB) почти ничего не значит для работы тракта: разница 0.02 % мощности. Значит худшая точка в полосе. У test_prep и justswitch она одинаковая, около −23.6 dB, хотя провалы выглядят по-разному.</p></div>
+</section>
+
+<section id="line">
+<h2><span class="num">2</span>Линия передачи и Z0</h2>
+<p>Дорожка над землёй — это распределённые индуктивность и ёмкость. Каждый миллиметр имеет индуктивность <i>L′</i> (ток бежит по дорожке и возвращается по земле, между ними магнитное поле) и ёмкость <i>C′</i> на землю (электрическое поле между дорожкой и землёй). Волна, бегущая по такой цепочке, видит отношение напряжения к току:</p>
+<div class="formula">
+  <span>Z<sub>0</sub> = <span class="sqrt"><span class="frac"><span>L′</span><span>C′</span></span></span></span>
+  <span>v = <span class="frac"><span>c</span><span class="sqrt">ε<sub>eff</sub></span></span></span>
+  <span>λ<sub>g</sub> = <span class="frac"><span>v</span><span>f</span></span></span>
+</div>
+<p>Отсюда вся интуиция геометрии:</p>
+<ul>
+<li><strong>Шире дорожка</strong> — больше площадь над землёй, больше <i>C′</i>, меньше <i>L′</i>, Z0 падает.</li>
+<li><strong>Ближе земля</strong> (тоньше диэлектрик, уже зазор до копланарной земли) — больше <i>C′</i>, Z0 падает.</li>
+<li><strong>Вырез в земле под площадкой</strong> (наш вырез в In1) — земля дальше, <i>C′</i> меньше, Z0 растёт. Так мы поднимали импеданс широких площадок конденсатора и разъёма.</li>
+<li><strong>ε<sub>eff</sub></strong> — эффективная проницаемость: часть поля в FR4, часть в воздухе. На нашей 50-омной линии ε<sub>eff</sub> ≈ 2.3, под широкой блямбой ≈ 3.2 (больше поля уходит в диэлектрик).</li>
+</ul>
+<p>Цифры, которые полезно держать в голове для нашей платы на 5.75 ГГц: λ в воздухе 52 мм, на линии λ<sub>g</sub> ≈ 34.5 мм, <strong>λ/4 ≈ 8.6 мм</strong>. Расстояние от конденсатора до пина у нас 5–7 мм, то есть сравнимо с λ/4. Поэтому фазы отражений от них сильно зависят от частоты и от каждого миллиметра.</p>
+<h3>Как мы меряем Z0</h3>
+<p>Инструмент «Z0 along path» режет плату поперёк пути и в каждом сечении решает 2D-задачу: какие <i>L′</i> и <i>C′</i> у этого сечения (квази-TEM). Получается профиль Z0 вдоль трассы, по сути то, что показал бы TDR-рефлектометр. Окно сечения должно доставать до земли, поэтому half_width не меньше половины самого широкого элемента (у разъёма — до его ножек).</p>
+<div class="panel">
+  <div class="ptitle">реальный профиль: justswitch_v3, от пина ключа до разъёма (версия прогона 21:11)</div>
+  <canvas id="profPlot" class="cv tall" aria-label="Профиль Z0 вдоль пути"></canvas>
+  <div class="legend"><span><i style="background:var(--accent)"></i>Z0 сечения</span><span><i style="background:var(--muted)"></i>50 Ом</span><span>разрыв линии = конденсатор (сечение не может пройти сквозь него)</span></div>
+</div>
+<p>На профиле видно всё, о чём дальше пойдёт речь: горб пина (58 Ом), сразу за ним яма блямбы (37 Ом), ровная линия, разрыв конденсатора, ровная линия, зубцы перехода на пин SMA и корпус разъёма.</p>
+</section>
+
+<section id="step">
+<h2><span class="num">3</span>Отражение на скачке</h2>
+<p>Волна подходит к месту, где Z0 меняется с Z<sub>1</sub> на Z<sub>2</sub>. На границе напряжение и ток должны быть непрерывны, а отношение V/I по обе стороны разное. Это невозможно выполнить одной волной, поэтому рождается отражённая:</p>
+<div class="formula">
+  <span>Γ = <span class="frac"><span>Z<sub>2</sub> − Z<sub>1</sub></span><span>Z<sub>2</sub> + Z<sub>1</sub></span></span></span>
+  <span class="note">Γ &gt; 0: импеданс вырос, отражение в фазе (как от разрыва цепи)<br>Γ &lt; 0: импеданс упал, отражение в противофазе (как от КЗ)</span>
+</div>
+<div class="panel">
+  <div class="ptitle">демо: один скачок</div>
+  <div class="controls">
+    <div class="ctl"><label for="z1">Z₁, Ом</label><output id="z1o"></output><input type="range" id="z1" min="20" max="100" step="0.5" value="49.3"></div>
+    <div class="ctl"><label for="z2">Z₂, Ом</label><output id="z2o"></output><input type="range" id="z2" min="20" max="100" step="0.5" value="36.8"></div>
+  </div>
+  <div class="readout" id="stepOut"></div>
+</div>
+<p>Резкий длинный скачок с 49.3 на 36.8 Ом даёт −16.8 dB. Но наша блямба отражает гораздо слабее, потому что она <em>короткая</em>. Об этом следующий раздел.</p>
+</section>
+
+<section id="lumped">
+<h2><span class="num">4</span>Короткий кусок линии = L или C</h2>
+<p>У короткого куска (много короче λ/8) два края: на входе Γ, на выходе почти −Γ. Отражения почти гасят друг друга, остаётся разница, пропорциональная частоте. Для волны такой кусок выглядит не как «другая линия», а как сосредоточенный элемент:</p>
+<ul>
+<li><strong>Узкий кусок (Z &gt; Z0)</strong> — лишняя последовательная <strong>индуктивность</strong>. На профиле это горб вверх.</li>
+<li><strong>Широкий кусок (Z &lt; Z0)</strong> — лишняя параллельная <strong>ёмкость</strong> на землю. На профиле это яма вниз.</li>
+</ul>
+<div class="formula">
+  <span>τ = <span class="frac"><span>l·<span class="sqrt">ε<sub>eff</sub></span></span><span>c</span></span></span>
+  <span>ΔL = τ·(Z − <span class="frac"><span>Z<sub>0</sub>²</span><span>Z</span></span>)</span>
+  <span>ΔC = τ·(<span class="frac"><span>1</span><span>Z</span></span> − <span class="frac"><span>Z</span><span>Z<sub>0</sub>²</span></span>)</span>
+  <span class="note">τ — время пробега куска; знак показывает, чего лишнего</span>
+</div>
+<div class="tablebox"><table>
+<thead><tr><th>что</th><th>Z, длина</th><th>ε<sub>eff</sub></th><th>эквивалент</th><th>|Γ| на 5.75 ГГц</th></tr></thead>
+<tbody>
+<tr><td>блямба у пина</td><td class="n">36.8 Ом, 0.7 мм</td><td class="n">3.15</td><td class="n">ΔC ≈ +0.05 пФ</td><td class="n">≈ −27 dB</td></tr>
+<tr><td>площадка пина</td><td class="n">58 Ом, 0.6 мм</td><td class="n">2.84</td><td class="n">ΔL ≈ +0.05 нГн</td><td class="n">≈ −34 dB</td></tr>
+</tbody></table></div>
+<p>Ещё одно следствие: для короткой неоднородности важна не форма, а <strong>площадь ямы или горба на профиле</strong>, то есть интеграл (Z0 − Z) по длине. Короче и глубже или длиннее и мельче — для волны почти одно и то же. Скосы блямбы тоже входят в эту площадь. Поэтому «уменьшить блямбу» можно и укорочением, и сужением: результат определяет ΔC.</p>
+<div class="callout"><span class="tag">воронка, плавный переход</span><p>Плавное сужение или расширение — это много маленьких скачков подряд. Их отражения приходят с разной задержкой и частично гасятся. Если переход длиннее ~λ/2, он почти не отражает (так работают широкополосные трансформаторы). Наши скосы на миллиметр короче λ/30, поэтому они не «согласуют», а просто входят в площадь блямбы.</p></div>
+</section>
+
+<section id="compensate">
+<h2><span class="num">5</span>Компенсация: зачем блямба у пина</h2>
+<p>Ключевая идея всего согласования. Линия передачи сама по себе — это цепочка «L′, C′, L′, C′…». Если взять сосредоточенные L и C так, что</p>
+<div class="formula"><span><span class="sqrt"><span class="frac"><span>L</span><span>C</span></span></span> = Z<sub>0</sub></span><span class="note">то пара L+C для волны выглядит как кусок 50-омной линии<br>(до частоты среза f ≈ 1/(π·√(LC)), у нас это сотни ГГц)</span></div>
+<p>Пин ключа, его площадка и путь тока в сосредоточенной нагрузке — лишняя индуктивность. Мы ставим рядом лишнюю ёмкость (широкая блямба) и получаем «искусственную линию» с нужным импедансом. Компенсировать надо <strong>рядом</strong>: тогда L и C видят одну и ту же фазу волны, и компенсация работает в широкой полосе.</p>
+<p>Нужная ёмкость: <span class="mono">C = L / Z0²</span>. На 0.05 нГн лишней индуктивности нужно всего 0.02 пФ. Если ёмкость больше, чем нужно, получаем перекомпенсацию: сечение становится «ёмкостным», и это сдвигает фазу суммарного отражения. Это и есть причина, по которой блямбу надо было уменьшать.</p>
+<div class="callout info"><span class="tag">правило</span><p>Горб на профиле (лишняя L) лечится ёмкостью рядом: расширить, добавить площадку, приблизить землю. Яма (лишняя C) лечится индуктивностью: сузить, вырезать землю под площадкой, увеличить зазор. Или убрать причину.</p></div>
+</section>
+
+<section id="phase">
+<h2><span class="num">6</span>Сложение отражений: откуда провал</h2>
+<p>Каждая неоднородность отражает маленькую волну. На вход возвращается их сумма, но каждая проходит путь туда и обратно и приходит с задержкой:</p>
+<div class="formula"><span>Γ<sub>вх</sub> ≈ Γ<sub>1</sub> + Γ<sub>2</sub>·e<sup>−j2βd</sup></span><span>β = <span class="frac"><span>2π</span><span>λ<sub>g</sub></span></span></span><span class="note">фаза второго отражения поворачивается<br>на 2βd: двойной путь</span></div>
+<p>Где две волны равны по модулю и противоположны по фазе, они гасятся, и в S11 появляется провал. Фаза зависит от частоты, поэтому гашение происходит только в одном месте: <strong>это и есть неровность АЧХ</strong>. Удлиняешь линию между отражателями — та же разность фаз достигается на более низкой частоте, провал уходит вниз. Укорачиваешь — вверх.</p>
+<p>Ниже — упрощённая модель нашего тракта: каскад кусков линий (ABCD-матрицы), как наш cascade.py. Конденсатор 2 пФ + 0.4 нГн, линия длиной d, блямба, площадка пина, ключ 50 Ом. Двигай ползунки и смотри, куда уезжает провал. Справа тот же S11 на диаграмме Смита: провал — это место, где кривая проходит рядом с центром.</p>
+<div class="panel">
+  <div class="ptitle">демо: модель тракта (каскад линий)</div>
+  <div class="plots two">
+    <canvas id="chainPlot" class="cv" aria-label="S11 модели тракта"></canvas>
+    <canvas id="chainSmith" class="cv sq" aria-label="S11 модели на диаграмме Смита"></canvas>
+  </div>
+  <div class="legend"><span><i style="background:var(--accent)"></i>S11 модели</span><span><i style="background:var(--muted)"></i>исходная настройка</span><span><i style="background:var(--band)"></i>полоса 4.5–6.5 ГГц</span></div>
+  <div class="controls">
+    <div class="ctl"><label for="cd">d: конденсатор → блямба, мм</label><output id="cdo"></output><input type="range" id="cd" min="1" max="12" step="0.1" value="5.4"></div>
+    <div class="ctl"><label for="cbz">Z блямбы, Ом</label><output id="cbzo"></output><input type="range" id="cbz" min="28" max="50" step="0.2" value="36.8"></div>
+    <div class="ctl"><label for="cbl">длина блямбы, мм</label><output id="cblo"></output><input type="range" id="cbl" min="0" max="1.6" step="0.05" value="0.7"></div>
+    <div class="ctl"><label for="cpz">Z площадки пина, Ом</label><output id="cpzo"></output><input type="range" id="cpz" min="45" max="75" step="0.5" value="58"></div>
+    <div class="ctl"><label for="cc">C конденсатора, пФ</label><output id="cco"></output><input type="range" id="cc" min="0.5" max="10" step="0.1" value="2"></div>
+    <div class="ctl"><label for="cl">ESL конденсатора, нГн</label><output id="clo"></output><input type="range" id="cl" min="0" max="1" step="0.02" value="0.4"></div>
+    <div class="ctl"><label for="cpl">доп. L пина, нГн</label><output id="cplo"></output><input type="range" id="cpl" min="0" max="0.6" step="0.02" value="0"></div>
+  </div>
+  <div class="btns"><button type="button" id="chainReset">Вернуть исходное</button><button type="button" id="chainNoCap">Без конденсатора</button></div>
+  <div class="readout" id="chainOut"></div>
+</div>
+<p>Что стоит попробовать:</p>
+<ul>
+<li><strong>d с 5.4 до 4.3 мм</strong> (конденсатор к пину): провал 5.54 → ~5.67 ГГц. В FDTD сдвиг на 1.29 мм дал 5.50 → 5.61.</li>
+<li><strong>Длина блямбы 0.7 → 0.4 мм</strong>: провал вверх и глубже. Это то, что ты сейчас делаешь на плате.</li>
+<li><strong>«Без конденсатора»</strong>: S11 ровный, около −28 dB во всей полосе. То есть главный ограничитель полосы — сам конденсатор.</li>
+<li><strong>C 1.5 или 3 пФ</strong>: провал прыгает на сотни МГц. Об этом следующий раздел.</li>
+</ul>
+<h3>Реальные прогоны FDTD</h3>
+<div class="panel">
+  <div class="ptitle">S11 из FDTD: прямая плата и justswitch</div>
+  <canvas id="fdtdPlot" class="cv" aria-label="S11 трёх прогонов FDTD"></canvas>
+  <div class="legend"><span><i style="background:var(--good)"></i>test_prep (прямая), провал 5.75 ГГц</span><span><i style="background:var(--warm)"></i>justswitch, исходный, 5.50 ГГц</span><span><i style="background:var(--accent)"></i>justswitch, конденсатор на 1.29 мм ближе, 5.61 ГГц</span></div>
+</div>
+<p>justswitch получился длиннее прямой платы на 1.7 мм (0.6 мм до конденсатора и 1.1 мм после), и провал ушёл на 0.25 ГГц вниз, как и предсказывает сложение фаз. Худшая точка в полосе при этом та же. Форма меняется, качество нет.</p>
+</section>
+
+<section id="cap">
+<h2><span class="num">7</span>Конденсатор в линии</h2>
+<p>Разделительный конденсатор — не «чистая ёмкость». Ток через него течёт по выводам и площадкам, это последовательная индуктивность ESL. Вместе они — последовательный резонансный контур:</p>
+<div class="formula">
+  <span>Z<sub>C</sub> = jωL<sub>ESL</sub> + <span class="frac"><span>1</span><span>jωC</span></span></span>
+  <span>f<sub>SRF</sub> = <span class="frac"><span>1</span><span>2π<span class="sqrt">L<sub>ESL</sub>C</span></span></span></span>
+  <span class="note">2 пФ + 0.4 нГн → f<sub>SRF</sub> ≈ 5.63 ГГц</span>
+</div>
+<ul>
+<li><strong>Ниже резонанса</strong> конденсатор ёмкостной (последовательная −jX), отражает тем сильнее, чем ниже частота.</li>
+<li><strong>На резонансе</strong> его реактивность ноль. Он прозрачен, отражения от него нет.</li>
+<li><strong>Выше резонанса</strong> он индуктивный (+jX), как кусок узкой дорожки.</li>
+</ul>
+<p>Отсюда главный вывод для нашей платы: <strong>провал S11 привязан к резонансу конденсатора</strong>. Около 5.6 ГГц конденсатор исчезает, а пин с блямбой хорошо скомпенсированы. Ниже и выше конденсатор отражает, и его отражение надо уравновесить остальными, а это работает только около одной частоты. Поэтому провал двигается слабо (около 0.1 ГГц на миллиметр), а выбор C и ESL двигает его сильно.</p>
+<p>Площадки 0402 шире дорожки — это лишняя ёмкость (яма на профиле). Её мы убирали вырезом в In1 под площадками. А разрыв дорожки, через который не проходит сечение Z0, в нашей каскадной модели заменён сосредоточенным элементом 2 пФ + 0.4 нГн.</p>
+<div class="callout"><span class="tag">практика</span><p>Если полоса шире, чем выдерживает один конденсатор: брать C с резонансом в центре полосы; ставить два конденсатора параллельно (разные резонансы); уменьшать ESL (корпус 0201, широкий конденсатор, короткие площадки).</p></div>
+</section>
+
+<section id="smith">
+<h2><span class="num">8</span>Трансформация импеданса и диаграмма Смита</h2>
+<p>Отрезок линии превращает импеданс нагрузки в другой. Если на конце линии Z<sub>0</sub> висит Z<sub>L</sub>, то на расстоянии l от неё видно:</p>
+<div class="formula"><span>Z<sub>вх</sub> = Z<sub>0</sub>·<span class="frac"><span>Z<sub>L</sub> + jZ<sub>0</sub>·tg βl</span><span>Z<sub>0</sub> + jZ<sub>L</sub>·tg βl</span></span></span><span class="note">l = λ/4: Z<sub>вх</sub> = Z<sub>0</sub>²/Z<sub>L</sub> (четвертьволновый трансформатор)<br>l = λ/2: Z<sub>вх</sub> = Z<sub>L</sub></span></div>
+<p>На диаграмме Смита это наглядно. Центр — 50 Ом, идеальное согласование. Расстояние от центра — |Γ|. Верхняя половина — индуктивности, нижняя — ёмкости. И три движения:</p>
+<ul>
+<li><strong>Отрезок 50-омной линии</strong> вращает точку по кругу вокруг центра (по часовой, если идём от нагрузки к генератору). |Γ| не меняется, меняется только фаза. Полный круг — λ/2.</li>
+<li><strong>Последовательная L</strong> двигает точку вверх по кругу постоянного R, <strong>последовательная C</strong> — вниз.</li>
+<li><strong>Параллельная C</strong> (широкая блямба) двигает по кругу постоянной проводимости G вниз (по часовой).</li>
+</ul>
+<p>Согласование — это маршрут из точки нагрузки в центр: повернуть отрезком линии до круга, проходящего через центр, и добавить реактивность. Ниже: нагрузка (пин с индуктивностью), отрезок линии, параллельная ёмкость. Кнопка подбирает длину и ёмкость, которые приводят в центр.</p>
+<div class="panel">
+  <div class="ptitle">демо: нагрузка → линия → параллельная C</div>
+  <div class="plots two">
+    <canvas id="smithT" class="cv sq" aria-label="Диаграмма Смита трансформации"></canvas>
+    <div class="readout" id="smithOut" style="flex-direction:column;align-items:flex-start;margin-top:0"></div>
+  </div>
+  <div class="controls">
+    <div class="ctl"><label for="sr">R нагрузки, Ом</label><output id="sro"></output><input type="range" id="sr" min="10" max="150" step="1" value="50"></div>
+    <div class="ctl"><label for="sx">X нагрузки, Ом</label><output id="sxo"></output><input type="range" id="sx" min="-80" max="80" step="1" value="18"></div>
+    <div class="ctl"><label for="sl">длина линии, мм</label><output id="slo"></output><input type="range" id="sl" min="0" max="20" step="0.1" value="0"></div>
+    <div class="ctl"><label for="sc">параллельная C, пФ</label><output id="sco"></output><input type="range" id="sc" min="0" max="1.5" step="0.01" value="0"></div>
+    <div class="ctl"><label for="sf">частота, ГГц</label><output id="sfo"></output><input type="range" id="sf" min="1" max="10" step="0.05" value="5.75"></div>
+  </div>
+  <div class="btns"><button type="button" id="smithFit">Подобрать линию и C</button></div>
+  <div class="legend"><span><i style="background:var(--warm)"></i>нагрузка</span><span><i style="background:var(--accent)"></i>после линии</span><span><i style="background:var(--good)"></i>после C</span></div>
+</div>
+<p>Нагрузка 50 + j18 Ом — это 50-омный ключ за индуктивностью 0.5 нГн на 5.75 ГГц. Попробуй сначала только C при нулевой длине: точка уходит вниз по кругу G, но центр промахивает. Нужна правильная пара «длина + ёмкость». Именно так мы и подбирали расстояние и блямбу, только в FDTD.</p>
+</section>
+
+<section id="strategy">
+<h2><span class="num">9</span>Две стратегии</h2>
+<div class="tablebox"><table>
+<thead><tr><th></th><th>широкополосная: везде 50 Ом</th><th>настроенная: поставить провал куда надо</th></tr></thead>
+<tbody>
+<tr><td>идея</td><td>каждую неоднородность убрать или скомпенсировать на месте</td><td>оставить отражения и расставить их так, чтобы они гасились в нужной полосе</td></tr>
+<tr><td>АЧХ</td><td>ровная, неглубокая, широкая</td><td>глубокий провал, по краям хуже</td></tr>
+<tr><td>чувствительность</td><td>низкая: допуски платы почти не влияют</td><td>высокая: миллиметр и разброс C двигают провал</td></tr>
+<tr><td>инструмент</td><td>профиль Z0 вдоль пути</td><td>S11 из FDTD, каскадная модель</td></tr>
+</tbody></table></div>
+<p>Разность фаз двух отражений на расстоянии d меняется на 360° за Δf = c / (2d√ε<sub>eff</sub>). Для d = 6 мм это около 16 ГГц, поэтому в нашей полосе мы видим один широкий провал. Чем ближе компенсирующие элементы друг к другу, тем медленнее поворачивается фаза и тем шире полоса. Отсюда правило: <strong>компенсировать как можно ближе к причине</strong>.</p>
+<p>Мы делали комбинацию. Линии выровняли до 50 Ом (широкополосная часть). Пин ключа нельзя сделать 50-омным, его скомпенсировали блямбой рядом (тоже широкополосно). А остаток, в основном конденсатор, уравновешиваем фазой, то есть расстоянием и размером блямбы (настроенная часть).</p>
+</section>
+
+<section id="route">
+<h2><span class="num">10</span>Наш маршрут по плате</h2>
+<ol class="steps">
+<li><strong>Профиль Z0 вдоль пути.</strong> Рисуем путь по трассе, half_width до земли (у разъёма до ножек). Ищем всё, что не 50 Ом.</li>
+<li><strong>Ровные участки до 50 Ом.</strong> Ширина дорожки и зазор до копланарной земли, проверка сходимости Z0 по сетке. У нас вышло 49.3 Ом.</li>
+<li><strong>Переход на разъём.</strong> Площадка пина SMA, ножки, вырез под площадкой. Горбы и ямы на профиле там около 40–56 Ом, они короткие.</li>
+<li><strong>Конденсатор.</strong> Площадки 0402 шире дорожки, поэтому вырез в In1 под ними. Резонанс C + ESL поставили в полосу.</li>
+<li><strong>Пин ключа.</strong> Площадка 58 Ом плюс индуктивность нагрузки. Скомпенсировали блямбой 37 Ом рядом.</li>
+<li><strong>FDTD.</strong> S11, маркер (Z, эквивалентная L или C), перенос опорной плоскости, сравнение прогонов.</li>
+<li><strong>Анализ.</strong> Профили двух плат рядом, каскадная модель из профиля: какой участок за что отвечает и куда двигать.</li>
+<li><strong>Итерация.</strong> Двигаем одну вещь за раз, считаем, сравниваем. Каждый прогон калибрует модель: сколько ГГц даёт миллиметр.</li>
+</ol>
+<h3>История на цифрах</h3>
+<div class="tablebox"><table>
+<thead><tr><th>вариант</th><th>провал</th><th>худшее в 4.5–6.5</th><th>что изменили</th></tr></thead>
+<tbody>
+<tr><td>test_prep (прямая)</td><td class="n">5.75 ГГц, −42.6 dB</td><td class="n">−23.6 dB</td><td>эталон</td></tr>
+<tr><td>justswitch_v3</td><td class="n">5.50 ГГц, −36.3 dB</td><td class="n">−24.0 dB</td><td>та же геометрия, линии на 1.7 мм длиннее</td></tr>
+<tr><td>justswitch, C ближе</td><td class="n">5.61 ГГц, −34.7 dB</td><td class="n">−23.6 dB</td><td>конденсатор на 1.29 мм к пину</td></tr>
+<tr><td>justswitch, блямба меньше</td><td class="n">считается</td><td class="n">—</td><td>конденсатор на месте, блямба уменьшена</td></tr>
+</tbody></table></div>
+</section>
+
+<section id="diagnose">
+<h2><span class="num">11</span>Как я ставлю диагноз</h2>
+<dl class="kv">
+<dt>«это отражения»</dt><dd>S11 с волнистостью или одиночным провалом, период которого соответствует c / (2d√ε) между известными неоднородностями. Сдвиг провала при изменении длины линии — прямое доказательство: потерь и излучения так не двигаются.</dd>
+<dt>где отражает</dt><dd>Профиль Z0: всё, что отходит от 50 Ом. Величина отражения ~ площадь ямы или горба. Перенос опорной плоскости в результатах тоже помогает: он меняет только фазу, |S11| остаётся.</dd>
+<dt>L или C</dt><dd>Горб на профиле — L, яма — C. В результатах маркер показывает Z: Im Z &gt; 0 — индуктивный характер, &lt; 0 — ёмкостной, и пересчитывает в эквивалентную L или C.</dd>
+<dt>что добавить</dt><dd>Против лишней L — ёмкость рядом (расширить). Против лишней C — индуктивность (сузить, вырезать землю). Против уже перекомпенсированного — уменьшить компенсатор.</dd>
+<dt>куда двигать провал</dt><dd>Каскадная модель из профиля: меняю длину или Z одного участка и смотрю, куда уезжает провал. Знак обычно надёжен, величину калибруем по прогону FDTD.</dd>
+</dl>
+</section>
+
+<section id="limits">
+<h2><span class="num">12</span>Границы моделей</h2>
+<ul>
+<li><strong>Профиль Z0</strong>: каждое сечение считается как бесконечно длинная однородная линия (квази-TEM). Поля на скачках, связь между соседними элементами, излучение не видны. Окно сечения должно доставать до земли.</li>
+<li><strong>Каскадная модель</strong>: только линии и один сосредоточенный конденсатор. Нет паразитных ёмкостей на скачках ширины, нет связи через воздух, нет ножек разъёма как 3D-объекта. На нашей плате она занижала сдвиги примерно в 1.5 раза, а на последней геометрии вообще разошлась с FDTD по положению провала. Знак тренда — да, точные ГГц — нет.</li>
+<li><strong>FDTD</strong>: самый полный, но сетка ступенчатая, конденсатор и ключ — сосредоточенные элементы с идеальными R, L, C. Настоящий ключ — не 50 Ом, а его S-параметры из даташита.</li>
+<li><strong>Глубина провала</strong> зависит от мелочей (сетка, потери) и сильно не воспроизводится. Сравнивать надо положение и худшую точку в полосе.</li>
+</ul>
+</section>
+
+<section id="sheet">
+<h2><span class="num">13</span>Шпаргалка</h2>
+<div class="tablebox"><table>
+<thead><tr><th>величина</th><th>формула</th><th>наша плата</th></tr></thead>
+<tbody>
+<tr><td>импеданс линии</td><td class="n">Z0 = √(L′/C′)</td><td class="n">49.3 Ом</td></tr>
+<tr><td>длина волны на линии</td><td class="n">λg = c / (f·√εeff)</td><td class="n">34.5 мм на 5.75 ГГц</td></tr>
+<tr><td>отражение на скачке</td><td class="n">Γ = (Z2 − Z1)/(Z2 + Z1)</td><td class="n">37 в 49.3: −0.145</td></tr>
+<tr><td>децибелы</td><td class="n">S11 = 20·log10|Γ|</td><td class="n">−20 dB = 1 % мощности</td></tr>
+<tr><td>КСВ</td><td class="n">(1 + |Γ|)/(1 − |Γ|)</td><td class="n">−20 dB → 1.22</td></tr>
+<tr><td>короткий узкий кусок</td><td class="n">ΔL = τ(Z − Z0²/Z)</td><td class="n">пин: +0.05 нГн</td></tr>
+<tr><td>короткий широкий кусок</td><td class="n">ΔC = τ(1/Z − Z/Z0²)</td><td class="n">блямба: +0.05 пФ</td></tr>
+<tr><td>компенсация L ёмкостью</td><td class="n">C = L / Z0²</td><td class="n">0.05 нГн → 0.02 пФ</td></tr>
+<tr><td>резонанс конденсатора</td><td class="n">f = 1/(2π√(LC))</td><td class="n">2 пФ + 0.4 нГн → 5.63 ГГц</td></tr>
+<tr><td>сдвиг фазы двух отражений</td><td class="n">2βd, период c/(2d√εeff)</td><td class="n">d = 6 мм → 16 ГГц</td></tr>
+<tr><td>четвертьволновый трансформатор</td><td class="n">Zвх = Z0²/ZL</td><td class="n">λ/4 ≈ 8.6 мм</td></tr>
+</tbody></table></div>
+</section>
+
+<footer>Цифры из прогонов customcst: test_prep (23.10), justswitch_v3 (24.10, 14:10 и 21:11), профиль Z0 вдоль пути при half_width 4 мм. Демо — упрощённая каскадная модель; её ГГц ориентировочные.</footer>
+</main>
+</div>
+
+<script>
+const PROF = [[0.073, null], [0.147, null], [0.22, null], [0.307, null], [0.394, 69.67], [0.42, 57.99], [0.487, 57.99], [0.555, 57.99], [0.622, 57.99], [0.722, 57.99], [0.821, 57.99], [0.921, 57.99], [0.987, 58.61], [1.054, 59.37], [1.121, 50.14], [1.205, 40.78], [1.288, 37.43], [1.372, 36.46], [1.471, 36.58], [1.57, 36.68], [1.67, 36.68], [1.769, 36.58], [1.868, 36.46], [1.968, 37.35], [2.067, 42.11], [2.166, 49.89], [2.265, 49.2], [2.365, 49.2], [2.464, 49.21], [2.563, 49.21], [2.662, 49.21], [2.762, 49.21], [2.861, 49.21], [2.96, 49.21], [3.06, 49.21], [3.159, 49.2], [3.258, 49.2], [3.357, 49.21], [3.457, 49.21], [3.556, 49.66], [3.753, 49.77], [3.851, 49.16], [3.949, 49.0], [4.047, 50.06], [4.145, 49.86], [4.243, 48.71], [4.341, 48.83], [4.44, 48.83], [4.538, 49.86], [4.636, 49.9], [4.734, 48.55], [4.832, 48.55], [4.93, 48.67], [5.028, 49.7], [5.126, 49.73], [5.224, 49.73], [5.322, 48.4], [5.42, 48.4], [5.518, 48.52], [5.616, 49.96], [5.714, 50.65], [5.908, 49.54], [6.003, 49.64], [6.099, 46.58], [6.174, 48.04], [6.249, 47.67], [6.324, 47.84], [6.399, 56.21], [6.491, null], [6.582, null], [6.674, null], [6.766, null], [6.857, null], [6.949, 56.47], [7.024, 48.22], [7.1, 48.47], [7.175, 48.22], [7.25, 47.47], [7.348, 49.8], [7.445, 49.27], [7.542, 49.27], [7.64, 49.4], [7.737, 49.4], [7.835, 49.4], [7.932, 49.4], [8.029, 49.4], [8.127, 49.4], [8.224, 49.4], [8.321, 49.4], [8.419, 49.4], [8.516, 49.28], [8.614, 48.34], [8.711, 48.34], [8.808, 48.34], [8.906, 48.35], [9.003, 48.35], [9.101, 48.35], [9.198, 48.35], [9.295, 49.5], [9.393, 49.5], [9.49, 49.49], [9.587, 49.49], [9.685, 49.62], [9.782, 50.11], [9.976, 50.31], [10.072, 49.89], [10.169, 49.89], [10.265, 49.89], [10.361, 49.89], [10.458, 49.89], [10.554, 49.89], [10.65, 48.86], [10.747, 48.74], [10.843, 48.74], [10.939, 48.74], [11.036, 48.74], [11.132, 48.74], [11.228, 48.73], [11.325, 48.74], [11.421, 48.74], [11.517, 48.74], [11.613, 48.74], [11.71, 48.74], [11.806, 48.74], [11.902, 48.74], [11.999, 48.74], [12.095, 48.74], [12.191, 48.74], [12.288, 48.73], [12.384, 48.73], [12.48, 48.73], [12.577, 48.73], [12.674, 48.73], [12.771, 50.02], [12.868, 50.02], [12.964, 50.02], [13.061, 50.02], [13.158, 50.02], [13.255, 50.14], [13.351, 50.56], [13.542, 49.74], [13.636, 49.28], [13.73, 49.17], [13.824, 49.17], [13.918, 49.17], [14.012, 49.17], [14.106, 48.29], [14.2, 44.5], [14.294, 41.62], [14.387, 39.33], [14.481, 45.68], [14.574, 48.87], [14.668, 50.83], [14.761, 53.55], [14.854, 55.31], [14.948, 55.53], [15.041, 56.71], [15.08, 48.33], [15.177, 46.85], [15.274, 47.91], [15.372, 48.68], [15.469, 49.48], [15.567, 49.71], [15.664, 49.84], [15.762, 49.84], [15.859, 49.7], [15.957, 49.34], [16.054, 49.46], [16.152, 49.72], [16.249, 49.72], [16.347, 49.61], [16.444, 49.6], [16.542, 49.65], [16.639, 49.73], [16.736, 49.44], [16.834, 49.68], [16.931, 49.77], [17.029, 49.88], [17.126, 49.88], [17.224, 49.76], [17.321, 49.61], [17.419, 49.61], [17.516, 49.32], [17.614, 49.57], [17.711, 49.49], [17.809, 49.41], [17.906, 49.48], [18.004, 49.66], [18.101, 49.74], [18.199, 49.74], [18.296, 49.7], [18.393, 49.69], [18.491, 49.69], [18.588, 49.57], [18.686, 49.58], [18.774, 49.48], [18.862, 49.48], [18.951, 49.5], [19.039, 49.98], [19.086, 46.63], [19.117, 48.67], [19.166, 49.28], [19.242, 49.28], [19.318, 49.29], [19.394, 49.28], [19.47, 49.38], [19.567, 49.46], [19.665, 49.46], [19.762, 49.47], [19.86, 49.46], [19.957, 49.45], [20.055, 49.43], [20.152, 49.43], [20.25, 49.41], [20.347, 49.43], [20.445, 49.46], [20.542, 49.45], [20.631, 49.45], [20.73, 49.46], [20.83, 49.45], [20.929, 49.44], [21.029, 49.44], [21.128, 49.45], [21.228, 49.43], [21.327, 49.45], [21.426, 49.45], [21.526, 49.44], [21.625, 49.44], [21.725, 49.45], [21.824, 49.43], [21.924, 49.45], [22.023, 49.47], [22.123, 49.46], [22.222, 49.44], [22.322, 49.45], [22.421, 49.43], [22.521, 49.45], [22.62, 49.46], [22.719, 49.47], [22.819, 49.47], [22.918, 49.47], [23.018, 49.48], [23.117, 49.46], [23.217, 49.44], [23.316, 49.45], [23.416, 49.46], [23.515, 49.47], [23.615, 49.48], [23.714, 49.49], [23.814, 49.48], [23.913, 49.46], [24.012, 49.48], [24.112, 49.44], [24.211, 49.44], [24.311, 49.44], [24.41, 49.45], [24.51, 49.46], [24.609, 49.47], [24.709, 49.46], [24.808, 49.46], [24.908, 49.45], [25.007, 49.45], [25.107, 49.43], [25.206, 49.41], [25.305, 49.44], [25.405, 49.44], [25.504, 49.44], [25.604, 49.48], [25.703, 49.46], [25.803, 49.44], [25.902, 49.43], [26.002, 49.44], [26.101, 49.42], [26.201, 49.43], [26.3, 49.45], [26.4, 49.46], [26.499, 49.46], [26.598, 49.45], [26.698, 49.45], [26.797, 49.45], [26.897, 49.44], [26.996, 49.49], [27.096, 49.44], [27.195, 49.42], [27.295, 49.45], [27.394, 49.43], [27.494, 49.42], [27.593, 49.43], [27.693, 49.46], [27.792, 49.46], [27.891, 49.43], [27.991, 49.46], [28.09, 49.42], [28.19, 49.37], [28.289, 49.39], [28.389, 49.4], [28.488, 49.42], [28.588, 71.35], [28.685, null], [28.783, null], [28.88, null], [28.978, null]];
+const FDTD = {"test_prep": [-9.7, -9.92, -10.14, -10.37, -10.6, -10.83, -11.07, -11.31, -11.55, -11.79, -12.03, -12.28, -12.53, -12.78, -13.03, -13.29, -13.54, -13.8, -14.06, -14.32, -14.59, -14.85, -15.12, -15.39, -15.66, -15.93, -16.2, -16.48, -16.76, -17.03, -17.31, -17.6, -17.88, -18.17, -18.46, -18.75, -19.04, -19.34, -19.63, -19.94, -20.24, -20.55, -20.86, -21.18, -21.5, -21.83, -22.16, -22.5, -22.85, -23.2, -23.56, -23.94, -24.32, -24.72, -25.13, -25.55, -25.99, -26.46, -26.94, -27.45, -27.99, -28.56, -29.16, -29.81, -30.51, -31.27, -32.09, -32.99, -33.99, -35.1, -36.34, -37.72, -39.24, -40.78, -42.09, -42.61, -42.03, -40.67, -39.06, -37.48, -36.02, -34.71, -33.53, -32.47, -31.5, -30.61, -29.8, -29.04, -28.34, -27.68, -27.07, -26.49, -25.94, -25.42, -24.92, -24.45, -24.0, -23.57, -23.16, -22.77, -22.39, -22.02, -21.67, -21.34, -21.01, -20.7, -20.39, -20.1, -19.82, -19.54, -19.28, -19.02, -18.77, -18.53, -18.3, -18.07, -17.85, -17.64, -17.44, -17.24, -17.05, -16.86, -16.68, -16.5, -16.33, -16.17, -16.01, -15.86, -15.71, -15.56, -15.42, -15.29, -15.16, -15.03, -14.91, -14.79, -14.68, -14.57, -14.46, -14.36, -14.26], "js_before": [-9.71, -9.93, -10.15, -10.37, -10.59, -10.82, -11.04, -11.27, -11.5, -11.74, -11.98, -12.22, -12.46, -12.7, -12.95, -13.19, -13.44, -13.69, -13.95, -14.21, -14.46, -14.72, -14.99, -15.25, -15.52, -15.79, -16.06, -16.34, -16.62, -16.9, -17.18, -17.47, -17.76, -18.05, -18.35, -18.65, -18.96, -19.27, -19.59, -19.91, -20.24, -20.57, -20.91, -21.26, -21.61, -21.98, -22.35, -22.74, -23.14, -23.54, -23.97, -24.41, -24.86, -25.33, -25.83, -26.35, -26.89, -27.46, -28.06, -28.69, -29.36, -30.07, -30.82, -31.61, -32.43, -33.28, -34.13, -34.94, -35.63, -36.13, -36.35, -36.21, -35.78, -35.11, -34.31, -33.45, -32.58, -31.72, -30.9, -30.13, -29.39, -28.69, -28.04, -27.42, -26.83, -26.28, -25.75, -25.25, -24.77, -24.32, -23.88, -23.47, -23.07, -22.69, -22.32, -21.97, -21.63, -21.31, -20.99, -20.69, -20.4, -20.12, -19.85, -19.59, -19.33, -19.09, -18.85, -18.62, -18.4, -18.19, -17.98, -17.78, -17.59, -17.41, -17.23, -17.05, -16.89, -16.72, -16.57, -16.42, -16.28, -16.14, -16.0, -15.88, -15.75, -15.64, -15.52, -15.42, -15.31, -15.22, -15.12, -15.04, -14.95, -14.87, -14.8, -14.73, -14.67, -14.61, -14.55, -14.5, -14.45], "js_cap": [-9.76, -9.97, -10.18, -10.4, -10.62, -10.84, -11.06, -11.28, -11.51, -11.74, -11.97, -12.21, -12.44, -12.68, -12.92, -13.16, -13.41, -13.65, -13.9, -14.15, -14.41, -14.66, -14.92, -15.18, -15.44, -15.7, -15.97, -16.24, -16.51, -16.78, -17.06, -17.34, -17.62, -17.91, -18.2, -18.49, -18.79, -19.09, -19.4, -19.71, -20.02, -20.34, -20.67, -21.0, -21.34, -21.69, -22.04, -22.4, -22.77, -23.15, -23.54, -23.94, -24.35, -24.78, -25.22, -25.68, -26.15, -26.64, -27.15, -27.68, -28.23, -28.81, -29.4, -30.02, -30.66, -31.31, -31.97, -32.62, -33.24, -33.79, -34.25, -34.57, -34.71, -34.65, -34.42, -34.02, -33.5, -32.9, -32.27, -31.61, -30.96, -30.32, -29.69, -29.09, -28.51, -27.96, -27.43, -26.93, -26.45, -25.98, -25.54, -25.12, -24.71, -24.32, -23.95, -23.59, -23.25, -22.92, -22.6, -22.29, -21.99, -21.71, -21.43, -21.17, -20.91, -20.66, -20.42, -20.19, -19.96, -19.75, -19.54, -19.33, -19.14, -18.95, -18.76, -18.59, -18.42, -18.25, -18.09, -17.93, -17.78, -17.64, -17.5, -17.36, -17.23, -17.1, -16.98, -16.86, -16.75, -16.64, -16.53, -16.43, -16.33, -16.23, -16.14, -16.05, -15.96, -15.88, -15.8, -15.73, -15.65], "f": [2.0, 2.05, 2.1, 2.15, 2.2, 2.25, 2.3, 2.35, 2.4, 2.45, 2.5, 2.55, 2.6, 2.65, 2.7, 2.75, 2.8, 2.85, 2.9, 2.95, 3.0, 3.05, 3.1, 3.15, 3.2, 3.25, 3.3, 3.35, 3.4, 3.45, 3.5, 3.55, 3.6, 3.65, 3.7, 3.75, 3.8, 3.85, 3.9, 3.95, 4.0, 4.05, 4.1, 4.15, 4.2, 4.25, 4.3, 4.35, 4.4, 4.45, 4.5, 4.55, 4.6, 4.65, 4.7, 4.75, 4.8, 4.85, 4.9, 4.95, 5.0, 5.05, 5.1, 5.15, 5.2, 5.25, 5.3, 5.35, 5.4, 5.45, 5.5, 5.55, 5.6, 5.65, 5.7, 5.75, 5.8, 5.85, 5.9, 5.95, 6.0, 6.05, 6.1, 6.15, 6.2, 6.25, 6.3, 6.35, 6.4, 6.45, 6.5, 6.55, 6.6, 6.65, 6.7, 6.75, 6.8, 6.85, 6.9, 6.95, 7.0, 7.05, 7.1, 7.15, 7.2, 7.25, 7.3, 7.35, 7.4, 7.45, 7.5, 7.55, 7.6, 7.65, 7.7, 7.75, 7.8, 7.85, 7.9, 7.95, 8.0, 8.05, 8.1, 8.15, 8.2, 8.25, 8.3, 8.35, 8.4, 8.45, 8.5, 8.55, 8.6, 8.65, 8.7, 8.75, 8.8, 8.85, 8.9, 8.95, 9.0]};
+
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const C = { add:(a,b)=>[a[0]+b[0],a[1]+b[1]], sub:(a,b)=>[a[0]-b[0],a[1]-b[1]],
+  mul:(a,b)=>[a[0]*b[0]-a[1]*b[1],a[0]*b[1]+a[1]*b[0]],
+  div:(a,b)=>{const d=b[0]*b[0]+b[1]*b[1];return [(a[0]*b[0]+a[1]*b[1])/d,(a[1]*b[0]-a[0]*b[1])/d];},
+  abs:a=>Math.hypot(a[0],a[1]) };
+const c0 = 299792458;
+const db = x => 20*Math.log10(Math.max(x,1e-9));
+
+function setup(cv) {
+  const r = cv.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  cv.width = Math.max(1, Math.round(r.width*dpr)); cv.height = Math.max(1, Math.round(r.height*dpr));
+  const g = cv.getContext("2d"); g.setTransform(dpr,0,0,dpr,0,0); return [g, r.width, r.height];
+}
+
+// A line chart: series [{x:[], y:[], color, width, dash}], shaded x band, y range, labels.
+function lineChart(cv, o) {
+  const [g, W, H] = setup(cv);
+  const m = {l: 48, r: 12, t: 12, b: 34};
+  const X = x => m.l + (x - o.x0)/(o.x1 - o.x0)*(W - m.l - m.r);
+  const Y = y => m.t + (o.y1 - y)/(o.y1 - o.y0)*(H - m.t - m.b);
+  g.clearRect(0,0,W,H);
+  g.font = "11px " + css("--f-mono");
+  if (o.band) { g.fillStyle = css("--band"); g.fillRect(X(o.band[0]), m.t, X(o.band[1]) - X(o.band[0]), H - m.t - m.b); }
+  g.strokeStyle = css("--rule"); g.lineWidth = 1; g.fillStyle = css("--muted");
+  for (let y = o.y0; y <= o.y1 + 1e-9; y += o.dy) { g.beginPath(); g.moveTo(m.l, Y(y)); g.lineTo(W - m.r, Y(y)); g.stroke();
+    g.textAlign = "right"; g.textBaseline = "middle"; g.fillText(String(Math.round(y*10)/10), m.l - 6, Y(y)); }
+  for (let x = o.x0; x <= o.x1 + 1e-9; x += o.dx) { g.beginPath(); g.moveTo(X(x), m.t); g.lineTo(X(x), H - m.b); g.stroke();
+    g.textAlign = "center"; g.textBaseline = "top"; g.fillText(String(Math.round(x*10)/10), X(x), H - m.b + 6); }
+  g.textAlign = "right"; g.textBaseline = "bottom"; g.fillText(o.xlabel, W - m.r, H - 2);
+  g.save(); g.translate(11, m.t); g.rotate(-Math.PI/2); g.textAlign = "right"; g.textBaseline = "top"; g.fillText(o.ylabel, 0, 0); g.restore();
+  g.save(); g.beginPath(); g.rect(m.l, m.t, W - m.l - m.r, H - m.t - m.b); g.clip();
+  for (const s of o.series) {
+    g.strokeStyle = s.color; g.lineWidth = s.width || 2; g.setLineDash(s.dash || []); g.beginPath();
+    let pen = false;
+    for (let i = 0; i < s.x.length; i++) {
+      const y = s.y[i]; if (y === null || !isFinite(y)) { pen = false; continue; }
+      const px = X(s.x[i]), py = Y(Math.max(o.y0 - 5, Math.min(o.y1 + 5, y)));
+      pen ? g.lineTo(px, py) : g.moveTo(px, py); pen = true;
+    }
+    g.stroke(); g.setLineDash([]);
+  }
+  for (const n of (o.notes || [])) {
+    g.fillStyle = n.color || css("--ink"); g.strokeStyle = n.color || css("--ink");
+    if (n.span) { g.globalAlpha = 0.5; g.lineWidth = 1; g.beginPath(); g.moveTo(X(n.span[0]), Y(n.y)); g.lineTo(X(n.span[1]), Y(n.y)); g.stroke(); g.globalAlpha = 1; }
+    if (n.dot) { g.beginPath(); g.arc(X(n.x), Y(n.y), 4, 0, 7); g.fill(); }
+    g.textAlign = n.align || "center"; g.textBaseline = "bottom"; g.fillText(n.text, X(n.x) + (n.ox || 0), Y(n.y) - (n.oy ?? 4));
+  }
+  g.restore();
+}
+
+// Smith chart: curves of reflection coefficients [{pts:[[re,im]...], color, width}], points [{g:[re,im], color, label}].
+function smith(cv, curves, points) {
+  const [g, W, H] = setup(cv);
+  const R = Math.min(W, H)/2 - 14, cx = W/2, cy = H/2;
+  const P = z => [cx + z[0]*R, cy - z[1]*R];
+  g.clearRect(0,0,W,H);
+  g.strokeStyle = css("--rule"); g.lineWidth = 1;
+  g.beginPath(); g.arc(cx, cy, R, 0, 7); g.stroke();
+  g.beginPath(); g.moveTo(cx - R, cy); g.lineTo(cx + R, cy); g.stroke();
+  g.save(); g.beginPath(); g.arc(cx, cy, R, 0, 7); g.clip();
+  for (const r of [0.2, 0.5, 1, 2, 5]) { g.beginPath(); g.arc(cx + R*r/(1+r), cy, R/(1+r), 0, 7); g.stroke(); }
+  for (const x of [0.2, 0.5, 1, 2, 5]) for (const s of [1, -1]) { g.beginPath(); g.arc(cx + R, cy - s*R/x, R/x, 0, 7); g.stroke(); }
+  g.restore();
+  g.fillStyle = css("--muted"); g.font = "10px " + css("--f-mono"); g.textAlign = "center";
+  g.fillText("L (вверх)", cx, cy - R + 14); g.fillText("C (вниз)", cx, cy + R - 6); g.fillText("50 Ом", cx, cy + 14);
+  for (const c of curves) {
+    g.strokeStyle = c.color; g.lineWidth = c.width || 2; g.setLineDash(c.dash || []); g.beginPath();
+    c.pts.forEach((z, i) => { const p = P(z); i ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1]); }); g.stroke(); g.setLineDash([]);
+  }
+  for (const p of points) {
+    const q = P(p.g); g.fillStyle = p.color; g.beginPath(); g.arc(q[0], q[1], 4.5, 0, 7); g.fill();
+    if (p.label) { g.textAlign = "left"; g.font = "11px " + css("--f-mono"); g.fillText(p.label, q[0] + 7, q[1] - 6); }
+  }
+  g.fillStyle = css("--ink"); g.beginPath(); g.arc(cx, cy, 2.5, 0, 7); g.fill();
+}
+
+const gamma = (Z, Z0 = 50) => C.div(C.sub(Z, [Z0,0]), C.add(Z, [Z0,0]));
+
+// ABCD cascade at one frequency. Elements: {t:"line", z, eps, l(mm)} | {t:"series", Z:[re,im]} | {t:"shunt", Y:[re,im]}.
+function abcd(els, w) {
+  let A = [[1,0],[0,0],[0,0],[1,0]];   // a, b, c, d (complex)
+  const mul = (P, Q) => [C.add(C.mul(P[0],Q[0]),C.mul(P[1],Q[2])), C.add(C.mul(P[0],Q[1]),C.mul(P[1],Q[3])),
+                         C.add(C.mul(P[2],Q[0]),C.mul(P[3],Q[2])), C.add(C.mul(P[2],Q[1]),C.mul(P[3],Q[3]))];
+  for (const e of els) {
+    let M;
+    if (e.t === "line") { const b = w*Math.sqrt(e.eps)/c0*e.l*1e-3, cs = Math.cos(b), sn = Math.sin(b);
+      M = [[cs,0],[0,e.z*sn],[0,sn/e.z],[cs,0]]; }
+    else if (e.t === "series") M = [[1,0], e.Z, [0,0], [1,0]];
+    else M = [[1,0],[0,0], e.Y, [1,0]];
+    A = mul(A, M);
+  }
+  return A;
+}
+const zin = (A, ZL) => C.div(C.add(C.mul(A[0], ZL), A[1]), C.add(C.mul(A[2], ZL), A[3]));
+
+/* ---------- profile ---------- */
+function drawProfile() {
+  const x = PROF.map(p => p[0]), y = PROF.map(p => p[1]);
+  lineChart(document.getElementById("profPlot"), {
+    x0: 0, x1: 29, dx: 2, y0: 30, y1: 75, dy: 5, xlabel: "мм вдоль пути от пина", ylabel: "Z0, Ом",
+    series: [{x: [0, 29], y: [50, 50], color: css("--muted"), width: 1, dash: [4, 4]}, {x, y, color: css("--accent"), width: 2}],
+    notes: [
+      {x: 0.75, y: 62, text: "пин 58", color: css("--warm")},
+      {x: 1.65, y: 33, text: "блямба 37", color: css("--warm"), oy: -14},
+      {x: 6.7, y: 66, text: "C", color: css("--warm")},
+      {x: 14.8, y: 60, text: "пин SMA", color: css("--warm")},
+      {x: 19.1, y: 53, text: "край платы", align: "left", ox: 4},
+      {x: 24, y: 53, text: "корпус разъёма"}
+    ]});
+}
+
+/* ---------- one step ---------- */
+function drawStep() {
+  const z1 = +document.getElementById("z1").value, z2 = +document.getElementById("z2").value;
+  document.getElementById("z1o").value = z1.toFixed(1); document.getElementById("z2o").value = z2.toFixed(1);
+  const G = (z2 - z1)/(z2 + z1), a = Math.abs(G);
+  document.getElementById("stepOut").innerHTML =
+    `<span>Γ = <b>${G.toFixed(3)}</b></span><span>S11 = <b>${a < 1e-6 ? "−∞" : db(a).toFixed(1)} dB</b></span>` +
+    `<span>отражено мощности <b>${(a*a*100).toFixed(2)} %</b></span><span>КСВ <b>${((1+a)/(1-a)).toFixed(2)}</b></span>` +
+    `<span>${G > 0 ? "в фазе (импеданс вырос)" : G < 0 ? "в противофазе (импеданс упал)" : "согласовано"}</span>`;
+}
+
+/* ---------- chain ---------- */
+const CHAIN0 = {cd: 5.4, cbz: 36.8, cbl: 0.7, cpz: 58, cc: 2, cl: 0.4, cpl: 0};
+let chainCap = true;
+const F = Array.from({length: 361}, (_, i) => 1 + i*0.025);   // GHz
+function chainS11(p, cap) {
+  return F.map(fg => {
+    const w = 2*Math.PI*fg*1e9, els = [];
+    if (cap) els.push({t: "series", Z: [0, w*p.cl*1e-9 - 1/(w*p.cc*1e-12)]});
+    els.push({t: "line", z: 49.3, eps: 2.29, l: p.cd}, {t: "line", z: p.cbz, eps: 3.15, l: p.cbl}, {t: "line", z: p.cpz, eps: 2.84, l: 0.6});
+    if (p.cpl > 0) els.push({t: "series", Z: [0, w*p.cpl*1e-9]});
+    return gamma(zin(abcd(els, w), [50, 0]));
+  });
+}
+function chainParams() { const p = {}; for (const k in CHAIN0) p[k] = +document.getElementById(k).value; return p; }
+function drawChain() {
+  const p = chainParams();
+  const fmt = {cd: 1, cbz: 1, cbl: 2, cpz: 1, cc: 1, cl: 2, cpl: 2};
+  for (const k in CHAIN0) document.getElementById(k + "o").value = p[k].toFixed(fmt[k]);
+  const s = chainS11(p, chainCap), s0 = chainS11(CHAIN0, true);
+  const y = s.map(g => db(C.abs(g))), y0 = s0.map(g => db(C.abs(g)));
+  let j = 0; y.forEach((v, i) => { if (F[i] > 1.5 && v < y[j]) j = i; }); if (F[j] <= 1.5) j = y.indexOf(Math.min(...y));
+  let worst = -999; F.forEach((f, i) => { if (f >= 4.5 && f <= 6.5) worst = Math.max(worst, y[i]); });
+  lineChart(document.getElementById("chainPlot"), {x0: 1, x1: 10, dx: 1, y0: -50, y1: 0, dy: 10, xlabel: "ГГц", ylabel: "S11, dB", band: [4.5, 6.5],
+    series: [{x: F, y: y0, color: css("--muted"), width: 1.2, dash: [4, 3]}, {x: F, y, color: css("--accent"), width: 2.2}],
+    notes: [{x: F[j], y: Math.max(y[j], -49), dot: true, text: F[j].toFixed(2) + " ГГц", color: css("--warm")}]});
+  const k575 = F.findIndex(f => f >= 5.75);
+  smith(document.getElementById("chainSmith"),
+    [{pts: s, color: css("--accent"), width: 1.6}, {pts: s.filter((_, i) => F[i] >= 4.5 && F[i] <= 6.5), color: css("--warm"), width: 3}],
+    [{g: s[j], color: css("--warm"), label: F[j].toFixed(2)}, {g: s[k575], color: css("--ink"), label: "5.75"}]);
+  const srf = 1/(2*Math.PI*Math.sqrt(p.cl*1e-9*p.cc*1e-12))/1e9;
+  document.getElementById("chainOut").innerHTML =
+    `<span>провал <b>${F[j].toFixed(2)} ГГц, ${y[j].toFixed(1)} dB</b></span>` +
+    `<span class="${worst > -20 ? "warn" : ""}">худшее в 4.5–6.5 <b>${worst.toFixed(1)} dB</b></span>` +
+    (chainCap ? `<span>резонанс C+ESL <b>${p.cl > 0 ? srf.toFixed(2) + " ГГц" : "нет (ESL = 0)"}</b></span>` : `<span><b>конденсатор убран</b></span>`);
+  document.getElementById("chainNoCap").textContent = chainCap ? "Без конденсатора" : "Вернуть конденсатор";
+}
+
+/* ---------- FDTD ---------- */
+function drawFdtd() {
+  lineChart(document.getElementById("fdtdPlot"), {x0: 2, x1: 9, dx: 1, y0: -45, y1: -10, dy: 5, xlabel: "ГГц", ylabel: "S11, dB", band: [4.5, 6.5],
+    series: [{x: FDTD.f, y: FDTD.test_prep, color: css("--good"), width: 2}, {x: FDTD.f, y: FDTD.js_before, color: css("--warm"), width: 2},
+             {x: FDTD.f, y: FDTD.js_cap, color: css("--accent"), width: 2}]});
+}
+
+/* ---------- Smith transformation ---------- */
+function smithState() {
+  const v = id => +document.getElementById(id).value;
+  return {r: v("sr"), x: v("sx"), l: v("sl"), cp: v("sc"), f: v("sf")};
+}
+function smithPath(s) {
+  const w = 2*Math.PI*s.f*1e9, ZL = [s.r, s.x], line = [], cap = [];
+  for (let i = 0; i <= 60; i++) line.push(gamma(zin(abcd([{t: "line", z: 50, eps: 2.29, l: s.l*i/60}], w), ZL)));
+  const Z1 = zin(abcd([{t: "line", z: 50, eps: 2.29, l: s.l}], w), ZL);
+  for (let i = 0; i <= 60; i++) cap.push(gamma(zin(abcd([{t: "shunt", Y: [0, w*s.cp*1e-12*i/60]}], w), Z1)));
+  const Z2 = zin(abcd([{t: "shunt", Y: [0, w*s.cp*1e-12]}], w), Z1);
+  return {ZL, Z1, Z2, line, cap};
+}
+function drawSmith() {
+  const s = smithState();
+  document.getElementById("sro").value = s.r.toFixed(0); document.getElementById("sxo").value = s.x.toFixed(0);
+  document.getElementById("slo").value = s.l.toFixed(1); document.getElementById("sco").value = s.cp.toFixed(2);
+  document.getElementById("sfo").value = s.f.toFixed(2);
+  const r = smithPath(s), g0 = gamma(r.ZL), g1 = gamma(r.Z1), g2 = gamma(r.Z2);
+  smith(document.getElementById("smithT"),
+    [{pts: r.line, color: css("--accent"), width: 2.2}, {pts: r.cap, color: css("--good"), width: 2.2}],
+    [{g: g0, color: css("--warm"), label: "Z_L"}, {g: g1, color: css("--accent")}, {g: g2, color: css("--good"), label: "вход"}]);
+  const zs = z => `${z[0].toFixed(1)} ${z[1] >= 0 ? "+" : "−"} j${Math.abs(z[1]).toFixed(1)} Ом`;
+  const lg = 299.792458/(s.f*Math.sqrt(2.29));
+  const lx = s.x > 0 ? `L = ${(s.x/(2*Math.PI*s.f)).toFixed(2)} нГн` : s.x < 0 ? `C = ${(1e3/(2*Math.PI*s.f*-s.x)).toFixed(2)} пФ` : "чисто активная";
+  document.getElementById("smithOut").innerHTML =
+    `<span>нагрузка <b>${zs(r.ZL)}</b> (${lx}), S11 ${db(C.abs(g0)).toFixed(1)} dB</span>` +
+    `<span>после линии <b>${zs(r.Z1)}</b>, S11 ${db(C.abs(g1)).toFixed(1)} dB</span>` +
+    `<span>после C (вход) <b>${zs(r.Z2)}</b>, S11 <b>${db(C.abs(g2)).toFixed(1)} dB</b></span>` +
+    `<span>λg на ${s.f.toFixed(2)} ГГц: ${lg.toFixed(1)} мм, λ/4 = ${(lg/4).toFixed(1)} мм</span>`;
+}
+function smithFit() {
+  const s = smithState(); let best = [1e9, 0, 0];
+  for (let l = 0; l <= 20; l += 0.1) for (let cp = 0; cp <= 1.5; cp += 0.01) {
+    const a = C.abs(gamma(smithPath({...s, l, cp}).Z2)); if (a < best[0]) best = [a, l, cp];
+  }
+  document.getElementById("sl").value = best[1]; document.getElementById("sc").value = best[2]; drawSmith();
+}
+
+/* ---------- wiring ---------- */
+function drawAll() { drawProfile(); drawStep(); drawChain(); drawFdtd(); drawSmith(); }
+["z1", "z2"].forEach(id => document.getElementById(id).addEventListener("input", drawStep));
+Object.keys(CHAIN0).forEach(id => document.getElementById(id).addEventListener("input", drawChain));
+document.getElementById("chainReset").addEventListener("click", () => { for (const k in CHAIN0) document.getElementById(k).value = CHAIN0[k]; chainCap = true; drawChain(); });
+document.getElementById("chainNoCap").addEventListener("click", () => { chainCap = !chainCap; drawChain(); });
+["sr", "sx", "sl", "sc", "sf"].forEach(id => document.getElementById(id).addEventListener("input", drawSmith));
+document.getElementById("smithFit").addEventListener("click", smithFit);
+let rt; new ResizeObserver(() => { clearTimeout(rt); rt = setTimeout(drawAll, 60); }).observe(document.querySelector("main"));
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", drawAll);
+new MutationObserver(drawAll).observe(document.documentElement, {attributes: true, attributeFilter: ["data-theme"]});
+if (document.fonts) document.fonts.ready.then(drawAll);
+drawAll();
+</script>
+
+</body>
+</html>
