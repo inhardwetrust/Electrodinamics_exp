@@ -1055,8 +1055,8 @@ across a gap between two PEC bodies, with no polarity.
   bridge, the 1 mm wide element 0.08 nH (check_lumped). The KiCad boards'
   0402 (r 0.15 mm): 10–12 columns, two z lines (the copper's merged
   plane and its top line). Grid: strait 1.18 -> 1.38 M cells (+12 % for
-  the lines across the width, +4 % in z). A staircase stays one path;
-  ports stay one column (radius 0).
+  the lines across the width, +4 % in z). Ports stay one column
+  (radius 0).
 - **Slanted axis** (a 0402 rotated in the board plane): a staircase of
   edges. From the grid node nearest the - end to the one nearest the +
   end, each step goes along whichever of the axis's two grid axes keeps
@@ -1070,6 +1070,27 @@ across a gap between two PEC bodies, with no polarity.
   axis. An axis along x, y or z keeps the plain column (bit-identical);
   one slanted out of every grid plane is an error. Ports still need an
   axis along x, y or z.
+- **Slanted and wide**: `discretize._parallel_staircases` adds parallel
+  staircases, as a column gets parallel columns. The same walk, shifted
+  across the axis (in its grid plane) by multiples of half the finest
+  step within the radius and two coarse steps longer at both ends (a
+  gap edge slanted to the grid lies farther from the shifted ends); its
+  free run through the gap's middle grown until a node touches metal;
+  kept if its ends lie on the two pieces the central path joins and it
+  shares no edge with a path already taken. Each path carries N times
+  the element over its own length, as the columns do.
+  - Found on justswitch_v3 (the output's DC block at 45 degrees): one
+    staircase was a thin wire, the 0402 (L 0.4 nH, C 2.2 pF) read as
+    0.84-0.91 nH from S11 where the same 0402 along x read 0.42; the
+    series resonance fell from ~5.4 to ~3.7 GHz and S11 at 6.5 GHz was
+    -13 dB. Now 23 paths there (0.76-0.85 mm each).
+  - check_lumped_staircase: a 1 mm wide slanted 0 Ohm element is 11 % of
+    a thin one's excess over a 1 mm copper bridge (straight: 14 %,
+    check_lumped). Its values are checked on a thin element: the wide
+    one's paths differ in length (1.18-1.43 mm on the coarse test grid),
+    the current divides evenly through a C but not through the short
+    standard, and C read 1.4-4.5 % high (~0.07 nH the short does not
+    cancel).
 - Both ends may lie on the same PEC body if the axis crosses a gap of it
   (a KiCad layer is one body with the trace and the pour; a slot feed);
   with no gap it is an error (shorted). The same holds for ports. On a

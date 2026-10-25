@@ -71,8 +71,14 @@
 #     keeps the step's midpoint nearer the axis line. Its edges whose
 #     midpoints project into the gap carry the element (the same rules as
 #     a column), each its share l_e / (path length). The path is longer
-#     than the gap (Manhattan), the element's value is exact. A staircase
-#     stays one path.
+#     than the gap (Manhattan), the element's value is exact. A wide one
+#     gets parallel staircases too, as a column gets parallel columns:
+#     the same walk shifted across the axis within the radius, its free
+#     run through the gap's middle grown until a node touches metal, kept
+#     if its ends lie on the two pieces the central path joins and it
+#     shares no edge with a path already taken (one staircase is a thin
+#     wire: a 0402 at 45 degrees saw ~0.85 nH, the same 0402 along x
+#     0.42).
 #   - waveguide ports: the grid plane of the port (a domain end) and the
 #     line's mode on it (solver/port_mode.py), found on the discretized
 #     materials, so it is the mode of the staircased line the FDTD sees.
@@ -597,8 +603,8 @@ def _discretize_port(result, port, resistance, snap):
 def _staircase(result, item, snap):
     """
     The edge path of a lumped element whose axis is slanted in a grid
-    plane (see the header): (axes, edges, signs, length, ends) or None (an
-    error is recorded).
+    plane (see the header): (axes, edges, signs, length, ends, plane) or
+    None (an error is recorded). plane: (the fixed axis, its node index).
     """
     lines = result.grid.lines
     direction = item.plus - item.minus
@@ -613,40 +619,8 @@ def _staircase(result, item, snap):
         result.errors.append(f"{item.name}: the axis is not on a grid line ({AXES[fixed]})")
         return None
 
-    def nearest(point):
-        node = [0, 0, 0]
-        node[fixed] = i_fixed
-        for a in varying:
-            node[a] = int(np.argmin(np.abs(lines[a] - point[a])))
-        return node
-
-    def position(node):
-        return np.array([lines[a][node[a]] for a in range(3)])
-
     unit = direction / size
-
-    def off_line(point):
-        d = point - item.minus
-        return np.linalg.norm(d - np.dot(d, unit) * unit)
-
-    node, target = nearest(item.minus), nearest(item.plus)
-    path = []                               # (axis, edge [i, j, k], sign, midpoint)
-    while node != target:
-        best = None
-        for a in varying:
-            if node[a] == target[a]:
-                continue
-            sign = 1 if target[a] > node[a] else -1
-            step = list(node)
-            step[a] += sign
-            mid = 0.5 * (position(node) + position(step))
-            if best is None or off_line(mid) < best[0]:
-                edge = list(node)
-                edge[a] = min(node[a], step[a])
-                best = (off_line(mid), a, edge, sign, mid, step)
-        _, a, edge, sign, mid, node = best
-        path.append((a, edge, sign, mid))
-
+    _, path = _stair_walk(lines, (fixed, i_fixed), varying, item.minus, item.plus)
     t0, t1 = sorted(np.dot(p - item.minus, unit) for p in (item.gap_minus, item.gap_plus))
     path = [p for p in path if t0 < np.dot(p[3] - item.minus, unit) < t1]
     if not path:
@@ -671,8 +645,141 @@ def _staircase(result, item, snap):
             result.errors.append(f"{item.name}: the {end} end of the path does not touch PEC")
             return None
 
-    length = float(sum(lines[a][e[a] + 1] - lines[a][e[a]] for a, e in zip(axes, edges)))
-    return axes, edges, signs, length, (np.array(first), np.array(last))
+    length = _path_length(lines, axes, edges)
+    return axes, edges, signs, length, (np.array(first), np.array(last)), (fixed, i_fixed)
+
+
+def _path_length(lines, axes, edges):
+    return float(sum(lines[a][e[a] + 1] - lines[a][e[a]] for a, e in zip(axes, edges)))
+
+
+def _stair_walk(lines, plane, varying, start, end):
+    """
+    The staircase from the node nearest `start` to the one nearest `end`
+    in a grid plane (the fixed axis, its node index): each step along
+    whichever varying axis keeps the step's midpoint nearer the line
+    start -> end. (nodes, steps): the nodes [i, j, k] in walk order, the
+    steps (axis, edge, sign, midpoint) between them.
+    """
+    fixed, i_fixed = plane
+    unit = (end - start) / np.linalg.norm(end - start)
+
+    def nearest(point):
+        node = [0, 0, 0]
+        node[fixed] = i_fixed
+        for a in varying:
+            node[a] = int(np.argmin(np.abs(lines[a] - point[a])))
+        return node
+
+    def position(node):
+        return np.array([lines[a][node[a]] for a in range(3)])
+
+    def off_line(point):
+        d = point - start
+        return np.linalg.norm(d - np.dot(d, unit) * unit)
+
+    node, target = nearest(start), nearest(end)
+    nodes, steps = [node], []
+    while node != target:
+        best = None
+        for a in varying:
+            if node[a] == target[a]:
+                continue
+            sign = 1 if target[a] > node[a] else -1
+            step = list(node)
+            step[a] += sign
+            mid = 0.5 * (position(node) + position(step))
+            if best is None or off_line(mid) < best[0]:
+                edge = list(node)
+                edge[a] = min(node[a], step[a])
+                best = (off_line(mid), a, edge, sign, mid, step)
+        _, a, edge, sign, mid, node = best
+        steps.append((a, edge, sign, mid))
+        nodes.append(node)
+    return nodes, steps
+
+
+def _parallel_staircases(result, element, plane, central, ends, pieces):
+    """
+    The slanted element's staircases beside the central one (see the
+    header): the walk shifted across the axis, in its grid plane, by
+    multiples of half the finest step around the element within the
+    radius, nearest the axis first, and two of the coarsest steps longer
+    at both ends (a gap's edge slanted to the grid lies farther from the
+    shifted ends); each its free run through the gap's middle, grown
+    toward both ends until a node touches metal, its ends
+    on the two pieces of metal the central path joins, no edge shared
+    with a path already taken. [(axes, edges, signs)].
+    """
+    radius = element.radius
+    if radius <= 0:
+        return []
+    lines = result.grid.lines
+    shape = result.grid.shape
+    nodes_shape = tuple(n + 1 for n in shape)
+    varying = [a for a in range(3) if a != plane[0]]
+    direction = element.plus - element.minus
+    unit = direction / np.linalg.norm(direction)
+    across = np.zeros(3)
+    across[varying[0]], across[varying[1]] = -unit[varying[1]], unit[varying[0]]
+    t_mid = 0.5 * (np.dot(element.gap_minus - element.minus, unit) + np.dot(element.gap_plus - element.minus, unit))
+
+    def piece(node):
+        return pieces[np.ravel_multi_index(tuple(node), nodes_shape)]
+
+    joined = sorted((piece(ends[0]), piece(ends[1])))
+    taken = {(int(a), *map(int, e)) for a, e in zip(*central)}
+
+    finest, coarsest = [], []
+    for a in varying:
+        lo, hi = sorted((element.minus[a], element.plus[a]))
+        near = (lines[a] >= lo - radius) & (lines[a] <= hi + radius)
+        steps = np.diff(lines[a])[near[:-1] & near[1:]]
+        if not len(steps):
+            steps = np.diff(lines[a])
+        finest.append(steps.min())
+        coarsest.append(steps.max())
+    shift = 0.5 * min(finest)
+    count = int(radius / shift + 1e-9)
+    offsets = sorted((n * shift for n in range(-count, count + 1) if n), key=abs)
+    beyond = 2.0 * max(coarsest) * unit
+
+    paths = []
+    for offset in offsets:
+        nodes, steps = _stair_walk(lines, plane, varying, element.minus - beyond + offset * across,
+                                   element.plus + beyond + offset * across)
+        if not steps:
+            continue
+        t = np.array([np.dot(mid - element.minus, unit) for _, _, _, mid in steps])
+        middle = int(np.argmin(np.abs(t - t_mid)))
+
+        def free(i):
+            return not result.pec[steps[i][0]][tuple(steps[i][1])]
+
+        def metal(n):
+            return _node_on_metal(result.pec, nodes[n], shape)
+
+        if not free(middle):
+            continue
+        first = middle                      # steps first..last, between nodes first..last + 1
+        while not metal(first) and first - 1 >= 0 and free(first - 1):
+            first -= 1
+        last = middle
+        while not metal(last + 1) and last + 1 < len(steps) and free(last + 1):
+            last += 1
+        if not (metal(first) and metal(last + 1)):
+            continue
+        ends_here = (piece(nodes[first]), piece(nodes[last + 1]))
+        if ends_here[0] == ends_here[1] or sorted(ends_here) != joined:
+            continue
+        run = steps[first:last + 1]
+        keys = {(int(a), *map(int, e)) for a, e, _, _ in run}
+        if keys & taken:
+            continue
+        taken |= keys
+        paths.append((np.array([a for a, _, _, _ in run]), np.array([e for _, e, _, _ in run], dtype=np.int64),
+                      np.array([s for _, _, s, _ in run])))
+    return paths
 
 
 def _discretize_element(result, element, values, snap, pieces):
@@ -690,10 +797,14 @@ def _discretize_element(result, element, values, snap, pieces):
         edges = np.concatenate(runs)
         path = (np.full(len(edges), axis), edges, np.full(len(edges), sign), length, ends)
     else:
-        path = _staircase(result, element, snap)
-        if path is None:
+        stair = _staircase(result, element, snap)
+        if stair is None:
             return
-        column, lengths = np.zeros(len(path[1]), dtype=np.int64), [path[3]]
+        axes, edges, signs, length, ends, plane = stair
+        runs = [(axes, edges, signs)] + _parallel_staircases(result, element, plane, (axes, edges), ends, pieces())
+        lengths = [_path_length(result.grid.lines, run[0], run[1]) for run in runs]
+        column = np.concatenate([np.full(len(run[0]), k) for k, run in enumerate(runs)])
+        path = tuple(np.concatenate([run[i] for run in runs]) for i in range(3)) + (length, ends)
     axes, edges, signs, length, ends = path
     r, l, c = values["r"], values["l"] * 1e-9, values["c"] * 1e-12
     if values["topology"] == "series" and r == 0 and l == 0 and c == 0:
