@@ -7,7 +7,9 @@
 #     every E and H value and every port record identical (the same float32
 #     arithmetic in the same order);
 #   - the field energy (the stop criterion) equal within 1e-12;
-#   - the kernels are faster (they should be several times faster).
+#   - the kernels are faster (they should be several times faster);
+#   - denormals are off (FTZ|DAZ) in the stepping thread and every numba
+#     worker: a denormal field value updates to 0 on both paths.
 # Skipped (passes) without numba.
 #
 #   python checks/check_kernels.py      (~30 s)
@@ -54,6 +56,24 @@ def models():
     yield "line with a lumped port and element", m, m.ports[0].name
 
 
+def denormals():
+    if not fdtd.kernels.X86:
+        print("not x86: denormal flags not checked")
+        return
+    check("FTZ|DAZ in this thread and every numba worker", fdtd.kernels.flush_denormals())
+    tiny = np.float32(1e-39)                # a float32 denormal
+    for fast in (False, True):
+        fdtd.kernels.AVAILABLE = fast
+        _, m, _ = next(models())
+        solver = fdtd.FdtdSolver(m, 1.0, 5.0)          # no active port: no source
+        for f in solver.e + solver.h:
+            f[...] = tiny
+        solver.step(1)
+        inner = solver.e[2][solver.pml + 2:-solver.pml - 2, solver.pml + 2:-solver.pml - 2, 1:-1]
+        check(f"{'numba' if fast else 'numpy'}: a denormal field updates to 0",
+              not np.any(inner), f"max |Ez| {np.abs(inner).max():.2e}")
+
+
 def main():
     if not fdtd.kernels.AVAILABLE:
         print("numba not installed (or CUSTOMCST_NUMPY=1): nothing to compare")
@@ -82,6 +102,7 @@ def main():
             check(f"{name}: kernels faster", t_numba < t_numpy,
                   f"numpy {t_numpy / STEPS * 1e3:.2f} ms/step, numba {t_numba / STEPS * 1e3:.2f} ms/step, "
                   f"x{t_numpy / t_numba:.1f}")
+        denormals()
     finally:
         fdtd.kernels.AVAILABLE = True
 

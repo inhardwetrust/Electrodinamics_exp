@@ -71,6 +71,8 @@
 # Speed: with numba installed the H and E updates (curls, CPML, update) run
 # as compiled kernels on all CPU cores (solver/fdtd_kernels.py), 4-8x the
 # numpy path; sources, lumped elements and port records stay in numpy.
+# step() first turns float32 denormals off (FTZ|DAZ, see fdtd_kernels.py):
+# on Intel CPUs they made a run ~8x slower as the pulse spread.
 # CUSTOMCST_NUMPY=1 forces the numpy path.
 
 import math
@@ -554,6 +556,7 @@ class FdtdSolver:
         return self.step_index * self.dt
 
     def step(self, n=1):
+        kernels.flush_denormals()           # per thread: this one may not be the last one's
         for _ in range(int(n)):
             self._update_h()
             self._update_e()

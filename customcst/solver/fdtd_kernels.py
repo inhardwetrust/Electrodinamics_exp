@@ -19,16 +19,79 @@
 #
 # AVAILABLE is False without numba; CUSTOMCST_NUMPY=1 forces the numpy path
 # (for comparing the two).
+#
+# Denormals: ahead of the wave front the fields fall through float32's
+# denormal range (< 1.2e-38). Intel CPUs compute those ~8x slower (a
+# microcode assist per operation; AMD barely notices), so a run on a Xeon
+# slowed down as the pulse spread over the grid. flush_denormals() sets
+# FTZ|DAZ in the MXCSR of the calling thread and of every numba worker:
+# denormals become 0, ~1e-38 of the fields, far below anything a run
+# resolves. MXCSR is per thread and the workers live on, so the solver calls
+# it before stepping, from the thread that steps (both paths: numpy's loops
+# run in the calling thread, so they stay bit-identical to the kernels).
 
 import os
+import platform
 
 import numpy as np
 
 try:
-    from numba import njit, prange
+    from numba import get_num_threads, njit, prange
+    NUMBA = True
     AVAILABLE = os.environ.get("CUSTOMCST_NUMPY", "") != "1"
 except ImportError:                     # pragma: no cover - numba is optional
-    AVAILABLE = False
+    NUMBA = AVAILABLE = False
+
+FTZ_DAZ = 0x8040                        # MXCSR: flush to zero (bit 15), denormals are zero (bit 6)
+X86 = platform.machine().lower() in ("x86_64", "amd64", "i386", "i686", "x86")
+
+if NUMBA and X86:
+    from llvmlite import ir
+    from numba import types
+    from numba.core import cgutils
+    from numba.extending import intrinsic
+
+    @intrinsic
+    def _mxcsr(typingctx, flags):
+        """The thread's MXCSR before ORing `flags` (uint32) into it."""
+        def codegen(context, builder, signature, args):
+            slot = cgutils.alloca_once(builder, ir.IntType(32))
+            pointer = builder.bitcast(slot, ir.IntType(8).as_pointer())
+            fnty = ir.FunctionType(ir.VoidType(), [ir.IntType(8).as_pointer()])
+            store = cgutils.get_or_insert_function(builder.module, fnty, "llvm.x86.sse.stmxcsr")
+            load = cgutils.get_or_insert_function(builder.module, fnty, "llvm.x86.sse.ldmxcsr")
+            builder.call(store, [pointer])
+            old = builder.load(slot)
+            builder.store(builder.or_(old, args[0]), slot)
+            builder.call(load, [pointer])
+            return old
+        return types.uint32(types.uint32), codegen
+
+    @njit(cache=True)
+    def _mxcsr_here(flags):
+        _mxcsr(flags)
+        return _mxcsr(np.uint32(0))
+
+    @njit(parallel=True, cache=True)
+    def _mxcsr_workers(flags, n):
+        out = np.empty(n, np.uint32)
+        for i in prange(n):             # n >> threads: every worker gets a chunk
+            _mxcsr(flags)
+            out[i] = _mxcsr(np.uint32(0))
+        return out
+
+
+def flush_denormals():
+    """
+    FTZ|DAZ on in this thread and in the numba workers. True when every
+    one reports it; False without numba or off x86 (nothing changed).
+    """
+    if not (NUMBA and X86):
+        return False
+    flags = np.uint32(FTZ_DAZ)
+    here = _mxcsr_here(flags)
+    workers = _mxcsr_workers(flags, 64 * get_num_threads())
+    return bool(here & FTZ_DAZ == FTZ_DAZ and np.all(workers & FTZ_DAZ == FTZ_DAZ))
 
 
 if AVAILABLE:
