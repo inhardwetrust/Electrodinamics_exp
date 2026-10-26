@@ -217,6 +217,43 @@ python checks/check_fdtd_line.py  # any check
 The architecture, the design decisions and the plan are in
 [ARCHITECTURE.md](ARCHITECTURE.md).
 
+## Running on another machine (console)
+
+`run.py` runs a simulation without the window, for example on a faster
+Linux server. Set the model up in the app, run it there, and look at the
+result in the app again.
+
+1. **Once: install the app on the server.** Copy the `customcst` folder
+   (the code; `models/` is not needed), then:
+   ```bash
+   python3.12 -m venv .venv
+   .venv/bin/pip install numpy scipy numba cadquery-ocp
+   ```
+   The console runner needs neither PySide6 nor VisPy. If importing OCP
+   fails on a headless server with a missing `libGL.so.1`, install the
+   system library (`sudo apt install libgl1` on Debian/Ubuntu).
+2. **Copy the model**: `model.stp` and `model.toml`, both, set up in the
+   app (types, elements, ports, mesh and simulation settings).
+3. **Check it**, then run:
+   ```bash
+   .venv/bin/python customcst/run.py model.stp --dry-run   # grid, ports, memory; no run
+   nohup .venv/bin/python customcst/run.py model.stp > run.log 2>&1 &
+   tail -f run.log                                          # progress every 30 s
+   ```
+   Options: `--threads N` (default: all cores), `--excite "J2 5"` (one
+   port; like changing the excite setting, the app then shows the run as
+   outdated unless the project has the same one), `--allow-shorts`, and
+   `--every S` (seconds between progress lines). Ctrl+C stops (nothing is
+   saved).
+4. **Copy the result back**: `model.results/<date>.npz` into the same
+   `model.results/` folder next to the model on your machine. The app
+   lists it as a current run if the STEP and its .toml are the ones it
+   ran with.
+
+The runner does exactly what the Simulate button does
+(`solver/simulation.py`, shared by both), so the S-parameters are the
+same.
+
 ## License
 
 Public domain: [The Unlicense](../LICENSE).

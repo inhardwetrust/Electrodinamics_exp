@@ -43,6 +43,8 @@ from project.settings import EXCITE_ALL, accuracy_db
 from solver.result_file import (delete_result, fingerprint, format_duration, list_results,
                                 rename_result, save_result)
 from view.sim_runner import SimulationRunner
+from solver.simulation import parameters, port_names
+from solver.simulation import problem as simulation_problem
 from solver.line_profile import CONVERGED, impedance_profile, line_impedance, pec_nets, z0_convergence
 from solver.path_profile import Path, path_profile
 from solver.profile_file import load_profile, profile_key, save_profile
@@ -535,19 +537,9 @@ class MainWindow(QMainWindow):
         """Why the model cannot be simulated now, or None."""
         if self.project is None:
             return "the project file has errors"
-        if self.mesh is None or not self.mesh.ok:
-            return f"no mesh ({self.mesh.error if self.mesh else 'no project'})"
-        if self.materials is None:
-            return "the mesh is still being built" if self.mesh_busy() else "no materials"
-        if self.materials.errors:
-            return self.materials.errors[0]
-        if not self.materials.ports and not self.materials.waveports:
-            return "no valid port"
-        excite = self.project.settings["simulation"]["excite"]
-        if excite != EXCITE_ALL and excite not in self._port_list():
-            return (f"the excited port {excite!r} is not a valid port of the model "
-                    f"(Simulation > excite: choose another one, or all ports)")
-        return None
+        if self.mesh is not None and self.mesh.ok and self.materials is None and self.mesh_busy():
+            return "the mesh is still being built"
+        return simulation_problem(self.project, self.mesh, self.materials)
 
     def _confirm_shorts(self):
         """Ports or elements shorted by metal on this mesh: usually a mesh too coarse, ask."""
@@ -560,9 +552,7 @@ class MainWindow(QMainWindow):
 
     def _port_list(self):
         """Names of the valid ports in S-matrix order (lumped, then waveguide)."""
-        if self.materials is None:
-            return []
-        return [p.name for p in self.materials.ports] + [w.name for w in self.materials.waveports]
+        return port_names(self.materials) if self.materials is not None else []
 
     def _simulate(self):
         problem = self._simulation_problem()
@@ -573,7 +563,7 @@ class MainWindow(QMainWindow):
             return
         sim = self.project.settings["simulation"]
         self._run_fingerprint = fingerprint(self.project)      # the inputs of this run
-        self._run_params = self._parameters_snapshot()
+        self._run_params = parameters(self.project, self.mesh, self.materials, self.via_bodies)
         self.simulate_action.setEnabled(False)
         self.stop_action.setEnabled(True)
         self.results.set_message("running...")
@@ -625,34 +615,6 @@ class MainWindow(QMainWindow):
         self.shown.add(result.path or id(result))
         self._show_runs()
         self.tabs.setCurrentWidget(self.results)       # show what was computed
-
-    def _parameters_snapshot(self):
-        """What this run is computed with, for the Results list (display only)."""
-        grid = self.mesh.grid
-        steps = np.concatenate([grid.steps(a) for a in range(3)])
-        dielectrics = {}
-        for name, a in sorted(self.project.assignments.items()):
-            if a.type == "dielectric":
-                v = a.values
-                dielectrics[name] = (f"{a.material}: " if a.material else "") + \
-                    f"εr {v['eps_r']:g}, tan δ {v['tan_d']:g}"
-        ports = [f"{p.name} {p.resistance:.4g} Ω" for p in self.materials.ports] + \
-                [f"{w.name} {w.resistance:.4g} Ω (line)" for w in self.materials.waveports]
-        elements = [f"{e.name}: {e.topology} " + ", ".join(
-                        [f"R {e.r:g} Ω"] * (e.r > 0) + [f"L {e.l * 1e9:g} nH"] * (e.l > 0)
-                        + [f"C {e.c * 1e12:g} pF"] * (e.c > 0)) for e in self.materials.elements]
-        excite = self.project.settings["simulation"]["excite"]
-        return {
-            "excite": "all ports" if excite == EXCITE_ALL else excite,
-            "elements": elements,
-            "simulation": dict(self.project.settings["simulation"]),
-            "mesh": dict(self.project.settings["mesh"]),
-            "grid": f"{' × '.join(str(n) for n in grid.shape)} = {grid.cell_count:,}".replace(",", " ")
-                    + f" cells, step {steps.min() / MM:.3g}–{steps.max() / MM:.3g} mm",
-            "dielectrics": dielectrics,
-            "vias": len(self.via_bodies),
-            "ports": ports,
-        }
 
     def _sim_failed(self, message):
         self._sim_done()

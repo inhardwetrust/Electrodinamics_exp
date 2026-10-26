@@ -11,6 +11,9 @@ Context for future Claude sessions. Read this first, then `ARCHITECTURE.md`.
 - Run with `../.venv/Scripts/python.exe main.py [file.step] [--screenshot out.png]`.
   Run checks with `../.venv/Scripts/python.exe checks/check_step_import.py`.
   Regenerate the test models with `tools/make_test_models.py`.
+  `run.py model.stp` simulates without the window (README "Running on
+  another machine"); it and the window share `solver/simulation.py`, so
+  keep run logic there, not in `MainWindow`.
 - Imports are package-relative to this folder (`geometry.*`, `view.*`).
   `main.py` and the scripts put this folder on sys.path.
 - **OCP 8 (cadquery-ocp 8.0.1)**:

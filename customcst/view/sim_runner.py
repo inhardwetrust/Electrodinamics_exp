@@ -1,19 +1,13 @@
 # sim_runner.py
 #
-# Runs the FDTD solver off the GUI thread. One run per port (that port
-# excited, the others terminated in their R) gives one column of the S
-# matrix each. Results: frequencies, S[(j, k)] (b_j / a_k), Z_in per port.
+# Runs the FDTD solver off the GUI thread: solver/simulation.py simulate()
+# (one run per port, that port excited, the others terminated in their R,
+# one column of the S matrix each), shared with the console runner run.py.
 
-import time
-
-import numpy as np
 from PySide6.QtCore import QObject, QThread, Signal
 
-from solver.fdtd import FdtdSolver
 from solver.result_file import SimulationResult  # noqa: F401  (re-exported for callers)
-from solver.sparams import input_impedance, s_column
-
-FREQUENCY_POINTS = 401
+from solver.simulation import simulate
 
 
 class _Worker(QObject):
@@ -33,46 +27,16 @@ class _Worker(QObject):
         self._stop = True
 
     def run(self):
-        begin = time.perf_counter()
         try:
-            ports = list(self.materials.ports) + list(self.materials.waveports)
-            names = [p.name for p in ports]
-            f = np.linspace(self.f_min, self.f_max, FREQUENCY_POINTS) * 1e9
-            result = SimulationResult(
-                f, names, [p.resistance for p in ports],
-                f"FDTD, {self.f_min:g}-{self.f_max:g} GHz, grid {self.materials.grid.shape}",
-            )
-            result.eps_eff = [getattr(getattr(p, "mode", None), "eps_eff", float("nan")) for p in ports]
-
-            for k, active in enumerate(names):
-                if self.excite is not None and active not in self.excite:
-                    continue                    # not excited: its column of S stays empty
-                solver = FdtdSolver(self.materials, self.f_min, self.f_max, active_port=active,
-                                    trim_pulse=self.trim_pulse)
-                start = time.perf_counter()
-
-                def report(t, level, active=active, solver=solver):
-                    self.progress.emit(active, t, level, solver.pulse.duration)
-                    return not self._stop
-
-                status = solver.run(end_db=self.end_db, progress=report)
-                if status == "stopped":
-                    self.finished.emit(None)
-                    return
-
-                column = s_column(solver, f)
-                for j, name in enumerate(names):
-                    result.s[j, k] = column[name]
-                result.z_in[active] = input_impedance(solver, f)
-                result.info.append(
-                    f"{active}: {status}, {solver.step_index} steps ({solver.t * 1e9:.2f} ns), "
-                    f"{time.perf_counter() - start:.1f} s, {int(np.prod(solver.shape)):,} cells with PML"
-                )
-
-            result.elapsed = time.perf_counter() - begin
+            result = simulate(self.materials, self.f_min, self.f_max, self.trim_pulse, self.end_db, self.excite,
+                              progress=self._report)
             self.finished.emit(result)
         except Exception as error:          # report anything to the UI
             self.failed.emit(f"{type(error).__name__}: {error}")
+
+    def _report(self, port, t, level, pulse_duration):
+        self.progress.emit(port, t, level, pulse_duration)
+        return not self._stop
 
 
 class SimulationRunner(QObject):

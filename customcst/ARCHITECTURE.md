@@ -803,6 +803,29 @@ bigger one): `mesh/rectilinear.py` step 4, `Mesh > refine slanted metal`
   needs a pulse twice as long as 1-5 GHz: 70 000 steps against 32 000).
   The time step is the min step's (0.05 mm copper), not the refinement's.
 
+## Console runner
+
+`run.py` runs a simulation without the window (a faster Linux machine):
+the STEP and its .toml copied there, the run file copied back into
+`model.results/`. README "Running on another machine" has the steps.
+- `solver/simulation.py` holds what the window did inline: `prepare`
+  (STEP + project -> ports, elements, waveguide ports, vias, grid,
+  materials), `problem`, `parameters` (the Results rows) and `simulate`
+  (one FDTD run per excited port). `view/sim_runner.py` (the Qt thread)
+  and `MainWindow` call the same functions, so a console run is the
+  window's run: the same fingerprint (listed as current), the same
+  parameters, S identical to the bit (checks/check_console_run.py).
+- No Qt, no VisPy on this path: numpy, scipy, numba, cadquery-ocp.
+- Output: the grid, warnings, ports, elements; shorts stop it unless
+  `--allow-shorts` (the window asks); `--dry-run` builds the first
+  port's solver and prints the arrays' size (solver + materials) without
+  stepping; progress every `--every` s; Ctrl+C stops at the next energy
+  check and saves nothing. Exit codes: 0 saved, 1 failed, 2 not runnable,
+  130 stopped.
+- `--excite` changes the setting in memory only (the .toml is not
+  written); the fingerprint includes it, so the window shows such a run
+  as outdated unless its project has the same excite.
+
 ## Excited ports
 
 `[simulation] excite` is "all" (the default: one run per port, the full
