@@ -825,6 +825,24 @@ the STEP and its .toml copied there, the run file copied back into
 - `--excite` changes the setting in memory only (the .toml is not
   written); the fingerprint includes it, so the window shows such a run
   as outdated unless its project has the same excite.
+- Push / Pull (`remote/sync.py`, paramiko SFTP; the Remote tab
+  `view/remote_panel.py`, run off the GUI thread). Push puts the STEP and
+  .toml into `<path>/models/` under `.part` names, then renames them over
+  the old ones. Pull takes the remote `model.results/*.npz` that are
+  missing locally or differ in size (not `.tmp.npz`, being written), into
+  a temp folder beside the model first; only when all arrived are they
+  renamed in. The remote's .toml (always) and STEP (when its size
+  differs) come back as bytes where they differ from the local ones; the
+  window asks, and "yes" writes them atomically and reloads (the view
+  save never overwrites a file changed outside, by its mtime). The path must hold `run.py` (a wrong folder is an error,
+  not a new tree). Settings: `remote/remote.toml` (not in git, the
+  password), host keys: `~/.ssh/known_hosts` plus `remote/known_hosts`
+  (an unknown key is shown with its fingerprint and trusted only on yes).
+  The run is still started on the server by hand.
+- Denormals: on Intel CPUs float32 denormals (the fields ahead of the
+  wave front) cost ~8x per operation; `step()` sets FTZ|DAZ in every
+  thread first (`fdtd_kernels.flush_denormals`), a server run went from
+  6 -> 2 steps/s without it.
 
 ## Excited ports
 

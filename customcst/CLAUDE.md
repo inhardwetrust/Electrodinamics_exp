@@ -13,7 +13,11 @@ Context for future Claude sessions. Read this first, then `ARCHITECTURE.md`.
   Regenerate the test models with `tools/make_test_models.py`.
   `run.py model.stp` simulates without the window (README "Running on
   another machine"); it and the window share `solver/simulation.py`, so
-  keep run logic there, not in `MainWindow`.
+  keep run logic there, not in `MainWindow`. Push / Pull to that machine:
+  `remote/sync.py` (paramiko SFTP), the Remote tab `view/remote_panel.py`.
+  `remote/remote.toml` holds the user's password: never commit or print
+  it; tests set `CUSTOMCST_REMOTE` to a scratch file (like
+  `CUSTOMCST_SETTINGS`), `checks/check_remote.py` runs a local SFTP server.
 - Imports are package-relative to this folder (`geometry.*`, `view.*`).
   `main.py` and the scripts put this folder on sys.path.
 - **OCP 8 (cadquery-ocp 8.0.1)**:

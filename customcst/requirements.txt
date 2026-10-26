@@ -4,3 +4,4 @@ numba          # compiled multi-core FDTD kernels (optional: numpy fallback)
 vispy
 PySide6
 cadquery-ocp   # OpenCASCADE: STEP import / tessellation
+paramiko       # Push / Pull to the console runner's machine (optional)

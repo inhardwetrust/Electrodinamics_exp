@@ -1,0 +1,9 @@
+# customcst remote: the console runner's machine (not in git: the password)
+# Copy to remote.toml, or fill in the app's Remote tab (it writes remote.toml).
+
+[remote]
+host = "server.example.com"
+port = 22
+user = "me"
+password = ""   # empty: SSH keys / agent
+path = "~/software/customcst"   # the customcst folder (with run.py)

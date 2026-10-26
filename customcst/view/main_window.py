@@ -36,6 +36,7 @@ from project.project_file import UP_AXES, Z0PATH_PARAMS, Project, ProjectError
 from project.settings import SECTIONS
 from view.geometry_view import GeometryView
 from view.profile_window import ProfileWindow
+from view.remote_panel import RemotePanel, RemoteRunner
 from view.results_panel import ResultsPanel
 from view.tdr_window import TdrWindow
 from view.view_buttons import ViewButtons
@@ -125,6 +126,11 @@ class MainWindow(QMainWindow):
         self.runner.progress.connect(self._sim_progress)
         self.runner.finished.connect(self._sim_finished)
         self.runner.failed.connect(self._sim_failed)
+        self.remote = RemoteRunner(self)        # push / pull / check, off the GUI thread
+        self.remote.progress.connect(lambda text: self.statusBar().showMessage(text))
+        self.remote.finished.connect(self._remote_finished)
+        self.remote.failed.connect(self._remote_failed)
+        self._remote_operation = None
         self.runs = []              # SimulationResult: all saved runs of the model, oldest first
         self.shown = set()          # paths of the runs ticked in Project > Results
         self.app_settings = AppSettings.load()
@@ -332,17 +338,34 @@ class MainWindow(QMainWindow):
         self.info.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self.info.setWordWrap(True)
 
+        # The console runner's machine (the Remote tab): the model there, its runs back.
+        self.push_button = QPushButton("Push")
+        self.push_button.setEnabled(False)      # until the model can run (_update_push)
+        self.push_button.clicked.connect(lambda: self._remote_start("push"))
+        self.pull_button = QPushButton("Pull")
+        self.pull_button.setToolTip("Bring the remote's runs of this model into its results")
+        self.pull_button.clicked.connect(lambda: self._remote_start("pull"))
+        remote_buttons = QHBoxLayout()
+        remote_buttons.addWidget(self.push_button)
+        remote_buttons.addWidget(self.pull_button)
+        remote_buttons.addStretch(1)
+
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.addWidget(self.tree, 3)
+        layout.addLayout(remote_buttons)
         layout.addWidget(hint)
         layout.addWidget(self.info, 1)
 
-        # Tabs of the left panel: the model tree and the material library.
+        self.remote_panel = RemotePanel()
+        self.remote_panel.check_requested.connect(lambda: self._remote_start("check"))
+
+        # Tabs of the left panel: the model tree, the material library, the remote machine.
         self.side_tabs = QTabWidget()
         self.side_tabs.setDocumentMode(True)
         self.side_tabs.addTab(panel, "Project")
         self.side_tabs.addTab(self._build_materials_panel(), "Materials")
+        self.side_tabs.addTab(self.remote_panel, "Remote")
 
         dock = QDockWidget()
         dock.setTitleBarWidget(QWidget())       # the tabs are the title
@@ -541,13 +564,13 @@ class MainWindow(QMainWindow):
             return "the mesh is still being built"
         return simulation_problem(self.project, self.mesh, self.materials)
 
-    def _confirm_shorts(self):
+    def _confirm_shorts(self, title="Simulate", question="Simulate anyway?"):
         """Ports or elements shorted by metal on this mesh: usually a mesh too coarse, ask."""
         text = ("On this mesh, metal joins what should be apart:\n\n"
                 + "\n\n".join(f"• {s}" for s in self.materials.shorts)
                 + "\n\nUnless the short is meant (a shorted stub, a PIFA's short pin), the result "
-                  "will be wrong. Simulate anyway?")
-        answer = QMessageBox.warning(self, "Simulate", text, QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                  "will be wrong. " + question)
+        answer = QMessageBox.warning(self, title, text, QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         return answer == QMessageBox.Yes
 
     def _port_list(self):
@@ -713,6 +736,7 @@ class MainWindow(QMainWindow):
         self.app_settings.save()            # an error here must not keep the window open
         self._save_view()
         self._cancel_discretize()           # the worker stops at its next step
+        self.remote.wait()                  # a transfer cannot be cut off half way
         self._mesh_pool.shutdown(wait=False, cancel_futures=True)
         super().closeEvent(event)
 
@@ -932,6 +956,7 @@ class MainWindow(QMainWindow):
         self._center_slider = self._center_slider or center_slider
         if self.mesh is not None and self.mesh.ok:
             self._start_discretize()
+            self._update_push()                         # off: "the mesh is still being built"
         else:
             self._cancel_discretize()
             self._mesh_ready()
@@ -1013,6 +1038,7 @@ class MainWindow(QMainWindow):
             time.sleep(0.01)
 
     def _mesh_ready(self):
+        self._update_push()
         self._configure_mesh_slider(center=self._center_slider)
         self._center_slider = False
         self._show_mesh_plane()
@@ -1909,6 +1935,116 @@ class MainWindow(QMainWindow):
             row = QTreeWidgetItem(type_item, [label, value, unit])
             row.setData(0, Qt.UserRole, ("info", name, None))
             row.setForeground(1, QColor("#2a2"))
+
+    # =====================================================
+    # Remote machine (the console runner's)
+    # =====================================================
+
+    def _remote_start(self, operation):
+        if self.remote.running:
+            return
+        step = self.project.step_path if self.project else None
+        if operation != "check" and step is None:
+            self.statusBar().showMessage("no model to " + operation, 5000)
+            return
+        if operation == "push":
+            # only what would run here goes there: built, checked, shorts confirmed
+            problem = self._simulation_problem()
+            if problem:
+                self.statusBar().showMessage(f"push: cannot run yet: {problem}", 10000)
+                self._update_push()
+                return
+            if self.materials.shorts and not self._confirm_shorts(
+                    "Push", "Push anyway? (run.py stops on shorts unless --allow-shorts)"):
+                return
+            self._save()                        # the .toml as the window shows it
+        self.remote_panel.save()
+        config = self.remote_panel.config()
+        self._remote_operation = (operation, step)
+        for button in (self.push_button, self.pull_button, self.remote_panel.check_button):
+            button.setEnabled(False)
+        self.remote_panel.show_status(f"{operation}: connecting to {config.target}...")
+        self.statusBar().showMessage(f"{operation}: connecting to {config.target}...")
+        self.remote.start(operation, config, step)
+
+    def _remote_idle(self):
+        for button in (self.pull_button, self.remote_panel.check_button):
+            button.setEnabled(True)
+        self._update_push()
+
+    def _update_push(self):
+        """Push only a model that would run here: the mesh built and nothing wrong with it."""
+        problem = None if self.remote.running else self._simulation_problem()
+        self.push_button.setEnabled(not self.remote.running and problem is None)
+        self.push_button.setToolTip(
+            "Copy this model's STEP and .toml to the remote's models/ (replacing them there)"
+            if problem is None else f"Push is off until the model can run: {problem}")
+
+    def _remote_finished(self, operation, value):
+        self._remote_idle()
+        step = self._remote_operation[1]
+        if operation == "check":
+            text = f"connected: {value}"
+        elif operation == "push":
+            text = f"pushed {os.path.basename(step)} and its .toml to {value}"
+        else:
+            text = self._pulled(step, value)
+        self.remote_panel.show_status(text)
+        self.statusBar().showMessage(text, 10000)
+
+    def _pulled(self, step, pulled):
+        """Takes a pull in (remote/sync.py Pulled); returns the status text."""
+        parts = [f"pulled {len(pulled.runs)} run(s): {', '.join(pulled.runs)}" if pulled.runs
+                 else "no new runs on the remote"]
+        if self.project is None or self.project.step_path != step:
+            return "; ".join(parts)                 # another model opened meanwhile
+        ticked = set(self.shown)
+        if pulled.model:
+            names = ", ".join(os.path.basename(p) for p in pulled.model)
+            answer = QMessageBox.question(
+                self, "Pull",
+                f"The server's {names} differ from yours.\n\nTake the server's? "
+                "Yours are replaced (changes made here since the push are lost).")
+            if answer == QMessageBox.Yes:
+                from remote.sync import write_local
+                try:
+                    write_local(pulled.model)
+                except OSError as error:
+                    QMessageBox.critical(self, "Pull", f"not written: {error}")
+                else:
+                    parts.append(f"took the server's {names}")
+                    self.load(step)                 # the model as on the server, its runs too
+            else:
+                parts.append(f"kept yours ({names} differ on the server)")
+        if pulled.runs or pulled.model:
+            # like a finished run: the ticks stay, the pulled runs join them, Results shows them
+            self._load_runs(step)
+            paths = {r.path for r in self.runs}
+            self.shown = (ticked & paths) | {p for p in paths if os.path.basename(p) in pulled.runs}
+            self._show_runs()
+            if pulled.runs:
+                self.tabs.setCurrentWidget(self.results)
+        return "; ".join(parts)
+
+    def _remote_failed(self, message, unknown):
+        self._remote_idle()
+        if unknown is not None:
+            from remote.sync import fingerprint, trust_host
+            answer = QMessageBox.question(
+                self, "Remote host",
+                f"{unknown.host} is not known yet. Its key:\n\n{unknown.key.get_name()} "
+                f"{fingerprint(unknown.key)}\n\nTrust it? (Compare with the server's: "
+                "ssh-keygen -lf /etc/ssh/ssh_host_*_key.pub)")
+            if answer == QMessageBox.Yes:
+                try:
+                    trust_host(unknown.host, unknown.key)
+                except OSError as error:
+                    message = f"host key not saved: {error}"
+                else:
+                    self._remote_start(self._remote_operation[0])
+                    return
+        self.remote_panel.show_status(message, error=True)
+        self.statusBar().showMessage(f"{self._remote_operation[0]} failed: {message}", 10000)
 
     # =====================================================
     # Saved results

@@ -1,0 +1,4 @@
+# the connection settings hold the password; the trusted host keys are this machine's
+remote.toml
+remote.toml.tmp
+known_hosts

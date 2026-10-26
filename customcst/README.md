@@ -250,6 +250,27 @@ result in the app again.
    lists it as a current run if the STEP and its .toml are the ones it
    ran with.
 
+**From the window instead of by hand.** The Remote tab next to Project and
+Materials holds the server: host, port, user, password and the path of
+its `customcst` folder (the one with `run.py`). Check connects and looks
+for `run.py` there. The settings are saved in `remote/remote.toml`, which is
+not in git; `remote/remote.example.toml` shows the format. The password is
+kept there as plain text: an SSH key is better (leave the password empty).
+Then, under the Project tree:
+- **Push** copies the open model's STEP and `.toml` into `models/` on the
+  server, replacing the ones there;
+- **Pull** brings the server's runs of the model back into its results
+  (ticked and shown, like a finished run). They are downloaded into a temp
+  folder first and moved in only when all arrived, so a lost connection
+  leaves the local runs as they were. If the server's `.toml` or STEP
+  differ from yours (changed here since the push), it asks whether to take
+  the server's: yes replaces yours and reloads the model.
+
+The first connection to a server asks to trust its host key (compare the
+fingerprint with `ssh-keygen -lf /etc/ssh/ssh_host_*_key.pub` on the
+server); a trusted key is kept in `remote/known_hosts`. The run itself is
+still started on the server (step 3).
+
 The runner does exactly what the Simulate button does
 (`solver/simulation.py`, shared by both), so the S-parameters are the
 same.
