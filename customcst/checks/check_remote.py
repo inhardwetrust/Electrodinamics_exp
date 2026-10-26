@@ -8,14 +8,15 @@
 #   - a wrong password, a path without run.py: clear errors;
 #   - push: the STEP and .toml land in models/ byte for byte, a second
 #     push replaces them, no .part files are left;
-#   - pull: no runs there -> nothing; the remote's runs arrive in
-#     model.results/, a second pull brings nothing new; a connection lost
+#   - pull: no runs there -> nothing; the remote's run arrives in
+#     model.results/ under a local name and number (a file that is no run
+#     stays there), a second pull brings nothing new; a connection lost
 #     half way leaves the local runs as they were and no temp folder; a
 #     .toml changed here since the push comes back as the remote's bytes
 #     (the same STEP does not);
-#   - the window: Push and Pull buttons, the Remote tab's settings saved to
-#     remote.toml, the pulled run listed and ticked; a mesh setting changed,
-#     pushed and changed back: Pull asks, "yes" brings the pushed value
+#   - the window: Push and Fetch buttons, the Remote tab's settings saved to
+#     remote.toml, the fetched run listed and ticked; a mesh setting changed,
+#     pushed and changed back: Fetch asks, "yes" brings the pushed value
 #     back into the open project, "no" keeps the local one.
 #
 #   python checks/check_remote.py [shot.png]     (~20 s)
@@ -128,8 +129,8 @@ class _Server(paramiko.ServerInterface):
         return paramiko.OPEN_SUCCEEDED if kind == "session" else paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
 
 
-def serve(disk):
-    """Starts the server; returns (port, host key)."""
+def serve(disk, server=_Server):
+    """Starts the server (`server`: its ServerInterface class); returns (port, host key)."""
     key = paramiko.RSAKey.generate(2048)
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
@@ -142,7 +143,7 @@ def serve(disk):
             transport.add_server_key(key)
             transport.set_subsystem_handler("sftp", paramiko.SFTPServer, _sftp_on(disk))
             try:
-                transport.start_server(server=_Server())
+                transport.start_server(server=server())
             except (paramiko.SSHException, EOFError, OSError):
                 pass
     threading.Thread(target=loop, daemon=True).start()
@@ -255,14 +256,20 @@ def run(folder):
     check("a broken pull: no local run, no temp folder", not runs_left and not leftovers,
           f"runs {runs_left}, leftovers {leftovers}")
 
-    got = sync.pull(config, step).runs
-    check("pull: the remote's runs arrive (not the one being written)",
-          sorted(got) == sorted([run_file, "20990101-000000.npz"])
-          and sorted(os.listdir(results_dir(step))) == sorted(got)
-          and not [n for n in os.listdir(local) if n.startswith(".pull-")], str(got))
-    check("pull again: nothing new", sync.pull(config, step).runs == [])
-    for where in (results_dir(step), remote_runs):          # the junk: the window lists runs
-        os.remove(os.path.join(where, "20990101-000000.npz"))
+    got = sync.pull(config, step)
+    from remote import record
+    from solver.result_file import read_result
+    local_runs = sorted(n for n in os.listdir(results_dir(step)) if n.endswith(".npz"))
+    taken = read_result(os.path.join(results_dir(step), got.runs[0])) if got.runs else None
+    check("pull: the run arrives under a local name (not the one being written, not the junk)",
+          len(got.runs) == 1 and local_runs == got.runs and got.taken == {run_file: got.runs[0]}
+          and got.runs[0] != run_file and len(got.errors) == 1 and "20990101-000000" in got.errors[0]
+          and not [n for n in os.listdir(local) if n.startswith(".pull-")], f"{got.runs} {got.errors}")
+    check("the taken run: this model's Run 1, where it was computed in its info, recorded as taken",
+          taken is not None and taken.name == "Run 1" and any("computed on" in line for line in taken.info)
+          and record.was_pulled(step, config.target, run_file), taken.name if taken else "")
+    check("pull again: nothing new (the taken run is known by its server name)", sync.pull(config, step).runs == [])
+    os.remove(os.path.join(remote_runs, "20990101-000000.npz"))     # the junk
 
     # the window
     from PySide6.QtCore import QCoreApplication, QElapsedTimer
@@ -327,10 +334,10 @@ def run(folder):
     shutil.rmtree(results_dir(step))
     window._load_runs(step)
     before = len(window.runs)
-    window.pull_button.click()
+    window.fetch_button.click()
     finish()
-    check("Pull button: the run is listed, ticked, Results shown", before == 0 and len(window.runs) == 1
-          and os.path.basename(window.runs[0].path) == run_file and window.runs[0].path in window.shown
+    check("Fetch button: the run is taken, listed, ticked, Results shown", before == 0 and len(window.runs) == 1
+          and window.runs[0].name == "Run 1" and window.runs[0].path in window.shown
           and window.tabs.currentWidget() is window.results, window.remote_panel.status.text())
 
     # the user's case: a mesh setting changed, pushed, changed back, pulled
@@ -347,10 +354,10 @@ def run(folder):
             window.project.set_setting("mesh", "cells_per_wavelength", 20.0)
             window._save()
             answers.append(answer)
-            window.pull_button.click()
+            window.fetch_button.click()
             finish()
             value = window.project.settings["mesh"]["cells_per_wavelength"]
-            check(f"Pull, the server's .toml differs, '{'yes' if answer == QMessageBox.Yes else 'no'}': "
+            check(f"Fetch, the server's .toml differs, '{'yes' if answer == QMessageBox.Yes else 'no'}': "
                   f"cells per wavelength {expect:g}", value == expect and not answers,
                   f"{value:g}; {window.remote_panel.status.text()}")
     finally:

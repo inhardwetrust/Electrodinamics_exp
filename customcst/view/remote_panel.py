@@ -1,10 +1,11 @@
 # remote_panel.py
 #
 # The Remote tab of the left panel: where the console runner's machine is
-# (host, port, user, password, the customcst folder there), saved in
-# remote/remote.toml on every edit (remote/sync.py), with a Check button.
-# RemoteRunner does a push, pull or check off the GUI thread; the Push and
-# Pull buttons under the Project tree start it (MainWindow).
+# (host, port, user, password, the customcst folder there, its Python),
+# saved in remote/remote.toml on every edit (remote/sync.py), with a Check
+# button. RemoteRunner does one remote/sync.py operation (check, push, fetch,
+# pull, launch, status, stop) off the GUI thread; the buttons under the
+# Project tree start them (MainWindow).
 
 from PySide6.QtCore import QObject, QThread, Signal
 from PySide6.QtWidgets import (
@@ -100,7 +101,10 @@ class RemotePanel(QWidget):
         self.password.setPlaceholderText("empty: SSH keys / agent")
         self.path = QLineEdit(config.path)
         self.path.setPlaceholderText("~/software/customcst")
-        for edit in (self.host, self.user, self.password, self.path):
+        self.python = QLineEdit(config.python)
+        self.python.setPlaceholderText(sync.RemoteConfig.python)
+        self.python.setToolTip("The Python that runs run.py: relative to Path, or absolute")
+        for edit in (self.host, self.user, self.password, self.path, self.python):
             edit.editingFinished.connect(self.save)
         self.port.editingFinished.connect(self.save)
 
@@ -110,6 +114,7 @@ class RemotePanel(QWidget):
         form.addRow("User", self.user)
         form.addRow("Password", self.password)
         form.addRow("Path", self.path)
+        form.addRow("Python", self.python)
 
         self.check_button = QPushButton("Check")
         self.check_button.setToolTip("Connect and look for run.py in the path")
@@ -123,9 +128,13 @@ class RemotePanel(QWidget):
 
         hint = QLabel(
             "The machine that runs run.py (README \"Running on another machine\"). Path is its "
-            "customcst folder, the one with run.py. Push (under the Project tree) copies this "
-            "model's STEP and .toml into models/ there, replacing them; Pull brings its runs "
-            "back into the model's results. Saved in remote/remote.toml, which is not in git: "
+            "customcst folder, the one with run.py; Python runs it (relative to Path). Under "
+            "the Project tree: Push copies this model's STEP and .toml into models/ there, "
+            "replacing them; Run on server pushes and starts run.py (one run at a time on the "
+            "server): a pending row in Results, followed while the window is open (progress in "
+            "the status bar), taken when done; Fetch asks the server and takes finished runs "
+            "(nothing connects by itself); Stop ends the run (nothing saved). "
+            "Saved in remote/remote.toml, which is not in git: "
             "the password is kept there as plain text, so prefer an SSH key (leave it empty)."
         )
         hint.setWordWrap(True)
@@ -141,7 +150,8 @@ class RemotePanel(QWidget):
     def config(self):
         return sync.RemoteConfig(host=self.host.text().strip(), port=self.port.value(),
                                  user=self.user.text().strip(), password=self.password.text(),
-                                 path=self.path.text().strip())
+                                 path=self.path.text().strip(),
+                                 python=self.python.text().strip() or sync.RemoteConfig.python)
 
     def save(self):
         config = self.config()

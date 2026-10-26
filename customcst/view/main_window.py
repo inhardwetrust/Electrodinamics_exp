@@ -42,7 +42,7 @@ from view.tdr_window import TdrWindow
 from view.view_buttons import ViewButtons
 from project.settings import EXCITE_ALL, accuracy_db
 from solver.result_file import (delete_result, fingerprint, format_duration, list_results,
-                                rename_result, save_result)
+                                rename_result, results_dir, save_result)
 from view.sim_runner import SimulationRunner
 from solver.simulation import parameters, port_names
 from solver.simulation import problem as simulation_problem
@@ -53,6 +53,7 @@ from solver.profile_file import load_profile, profile_key, save_profile
 MM = 1e-3
 AXES = "xyz"
 MESH_PROGRESS_DELAY = 0.3       # s: the mesh progress bar appears after this
+REMOTE_POLL = 15000             # ms between status reads of a run going on the server
 SLIDER_STEPS = 1000             # plane positions over the model when it is not on the grid lines
 
 
@@ -131,6 +132,15 @@ class MainWindow(QMainWindow):
         self.remote.finished.connect(self._remote_finished)
         self.remote.failed.connect(self._remote_failed)
         self._remote_operation = None
+        self.remote_watch = RemoteRunner(self)  # the open model's server run, read quietly
+        self.remote_watch.finished.connect(self._remote_watched)
+        self.remote_watch.failed.connect(self._remote_watch_failed)
+        self._remote_watch_target = None        # (model, server) of the status being read
+        self._launch_fingerprint = None
+        self._remote_state = None               # its last status (run.py's status file), None: no run
+        self._remote_timer = QTimer(self)
+        self._remote_timer.setInterval(REMOTE_POLL)
+        self._remote_timer.timeout.connect(self._remote_poll)
         self.runs = []              # SimulationResult: all saved runs of the model, oldest first
         self.shown = set()          # paths of the runs ticked in Project > Results
         self.app_settings = AppSettings.load()
@@ -319,6 +329,18 @@ class MainWindow(QMainWindow):
         self.mesh_bar.setVisible(False)
         self.statusBar().addPermanentWidget(self.mesh_bar)
 
+        # The open model's run on the server (Remote): its progress from run.py's status file.
+        self._remote_bar = QProgressBar()
+        self._remote_bar.setFixedWidth(380)
+        self._remote_bar.setMaximumHeight(16)
+        self._remote_bar.setTextVisible(True)
+        self._remote_bar.setStyleSheet(
+            "QProgressBar { border: 1px solid #999; border-radius: 3px; background: #eee; "
+            "text-align: center; font-size: 11px; }"
+            "QProgressBar::chunk { background-color: #8a5cc8; border-radius: 2px; }")
+        self._remote_bar.setVisible(False)
+        self.statusBar().addPermanentWidget(self._remote_bar)
+
     def _build_tree_panel(self):
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["Name", "Kind / value", "Size, mm"])
@@ -340,14 +362,22 @@ class MainWindow(QMainWindow):
 
         # The console runner's machine (the Remote tab): the model there, its runs back.
         self.push_button = QPushButton("Push")
-        self.push_button.setEnabled(False)      # until the model can run (_update_push)
+        self.push_button.setEnabled(False)      # until the model can run (_update_remote_buttons)
         self.push_button.clicked.connect(lambda: self._remote_start("push"))
-        self.pull_button = QPushButton("Pull")
-        self.pull_button.setToolTip("Bring the remote's runs of this model into its results")
-        self.pull_button.clicked.connect(lambda: self._remote_start("pull"))
+        self.fetch_button = QPushButton("Fetch")
+        self.fetch_button.setToolTip("Ask the server how this model's run goes; take its finished runs "
+                                     "(and its model files, if they differ: asked)")
+        self.fetch_button.clicked.connect(lambda: self._remote_start("fetch"))
+        self.run_remote_button = QPushButton("▶ Run on server")
+        self.run_remote_button.setEnabled(False)
+        self.run_remote_button.clicked.connect(lambda: self._remote_start("launch"))
+        self.stop_remote_button = QPushButton("■ Stop")
+        self.stop_remote_button.setToolTip("Stop this model's run on the server (nothing is saved)")
+        self.stop_remote_button.setEnabled(False)
+        self.stop_remote_button.clicked.connect(lambda: self._remote_start("stop"))
         remote_buttons = QHBoxLayout()
-        remote_buttons.addWidget(self.push_button)
-        remote_buttons.addWidget(self.pull_button)
+        for button in (self.push_button, self.fetch_button, self.run_remote_button, self.stop_remote_button):
+            remote_buttons.addWidget(button)
         remote_buttons.addStretch(1)
 
         panel = QWidget()
@@ -736,7 +766,9 @@ class MainWindow(QMainWindow):
         self.app_settings.save()            # an error here must not keep the window open
         self._save_view()
         self._cancel_discretize()           # the worker stops at its next step
+        self._remote_timer.stop()
         self.remote.wait()                  # a transfer cannot be cut off half way
+        self.remote_watch.wait()
         self._mesh_pool.shutdown(wait=False, cancel_futures=True)
         super().closeEvent(event)
 
@@ -835,6 +867,7 @@ class MainWindow(QMainWindow):
         self._fill_materials()
         self._load_runs(path)
         self._remember(path)
+        self._remote_from_record()              # its runs on a server, as recorded here (no connection)
 
         lo, hi = geometry.bounds
         self.setWindowTitle(f"customcst - {os.path.basename(path)}  ({_fmt_mm(hi - lo)} mm)")
@@ -956,7 +989,7 @@ class MainWindow(QMainWindow):
         self._center_slider = self._center_slider or center_slider
         if self.mesh is not None and self.mesh.ok:
             self._start_discretize()
-            self._update_push()                         # off: "the mesh is still being built"
+            self._update_remote_buttons()                         # off: "the mesh is still being built"
         else:
             self._cancel_discretize()
             self._mesh_ready()
@@ -1038,7 +1071,7 @@ class MainWindow(QMainWindow):
             time.sleep(0.01)
 
     def _mesh_ready(self):
-        self._update_push()
+        self._update_remote_buttons()
         self._configure_mesh_slider(center=self._center_slider)
         self._center_slider = False
         self._show_mesh_plane()
@@ -1940,6 +1973,16 @@ class MainWindow(QMainWindow):
     # Remote machine (the console runner's)
     # =====================================================
 
+    # The buttons under the Project tree and the Remote tab drive one
+    # operation at a time (self.remote): check, push, fetch (status + take
+    # the finished runs), launch (push + start run.py), stop. Nothing
+    # connects by itself when a model is opened: what was started from here
+    # is in remote/record.py (pending rows in Results, Stop), Fetch asks the
+    # server. Only after Run on server (or a Fetch that finds the run going)
+    # a second runner (self.remote_watch) follows it every REMOTE_POLL ms
+    # while the window is open, quietly: the status bar shows its progress
+    # and a finished run is fetched by itself.
+
     def _remote_start(self, operation):
         if self.remote.running:
             return
@@ -1947,62 +1990,104 @@ class MainWindow(QMainWindow):
         if operation != "check" and step is None:
             self.statusBar().showMessage("no model to " + operation, 5000)
             return
-        if operation == "push":
+        if operation in ("push", "launch"):
             # only what would run here goes there: built, checked, shorts confirmed
+            title = "Push" if operation == "push" else "Run on the server"
             problem = self._simulation_problem()
             if problem:
-                self.statusBar().showMessage(f"push: cannot run yet: {problem}", 10000)
-                self._update_push()
+                self.statusBar().showMessage(f"{title}: cannot run yet: {problem}", 10000)
+                self._update_remote_buttons()
                 return
             if self.materials.shorts and not self._confirm_shorts(
-                    "Push", "Push anyway? (run.py stops on shorts unless --allow-shorts)"):
+                    title, "Send it anyway? (run.py stops on shorts unless --allow-shorts)"):
                 return
             self._save()                        # the .toml as the window shows it
+            self._launch_fingerprint = fingerprint(self.project)    # the model as sent
+        if operation == "stop":
+            answer = QMessageBox.question(self, "Stop the server's run",
+                                          "Stop the run on the server? Nothing of it is saved.")
+            if answer != QMessageBox.Yes:
+                return
         self.remote_panel.save()
         config = self.remote_panel.config()
-        self._remote_operation = (operation, step)
-        for button in (self.push_button, self.pull_button, self.remote_panel.check_button):
-            button.setEnabled(False)
+        self._remote_operation = (operation, step, config.target)
         self.remote_panel.show_status(f"{operation}: connecting to {config.target}...")
         self.statusBar().showMessage(f"{operation}: connecting to {config.target}...")
         self.remote.start(operation, config, step)
+        self._update_remote_buttons()
 
-    def _remote_idle(self):
-        for button in (self.pull_button, self.remote_panel.check_button):
-            button.setEnabled(True)
-        self._update_push()
+    def _remote_active(self):
+        """The open model's run on the server is going (as last seen)."""
+        state = self._remote_state
+        return state is not None and state.get("state") in ("meshing", "running")
 
-    def _update_push(self):
-        """Push only a model that would run here: the mesh built and nothing wrong with it."""
-        problem = None if self.remote.running else self._simulation_problem()
-        self.push_button.setEnabled(not self.remote.running and problem is None)
+    def _update_remote_buttons(self):
+        """Push / Run only a model that would run here; Stop while its server run goes."""
+        busy = self.remote.running
+        problem = None if busy else self._simulation_problem()
+        active = self._remote_active()
+        self.push_button.setEnabled(not busy and problem is None)
         self.push_button.setToolTip(
             "Copy this model's STEP and .toml to the remote's models/ (replacing them there)"
             if problem is None else f"Push is off until the model can run: {problem}")
+        self.run_remote_button.setEnabled(not busy and problem is None and not active)
+        self.run_remote_button.setToolTip(
+            "Push this model and run it on the server (one run at a time there)"
+            if problem is None and not active else
+            "its run on the server is going" if active else f"off until the model can run: {problem}")
+        self.stop_remote_button.setEnabled(not busy and active)
+        self.fetch_button.setEnabled(not busy and self.project is not None)
+        self.remote_panel.check_button.setEnabled(not busy)
 
     def _remote_finished(self, operation, value):
-        self._remote_idle()
-        step = self._remote_operation[1]
+        _, step, server = self._remote_operation
         if operation == "check":
             text = f"connected: {value}"
         elif operation == "push":
             text = f"pushed {os.path.basename(step)} and its .toml to {value}"
-        else:
-            text = self._pulled(step, value)
+        elif operation == "launch":
+            from remote import record
+            text = f"running on the server: {os.path.basename(step)} (pid {value.get('pid')})"
+            try:
+                record.add_launch(step, server, value, self._launch_fingerprint)
+            except OSError as error:
+                text += f" (not recorded here: {error})"
+            self._remote_status_seen(step, value, follow=True)
+        elif operation == "stop":
+            text = f"stopping the server's run (pid {value}): it ends at its next energy check"
+            self._remote_timer.start()
+            QTimer.singleShot(3000, self._remote_poll)
+        else:                                   # fetch
+            parts = [self._status_text(value.status), self._pulled(step, value.pulled)]
+            self._remote_status_seen(step, value.status, follow=True, fetched=True)
+            text = "; ".join(p for p in parts if p)
+        self._update_remote_buttons()
         self.remote_panel.show_status(text)
-        self.statusBar().showMessage(text, 10000)
+        self.statusBar().showMessage(text.splitlines()[0], 10000)
+
+    @staticmethod
+    def _status_text(status):
+        if status is None:
+            return "this model never ran on the server"
+        state = status.get("state")
+        if status.get("busy") and state not in ("meshing", "running"):
+            busy = status["busy"]
+            prefix = f"the server is busy with {busy.get('model')} (pid {busy.get('pid')}); "
+        else:
+            prefix = ""
+        return prefix + f"server: {state}" + (f" ({status.get('message')})" if status.get("message") else "")
 
     def _pulled(self, step, pulled):
         """Takes a pull in (remote/sync.py Pulled); returns the status text."""
-        parts = [f"pulled {len(pulled.runs)} run(s): {', '.join(pulled.runs)}" if pulled.runs
-                 else "no new runs on the remote"]
+        parts = [f"took {len(pulled.runs)} run(s)" if pulled.runs else "no new runs on the server"]
+        parts += [f"left on the server (no run file): {e}" for e in pulled.errors]
         if self.project is None or self.project.step_path != step:
             return "; ".join(parts)                 # another model opened meanwhile
         ticked = set(self.shown)
         if pulled.model:
             names = ", ".join(os.path.basename(p) for p in pulled.model)
             answer = QMessageBox.question(
-                self, "Pull",
+                self, "Fetch",
                 f"The server's {names} differ from yours.\n\nTake the server's? "
                 "Yours are replaced (changes made here since the push are lost).")
             if answer == QMessageBox.Yes:
@@ -2010,30 +2095,30 @@ class MainWindow(QMainWindow):
                 try:
                     write_local(pulled.model)
                 except OSError as error:
-                    QMessageBox.critical(self, "Pull", f"not written: {error}")
+                    QMessageBox.critical(self, "Fetch", f"not written: {error}")
                 else:
                     parts.append(f"took the server's {names}")
                     self.load(step)                 # the model as on the server, its runs too
             else:
                 parts.append(f"kept yours ({names} differ on the server)")
-        if pulled.runs or pulled.model:
-            # like a finished run: the ticks stay, the pulled runs join them, Results shows them
-            self._load_runs(step)
-            paths = {r.path for r in self.runs}
-            self.shown = (ticked & paths) | {p for p in paths if os.path.basename(p) in pulled.runs}
-            self._show_runs()
-            if pulled.runs:
-                self.tabs.setCurrentWidget(self.results)
+        # like a finished run: the ticks stay, the taken runs join them, Results shows them
+        self._load_runs(step)
+        paths = {r.path for r in self.runs}
+        self.shown = (ticked & paths) | {p for p in paths if os.path.basename(p) in pulled.runs}
+        self._show_runs()
+        if pulled.runs:
+            self.tabs.setCurrentWidget(self.results)
         return "; ".join(parts)
 
     def _remote_failed(self, message, unknown):
-        self._remote_idle()
+        operation = self._remote_operation[0]
+        self._update_remote_buttons()
         if unknown is not None:
-            from remote.sync import fingerprint, trust_host
+            from remote.sync import fingerprint as key_fingerprint, trust_host
             answer = QMessageBox.question(
                 self, "Remote host",
                 f"{unknown.host} is not known yet. Its key:\n\n{unknown.key.get_name()} "
-                f"{fingerprint(unknown.key)}\n\nTrust it? (Compare with the server's: "
+                f"{key_fingerprint(unknown.key)}\n\nTrust it? (Compare with the server's: "
                 "ssh-keygen -lf /etc/ssh/ssh_host_*_key.pub)")
             if answer == QMessageBox.Yes:
                 try:
@@ -2041,10 +2126,147 @@ class MainWindow(QMainWindow):
                 except OSError as error:
                     message = f"host key not saved: {error}"
                 else:
-                    self._remote_start(self._remote_operation[0])
+                    self._remote_start(operation)
                     return
         self.remote_panel.show_status(message, error=True)
-        self.statusBar().showMessage(f"{self._remote_operation[0]} failed: {message}", 10000)
+        self.statusBar().showMessage(f"{operation} failed: {message.splitlines()[0] if message else ''}", 10000)
+        if operation == "launch":
+            QMessageBox.warning(self, "Run on the server", message)
+
+    # The server run as recorded here, and followed after Run / Fetch.
+
+    def _remote_from_record(self):
+        """After a model is opened: its last launch as recorded here (no connection)."""
+        from remote import record
+        self._remote_timer.stop()
+        self._remote_bar.setVisible(False)
+        self._remote_state = None
+        if self.project is not None:
+            server = self.remote_panel.config().target
+            launches = [launch for launch in record.pending(self.project.step_path) if launch.get("server") == server]
+            if launches:
+                self._remote_state = dict(launches[-1])
+        self._update_remote_buttons()
+
+    def _remote_poll(self):
+        if self.remote_watch.running or self.project is None:
+            return
+        config = self.remote_panel.config()
+        if config.complete:
+            self._remote_watch_target = (self.project.step_path, config.target)
+            self.remote_watch.start("status", config, self.project.step_path)
+
+    def _remote_watched(self, operation, value):
+        from remote import record
+        step, server = self._remote_watch_target
+        try:
+            record.note_status(step, server, value, self._progress_text(value) if value else "")
+        except OSError:
+            pass
+        self._remote_status_seen(step, value, follow=self._remote_timer.isActive())
+
+    def _remote_watch_failed(self, message, unknown):
+        if self._remote_active():
+            self._remote_bar.setFormat("server: no answer, retrying")    # the timer goes on
+        self.remote_panel.show_status(f"status: {message}", error=True)
+
+    def _remote_status_seen(self, step, status, follow=False, fetched=False):
+        """
+        A status read from the server: shown, recorded in the pending rows;
+        followed while it goes (`follow`); a finished run not taken yet is
+        fetched (unless this was a fetch).
+        """
+        if self.project is None or self.project.step_path != step:
+            return                                  # another model opened meanwhile
+        from remote import record
+        was_active = self._remote_active()
+        self._remote_state = status
+        state = status.get("state") if status else None
+        if state in ("meshing", "running"):
+            if follow:
+                self._remote_timer.start()
+                self._show_remote_progress(status)
+        else:
+            self._remote_timer.stop()
+            self._remote_bar.setVisible(False)
+            server = self.remote_panel.config().target
+            if state == "done" and not fetched:
+                result = status.get("result")
+                if result and not record.was_pulled(step, server, result):
+                    self.remote_panel.show_status(f"the server's run is done: {result}, fetching it")
+                    if not self.remote.running:
+                        self._remote_start("fetch")
+                    else:
+                        QTimer.singleShot(5000, self._remote_poll)  # fetch when the button is free
+            elif state in ("failed", "died", "stopped"):
+                tail = "\n".join((status.get("log") or "").splitlines()[-8:])
+                text = f"the server's run {state}: {status.get('message', '')}" + (f"\n\n{tail}" if tail else "")
+                self.remote_panel.show_status(text, error=state != "stopped")
+                if was_active and not fetched:      # it ended while we followed it: say so
+                    self.statusBar().showMessage(f"the server's run {state}: {status.get('message', '')}", 15000)
+                    if state != "stopped":
+                        QMessageBox.warning(self, "The server's run", text)
+        self._fill_results()                        # the pending row's state
+        self._update_remote_buttons()
+
+    @staticmethod
+    def _progress_text(status):
+        ports = status.get("ports") or []
+        port = status.get("port")
+        if status.get("state") == "meshing" or port is None:
+            return status.get("message") or "meshing"
+        energy, end_db = status.get("energy_db"), status.get("end_db") or -40.0
+        where = (f"pulse {status.get('pulse_pct', 0):.0f} %" if energy is None
+                 else f"energy {energy:.1f} dB -> {end_db:.0f}")
+        return (f"{port} ({status.get('port_index') or 0}/{len(ports)}), {where}, "
+                f"{format_duration(status.get('elapsed', 0))}")
+
+    def _show_remote_progress(self, status):
+        ports = status.get("ports") or []
+        index = status.get("port_index") or 0
+        value = 0
+        if status.get("state") == "running" and status.get("port") is not None:
+            energy, end_db = status.get("energy_db"), status.get("end_db") or -40.0
+            fraction = (0.5 * status.get("pulse_pct", 0) / 100 if energy is None
+                        else 0.5 + 0.5 * min(max(-energy, 0.0), -end_db) / -end_db)
+            value = int(round(1000 * (index - 1 + fraction) / max(len(ports), 1)))
+        text = "server: " + self._progress_text(status)
+        self._remote_bar.setRange(0, 1000)
+        self._remote_bar.setValue(value)
+        self._remote_bar.setFormat(text)
+        self._remote_bar.setToolTip(text)
+        self._remote_bar.setVisible(True)
+        self.remote_panel.show_status(text)
+
+    def _pending_rows(self):
+        """(stamp, launch) of this model's launches not taken yet (record.py)."""
+        if self.project is None:
+            return []
+        from remote import record
+        return [(launch.get("stamp", ""), launch) for launch in record.pending(self.project.step_path)]
+
+    def _pending_menu(self, item, stamp):
+        launch = next((l for _, l in self._pending_rows() if l.get("stamp") == stamp), None)
+        if launch is None:
+            return
+        menu = QMenu(self)
+        active = launch.get("state") in ("meshing", "running")
+        fetch = menu.addAction("Fetch (ask the server)", lambda: self._remote_start("fetch"))
+        fetch.setEnabled(not self.remote.running)
+        forget = menu.addAction("Forget it here", lambda: self._forget_launch(stamp))
+        if active:
+            forget.setToolTip("it is going on the server: Stop it first, or Fetch")
+            forget.setEnabled(False)
+        menu.exec(self.tree.viewport().mapToGlobal(self.tree.visualItemRect(item).center()))
+
+    def _forget_launch(self, stamp):
+        from remote import record
+        try:
+            record.forget(self.project.step_path, stamp)
+        except OSError as error:
+            self.statusBar().showMessage(f"not forgotten: {error}", 10000)
+        self._remote_from_record()
+        self._fill_results()
 
     # =====================================================
     # Saved results
@@ -2125,10 +2347,17 @@ class MainWindow(QMainWindow):
         expanded = {item.child(i).data(0, Qt.UserRole)[1] for i in range(item.childCount())
                     if item.child(i).isExpanded()}
         item.takeChildren()
-        item.setText(1, f"{len(self.runs)} run" + ("s" if len(self.runs) != 1 else ""))
+        pending = self._pending_rows()
+        item.setText(1, f"{len(self.runs)} run" + ("s" if len(self.runs) != 1 else "")
+                     + (f", {len(pending)} on the server" if pending else ""))
         current = self._current_fingerprint()
         primary = self.results.primary
-        for run in reversed(self.runs):                 # newest on top
+        rows = [(os.path.basename(run.path or "")[:15], 1, run) for run in self.runs]
+        rows += [(stamp, 0, launch) for stamp, launch in pending]
+        for _, kind, run in sorted(rows, key=lambda row: (row[0], row[1]), reverse=True):  # newest on top
+            if kind == 0:
+                self._pending_row(item, run, current)
+                continue
             key = run.path or id(run)
             ok = current is not None and run.fingerprint == current
             row = QTreeWidgetItem(item, [run.name, run.saved, "current" if ok else "outdated"])
@@ -2149,6 +2378,26 @@ class MainWindow(QMainWindow):
             row.setExpanded(key in expanded)
         item.setExpanded(True)
         self.tree.blockSignals(False)
+
+    def _pending_row(self, parent, launch, current):
+        """A run started on a server from here, not taken yet (remote/record.py)."""
+        state = launch.get("state") or "?"
+        ok = current is not None and launch.get("fingerprint") == current
+        row = QTreeWidgetItem(parent, ["⏳ on the server", launch.get("started", ""),
+                                       state + ("" if ok else ", outdated")])
+        row.setData(0, Qt.UserRole, ("pending", launch.get("stamp"), None))
+        row.setForeground(0, QColor("#8a5cc8"))
+        row.setForeground(2, QColor("#8a5cc8" if state in ("meshing", "running", "done") else "#c22"))
+        row.setToolTip(0, "Started on the server from here. Fetch asks the server and takes it when it is "
+                          "done; right click: fetch, forget.")
+        for label, value in (("server", f"{launch.get('server')}, pid {launch.get('pid')}"),
+                             ("state", state + (f": {launch['message']}" if launch.get("message") else "")),
+                             ("progress", launch.get("progress") or ""), ("last seen", launch.get("seen") or ""),
+                             ("result", launch.get("result") or "")):
+            if value:
+                info = QTreeWidgetItem(row, [label, value, ""])
+                info.setData(0, Qt.UserRole, ("run_info", launch.get("stamp"), None))
+                info.setForeground(1, QColor("#666"))
 
     @staticmethod
     def _run_rows(run):
@@ -2278,6 +2527,9 @@ class MainWindow(QMainWindow):
             return
         if role == "run":
             self._run_menu(item, name)
+            return
+        if role == "pending":
+            self._pending_menu(item, name)
             return
         top = item
         while top.parent() is not None:

@@ -3,3 +3,10 @@ screen*.png
 *.tmp
 *.npz
 *.results/
+
+# run.py on this machine: its lock, a model's status and log (remote runs)
+run.lock
+run.py.bak-*
+models/*.status.json
+models/*.status.json.tmp
+models/*.log

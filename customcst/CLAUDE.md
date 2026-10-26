@@ -17,7 +17,10 @@ Context for future Claude sessions. Read this first, then `ARCHITECTURE.md`.
   `remote/sync.py` (paramiko SFTP), the Remote tab `view/remote_panel.py`.
   `remote/remote.toml` holds the user's password: never commit or print
   it; tests set `CUSTOMCST_REMOTE` to a scratch file (like
-  `CUSTOMCST_SETTINGS`), `checks/check_remote.py` runs a local SFTP server.
+  `CUSTOMCST_SETTINGS`), `checks/check_remote.py` runs a local SFTP server,
+  `checks/check_remote_run.py` adds an emulated shell running the real
+  run.py. The user's server is real: never start, stop or delete there
+  without being asked.
 - Imports are package-relative to this folder (`geometry.*`, `view.*`).
   `main.py` and the scripts put this folder on sys.path.
 - **OCP 8 (cadquery-ocp 8.0.1)**:

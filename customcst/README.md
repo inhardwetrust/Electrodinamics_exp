@@ -251,25 +251,46 @@ result in the app again.
    ran with.
 
 **From the window instead of by hand.** The Remote tab next to Project and
-Materials holds the server: host, port, user, password and the path of
-its `customcst` folder (the one with `run.py`). Check connects and looks
+Materials holds the server: host, port, user, password, the path of
+its `customcst` folder (the one with `run.py`) and the Python that runs it
+(relative to that folder, `.venv/bin/python` by default). Check connects and looks
 for `run.py` there. The settings are saved in `remote/remote.toml`, which is
 not in git; `remote/remote.example.toml` shows the format. The password is
 kept there as plain text: an SSH key is better (leave the password empty).
 Then, under the Project tree:
 - **Push** copies the open model's STEP and `.toml` into `models/` on the
   server, replacing the ones there;
-- **Pull** brings the server's runs of the model back into its results
-  (ticked and shown, like a finished run). They are downloaded into a temp
-  folder first and moved in only when all arrived, so a lost connection
-  leaves the local runs as they were. If the server's `.toml` or STEP
-  differ from yours (changed here since the push), it asks whether to take
-  the server's: yes replaces yours and reloads the model.
+- **Fetch** asks the server how the model's run goes and takes its
+  finished runs into the model's results (ticked and shown, like a
+  finished run). They are downloaded into a temp folder first and moved
+  in only when all arrived, so a lost connection leaves the local runs as
+  they were. A taken run is named by this machine: its time is when you
+  started it here (the time of taking for a run started on the server by
+  hand), its name the model's next "Run N"; its info says where it was
+  computed. If the server's `.toml` or STEP differ from yours (changed
+  here since the push), it asks whether to take the server's: yes
+  replaces yours and reloads the model;
+- **Run on server** pushes the model and starts `run.py` on it there
+  (`nohup`, its output in `models/model.log`). One run at a time on a
+  server: while another one goes it says which. While the window is open
+  it follows the run every 15 s (progress in the status bar: port, pulse
+  or energy, time) and takes it when it is done; a failed one shows the
+  log's end;
+- **Stop** ends the model's run there (nothing is saved).
+
+Nothing connects by itself: opening a model asks the server nothing. A
+run started from here is a pending row in Project > Simulation > Results
+("⏳ on the server", with its last known state) until it is taken; the
+window can be closed, the network dropped. Fetch asks again (and follows
+the run if it still goes). Right click on the row: fetch, or forget it.
+
+Push and Run on server are off until the model can run here: the mesh
+built, nothing wrong with it (shorts are asked about, like Simulate).
 
 The first connection to a server asks to trust its host key (compare the
 fingerprint with `ssh-keygen -lf /etc/ssh/ssh_host_*_key.pub` on the
-server); a trusted key is kept in `remote/known_hosts`. The run itself is
-still started on the server (step 3).
+server); a trusted key is kept in `remote/known_hosts`. The server needs
+the same code as here (copy the folder again after an update).
 
 The runner does exactly what the Simulate button does
 (`solver/simulation.py`, shared by both), so the S-parameters are the

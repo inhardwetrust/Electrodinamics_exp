@@ -820,25 +820,52 @@ the STEP and its .toml copied there, the run file copied back into
   `--allow-shorts` (the window asks); `--dry-run` builds the first
   port's solver and prints the arrays' size (solver + materials) without
   stepping; progress every `--every` s; Ctrl+C stops at the next energy
-  check and saves nothing. Exit codes: 0 saved, 1 failed, 2 not runnable,
-  130 stopped.
+  check and saves nothing (SIGTERM too, and Ctrl+C / SIGTERM while
+  meshing stops at once). Exit codes: 0 saved, 1 failed, 2 not runnable,
+  3 another run holds the machine, 130 stopped.
+- One run per machine: `run.lock` in the customcst folder (pid, model);
+  a lock whose process is gone is taken over. `model.status.json` beside
+  the model (atomic, every 2 s while stepping): state meshing / running /
+  done / failed / stopped, port k of n, t, pulse %, energy dB, elapsed,
+  the saved result's name. The app reads it; a dry run writes neither.
 - `--excite` changes the setting in memory only (the .toml is not
   written); the fingerprint includes it, so the window shows such a run
   as outdated unless its project has the same excite.
 - Push / Pull (`remote/sync.py`, paramiko SFTP; the Remote tab
   `view/remote_panel.py`, run off the GUI thread). Push puts the STEP and
   .toml into `<path>/models/` under `.part` names, then renames them over
-  the old ones. Pull takes the remote `model.results/*.npz` that are
-  missing locally or differ in size (not `.tmp.npz`, being written), into
-  a temp folder beside the model first; only when all arrived are they
-  renamed in. The remote's .toml (always) and STEP (when its size
+  the old ones. Pull takes the remote `model.results/*.npz` not taken
+  yet (not `.tmp.npz`, being written; a file that is no run stays there),
+  into a temp folder beside the model first; only when all arrived are
+  they written in, renamed: the file by the local time of the launch
+  (`remote/record.py`; the time of taking for a run started by hand), the
+  name the model's next "Run N", `saved` that time, the server's file and
+  clock in its info. The server's clock (UTC there) and its own "Run N"
+  would mix up the list. Fetch = status + pull (the button).
+  `model.results/remote.json` (record.py, local, atomic, under a lock:
+  the Fetch worker and the window both write it): the launches from here
+  (server, local stamp, pid, the fingerprint sent, last state / progress)
+  and the server files taken, so a taken (or deleted) run is not taken
+  again. A launch whose run is not taken is a pending row in Results,
+  sorted with the runs by time. The remote's .toml (always) and STEP (when its size
   differs) come back as bytes where they differ from the local ones; the
   window asks, and "yes" writes them atomically and reloads (the view
   save never overwrites a file changed outside, by its mtime). The path must hold `run.py` (a wrong folder is an error,
   not a new tree). Settings: `remote/remote.toml` (not in git, the
   password), host keys: `~/.ssh/known_hosts` plus `remote/known_hosts`
   (an unknown key is shown with its fingerprint and trusted only on yes).
-  The run is still started on the server by hand.
+  Run on server (`launch` = push + `start`): `cd <path> || exit 1;
+  nohup <python> run.py models/X.stp > models/X.log 2>&1 < /dev/null &
+  echo $!` (not `cd && nohup &`: that backgrounds a shell holding the SSH
+  channel open), then waits for X.status.json with that pid, or reports
+  the log when the process is gone at once. `status` adds "died" (state
+  active, pid gone), the log's tail and the run holding the machine;
+  `stop` sends SIGTERM after `ps` shows that pid is this model's run.py.
+  Opening a model connects to nothing: Stop and the pending rows come
+  from the record. The window follows a run (a second runner, every
+  REMOTE_POLL = 15 s) only after Run on server or a Fetch that finds it
+  going, while the window is open; a "done" not taken yet is fetched. checks/check_remote_run.py runs the real
+  run.py behind the stub server's emulated shell.
 - Denormals: on Intel CPUs float32 denormals (the fields ahead of the
   wave front) cost ~8x per operation; `step()` sets FTZ|DAZ in every
   thread first (`fdtd_kernels.flush_denormals`), a server run went from
