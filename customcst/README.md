@@ -169,6 +169,11 @@ the switch pin's reflection at the path's end shrinks from run to run.
   - the mesh plane;
   - material colors;
   - reference planes.
+- **Remote runs**: a model set up here runs on a faster machine over SSH
+  (the Remote tab; Run on server, Stop, Fetch): one run at a time there,
+  followed while the window is open, the finished run taken back. The
+  server runs the same program folder; `run.py` also runs a model from a
+  console.
 - **Numerical checks** (`checks/`) for every level: the mesh, discretization,
   port modes, the FDTD against analytic lines and a cavity, lumped elements,
   vias, the KiCad import.
@@ -217,84 +222,103 @@ python checks/check_fdtd_line.py  # any check
 The architecture, the design decisions and the plan are in
 [ARCHITECTURE.md](ARCHITECTURE.md).
 
-## Running on another machine (console)
+## Running on another machine (remote runs)
 
-`run.py` runs a simulation without the window, for example on a faster
-Linux server. Set the model up in the app, run it there, and look at the
-result in the app again.
+A model set up in the app can run on a faster machine, for example a
+Linux server with more cores: the app sends the model there, starts the
+run, follows it and takes the result back. The run there is `run.py`, the
+console runner: it does exactly what the Simulate button does
+(`solver/simulation.py`, shared by both), so the S-parameters are the same
+as from a local run.
 
-1. **Once: install the app on the server.** Copy the `customcst` folder
-   (the code; `models/` is not needed), then:
-   ```bash
-   python3.12 -m venv .venv
-   .venv/bin/pip install numpy scipy numba cadquery-ocp
-   ```
-   The console runner needs neither PySide6 nor VisPy. If importing OCP
-   fails on a headless server with a missing `libGL.so.1`, install the
-   system library (`sudo apt install libgl1` on Debian/Ubuntu).
-2. **Copy the model**: `model.stp` and `model.toml`, both, set up in the
-   app (types, elements, ports, mesh and simulation settings).
-3. **Check it**, then run:
-   ```bash
-   .venv/bin/python customcst/run.py model.stp --dry-run   # grid, ports, memory; no run
-   nohup .venv/bin/python customcst/run.py model.stp > run.log 2>&1 &
-   tail -f run.log                                          # progress every 30 s
-   ```
-   Options: `--threads N` (default: all cores), `--excite "J2 5"` (one
-   port; like changing the excite setting, the app then shows the run as
-   outdated unless the project has the same one), `--allow-shorts`, and
-   `--every S` (seconds between progress lines). Ctrl+C stops (nothing is
-   saved).
-4. **Copy the result back**: `model.results/<date>.npz` into the same
-   `model.results/` folder next to the model on your machine. The app
-   lists it as a current run if the STEP and its .toml are the ones it
-   ran with.
+### Once: the same program on the server
 
-**From the window instead of by hand.** The Remote tab next to Project and
-Materials holds the server: host, port, user, password, the path of
-its `customcst` folder (the one with `run.py`) and the Python that runs it
-(relative to that folder, `.venv/bin/python` by default). Check connects and looks
-for `run.py` there. The settings are saved in `remote/remote.toml`, which is
-not in git; `remote/remote.example.toml` shows the format. The password is
-kept there as plain text: an SSH key is better (leave the password empty).
-Then, under the Project tree:
-- **Push** copies the open model's STEP and `.toml` into `models/` on the
-  server, replacing the ones there;
+Copy **the very same `customcst` folder** the app runs from here to the
+server: the same version of the code, nothing changed, nothing left out
+(`models/` is not needed: models go there with Push). The server must run
+exactly the code the app runs, or its results will not match a local run.
+After every update of the app here (a `git pull`, a fix), copy the folder
+to the server again.
+
+Then, in that folder on the server:
+```bash
+python3.12 -m venv .venv
+.venv/bin/pip install numpy scipy numba cadquery-ocp
+```
+The runner needs neither PySide6 nor VisPy. If importing OCP fails on a
+headless server with a missing `libGL.so.1`, install the system library
+(`sudo apt install libgl1` on Debian/Ubuntu).
+
+### The Remote tab
+
+The Remote tab, next to Project and Materials, says where the server is:
+- **Host, Port, User, Password**: the SSH login. The password is kept as
+  plain text, so an SSH key is better: leave the password empty;
+- **Path**: the `customcst` folder on the server, the one with `run.py`
+  (`~/...` is the home folder there);
+- **Python**: the Python that runs `run.py`, relative to Path
+  (`.venv/bin/python` by default, the venv made above);
+- **Check** connects and looks for `run.py` there.
+
+The settings are saved in `remote/remote.toml`, which is not in git;
+`remote/remote.example.toml` shows the format. The first connection to a
+server asks to trust its host key: compare the fingerprint with
+`ssh-keygen -lf /etc/ssh/ssh_host_*_key.pub` on the server. A trusted key
+is kept in `remote/known_hosts`.
+
+### Run on server, Fetch, Stop, Push
+
+The buttons under the Project tree:
+- **▶ Run on server** sends the open model (its STEP and `.toml`) to
+  `models/` on the server and starts `run.py` on it there, in the
+  background (`nohup`, its output in `models/model.log`). One run at a
+  time on a server: while another one goes, it says which. While the
+  window is open it follows the run every 15 s: the status bar shows the
+  port, the pulse (first half of the bar) or the energy falling to the
+  stop level (second half), and the time. A finished run is taken back by
+  itself; a failed one shows the end of its log;
 - **Fetch** asks the server how the model's run goes and takes its
-  finished runs into the model's results (ticked and shown, like a
-  finished run). They are downloaded into a temp folder first and moved
-  in only when all arrived, so a lost connection leaves the local runs as
-  they were. A taken run is named by this machine: its time is when you
-  started it here (the time of taking for a run started on the server by
-  hand), its name the model's next "Run N"; its info says where it was
-  computed. If the server's `.toml` or STEP differ from yours (changed
-  here since the push), it asks whether to take the server's: yes
-  replaces yours and reloads the model;
-- **Run on server** pushes the model and starts `run.py` on it there
-  (`nohup`, its output in `models/model.log`). One run at a time on a
-  server: while another one goes it says which. While the window is open
-  it follows the run every 15 s (progress in the status bar: port, pulse
-  or energy, time) and takes it when it is done; a failed one shows the
-  log's end;
-- **Stop** ends the model's run there (nothing is saved).
+  finished runs into the model's results, ticked and shown like a local
+  run. If the run still goes, it follows it again. If the server's
+  `.toml` or STEP differ from yours (changed here since the run was sent),
+  it asks whether to take the server's: yes replaces yours and reloads
+  the model;
+- **■ Stop** ends the model's run on the server (nothing is saved);
+- **Push** only sends the model, without starting it.
 
-Nothing connects by itself: opening a model asks the server nothing. A
-run started from here is a pending row in Project > Simulation > Results
-("⏳ on the server", with its last known state) until it is taken; the
-window can be closed, the network dropped. Fetch asks again (and follows
-the run if it still goes). Right click on the row: fetch, or forget it.
-
-Push and Run on server are off until the model can run here: the mesh
+Run on server and Push are off until the model can run here: the mesh
 built, nothing wrong with it (shorts are asked about, like Simulate).
 
-The first connection to a server asks to trust its host key (compare the
-fingerprint with `ssh-keygen -lf /etc/ssh/ssh_host_*_key.pub` on the
-server); a trusted key is kept in `remote/known_hosts`. The server needs
-the same code as here (copy the folder again after an update).
+**Nothing connects by itself**: opening a model asks the server nothing.
+Once a run is started, the window can be closed, the network dropped, the
+computer turned off: the run goes on on the server. A run started from
+here stays a pending row in Project > Simulation > Results ("⏳ on the
+server", with its last known state) until it is taken; Fetch asks again
+when you want. Right click on the row: fetch, or forget it.
 
-The runner does exactly what the Simulate button does
-(`solver/simulation.py`, shared by both), so the S-parameters are the
-same.
+A run taken back is named by this machine: its time is when you started
+it here (the time of taking for a run started on the server by hand), its
+name the model's next "Run N", and its info says where it was computed.
+Runs are downloaded into a temp folder first and moved in only when all
+arrived, so a lost connection leaves the local runs as they were.
+
+### By hand, from a console
+
+The same runner without the app, in the `customcst` folder on the server:
+```bash
+.venv/bin/python run.py models/model.stp --dry-run   # grid, ports, memory; no run
+nohup .venv/bin/python run.py models/model.stp > run.log 2>&1 &
+tail -f run.log                                      # progress every 30 s
+```
+Copy `model.stp` and `model.toml` there first, both, set up in the app
+(types, elements, ports, mesh and simulation settings). Options:
+`--threads N` (default: all cores), `--excite "J2 5"` (one port; like
+changing the excite setting, the app then shows the run as outdated
+unless the project has the same one), `--allow-shorts`, and `--every S`
+(seconds between progress lines). Ctrl+C stops (nothing is saved). Fetch
+takes such a run back too; by hand, copy `models/model.results/<date>.npz`
+into the `model.results/` folder next to the model here: the app lists it
+as a current run if the STEP and its `.toml` are the ones it ran with.
 
 ## License
 
