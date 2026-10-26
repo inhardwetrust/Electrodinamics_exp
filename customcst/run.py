@@ -59,6 +59,9 @@ def main(argv):
     step = os.path.abspath(args.step)
     begin = time.perf_counter()
     print(f"model      {step}")
+    if not os.path.isfile(step):
+        print(f"no such file: {step}")
+        return 2
     try:
         model = prepare(step, progress=_discretize_progress(args.every))
     except (OSError, ProjectError, ValueError) as error:
