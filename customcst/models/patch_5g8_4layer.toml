@@ -1,0 +1,67 @@
+# customcst project for patch_5g8_4layer.step
+
+[simulation]
+f_min = 4.5   # GHz
+f_max = 7.0   # GHz
+padding = 26.0   # mm
+trim_pulse = false
+accuracy = "-50"   # dB
+excite = "all"
+
+[mesh]
+cells_per_wavelength = 40.0
+cells_per_feature = 8.0
+max_ratio = 1.3
+min_step = 0.0   # mm
+slanted = true
+
+[farfield]
+frequencies = "5.6, 5.7, 5.8, 5.9, 6"   # GHz
+
+[bodies.dielectric]
+type = "dielectric"
+material = "Custom"
+eps_r = 4.3
+tan_d = 0.02
+f_ref = 5.8   # GHz
+mu_r = 1.0
+
+[bodies.feed]
+type = "port"
+impedance = 50.0   # Ω
+
+[bodies.ground_in2]
+type = "pec"
+
+[bodies.network]
+type = "pec"
+
+[bodies.patch]
+type = "pec"
+
+[bodies."vias#1"]
+type = "pec"
+
+[bodies."vias#2"]
+type = "pec"
+
+[view]
+up = "z"
+
+[materials.Default]
+eps_r = 1.0
+tan_d = 0.0
+f_ref = 10.0   # GHz
+mu_r = 1.0
+
+[materials.FR4]
+eps_r = 4.3
+tan_d = 0.02
+f_ref = 3.0   # GHz
+mu_r = 1.0
+
+[materials.PTFE]
+eps_r = 2.1
+tan_d = 0.0002
+f_ref = 10.0   # GHz
+mu_r = 1.0

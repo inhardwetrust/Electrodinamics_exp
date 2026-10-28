@@ -21,6 +21,10 @@ Context for future Claude sessions. Read this first, then `ARCHITECTURE.md`.
   `checks/check_remote_run.py` adds an emulated shell running the real
   run.py. The user's server is real: never start, stop or delete there
   without being asked.
+- Antenna work (a model, sweeps on the server, the far field, a final run
+  the user opens): the `antenna-design` skill,
+  `.claude/skills/antenna-design/` (SKILL.md, scripts/sweep.py,
+  scripts/remote_tasks.py).
 - Imports are package-relative to this folder (`geometry.*`, `view.*`).
   `main.py` and the scripts put this folder on sys.path.
 - **OCP 8 (cadquery-ocp 8.0.1)**:
