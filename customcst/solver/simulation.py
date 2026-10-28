@@ -7,7 +7,9 @@
 #                  ports, vias, grid, materials (Model);
 #   problem(...)   why it cannot be simulated, or None;
 #   parameters()   what a run is computed with (the Results list's rows);
-#   simulate()     one FDTD run per excited port -> SimulationResult.
+#   simulate()     one FDTD run per excited port -> SimulationResult,
+#                  with the far field of each (solver/farfield.py) when
+#                  [farfield] lists frequencies.
 # The result is saved next to the model (solver/result_file.py) with the
 # project's fingerprint: copied back into model.results/ beside the same
 # STEP and TOML, the window lists it as current.
@@ -23,6 +25,7 @@ from geometry.step_io import read_step
 from mesh.rectilinear import build_grid
 from project.project_file import Project
 from project.settings import EXCITE_ALL
+from solver.farfield import FarFieldBox, far_field, summary
 from solver.fdtd import FdtdSolver
 from solver.result_file import SimulationResult
 from solver.sparams import input_impedance, s_column
@@ -118,12 +121,13 @@ def parameters(project, mesh, materials, via_bodies):
 
 
 def simulate(materials, f_min, f_max, trim_pulse=False, end_db=-40.0, excite=None, progress=None,
-             started=None):
+             started=None, farfield=()):
     """
     One run per excited port (excite: names, None = all), the others
     terminated: the S columns and Z_in. progress(port, t, level_db,
     pulse_duration) at each energy check; returning False stops: None is
     returned. started(port, solver) when a port's solver is built.
+    farfield: GHz, the far-field monitor's frequencies (empty: off).
     """
     begin = time.perf_counter()
     ports = list(materials.ports) + list(materials.waveports)
@@ -139,6 +143,10 @@ def simulate(materials, f_min, f_max, trim_pulse=False, end_db=-40.0, excite=Non
         if excite is not None and active not in excite:
             continue                    # not excited: its column of S stays empty
         solver = FdtdSolver(materials, f_min, f_max, active_port=active, trim_pulse=trim_pulse)
+        box = None
+        if len(farfield):
+            box = FarFieldBox(solver, np.asarray(farfield, dtype=np.float64) * 1e9)
+            solver.monitors.append(box)
         if started is not None:
             started(active, solver)
         start = time.perf_counter()
@@ -158,6 +166,9 @@ def simulate(materials, f_min, f_max, trim_pulse=False, end_db=-40.0, excite=Non
             f"{active}: {status}, {solver.step_index} steps ({solver.t * 1e9:.2f} ns), "
             f"{time.perf_counter() - start:.1f} s, {int(np.prod(solver.shape)):,} cells with PML"
         )
+        if box is not None:
+            result.farfield[active] = far_field(box, solver)
+            result.info += [f"{active}: far field {line}" for line in summary(result.farfield[active])]
 
     result.elapsed = time.perf_counter() - begin
     return result

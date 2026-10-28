@@ -146,7 +146,10 @@ the switch pin's reflection at the path's end shrinks from run to run.
   - renormalization to any impedance;
   - Touchstone `.sNp` export;
   - every run is saved, can be compared with the others, and is marked
-    outdated when the model changes.
+    outdated when the model changes;
+  - far field of an antenna (Simulation > Monitors > Far field: the
+    frequencies): directivity, gain, realized gain and radiation
+    efficiency per frequency (the pattern plots are next).
 - **TDR** of the shown runs: low pass (step as Z, impulse) with a causal
   continuation to DC, or band pass; on a Z0 profile's axis, with the
   profile as a TDR would see it.

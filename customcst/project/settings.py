@@ -17,6 +17,12 @@
 #   max_ratio = 1.3             # max step ratio between neighbor cells
 #   min_step = 0.0              # mm, fixpoints closer than this merge; 0 = auto
 #   slanted = true              # refine the step around slanted metal faces
+#
+#   [farfield]
+#   frequencies = "5.5, 5.757"  # GHz, the far-field monitor's ("" = off; within f min .. f max)
+#
+# [farfield] is not in a run's fingerprint (result_file.py): it does not
+# change S, a run keeps the frequencies it was made with.
 
 from dataclasses import dataclass
 
@@ -89,8 +95,19 @@ SECTIONS = {
             ),
             note="lines at body faces; step ≤ λ/N in each material",
         ),
+        Section(
+            "farfield", "Far field",
+            params=(
+                Param("frequencies", "frequencies", "", minimum=1e-3, unit="GHz", numbers=True,
+                      tooltip="The antenna's radiation pattern at these frequencies (comma separated, "
+                              "within f min .. f max; empty: off). A box in the air around the model "
+                              "collects the fields during the run: keep the model inside the padding."),
+            ),
+        ),
     )
 }
+
+NOT_IN_FINGERPRINT = ("farfield",)      # sections that do not change a run's S
 
 
 def check_settings(settings):
@@ -98,6 +115,16 @@ def check_settings(settings):
     sim = settings["simulation"]
     if sim["f_max"] <= sim["f_min"]:
         raise ValueError("f max must be greater than f min")
+    outside = [f for f in farfield_frequencies(settings) if not sim["f_min"] <= f <= sim["f_max"]]
+    if outside:
+        raise ValueError(f"far-field frequencies {', '.join(f'{f:g}' for f in outside)} GHz are outside "
+                         f"f min .. f max ({sim['f_min']:g}-{sim['f_max']:g} GHz)")
+
+
+def farfield_frequencies(settings):
+    """The far-field monitor's frequencies in GHz ([] = off)."""
+    text = settings.get("farfield", {}).get("frequencies", "")
+    return [float(part) for part in text.split(",") if part.strip()]
 
 
 def accuracy_db(settings):

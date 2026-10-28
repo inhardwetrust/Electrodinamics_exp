@@ -125,7 +125,7 @@ def _simulate(args, step, status, stage):
             pass
 
     from project.project_file import ProjectError
-    from project.settings import EXCITE_ALL, accuracy_db
+    from project.settings import EXCITE_ALL, accuracy_db, farfield_frequencies
     from solver import fdtd_kernels
     from solver.result_file import fingerprint, format_duration, save_result
     from solver.simulation import parameters, port_names, prepare, problem, simulate
@@ -174,6 +174,8 @@ def _simulate(args, step, status, stage):
     print(f"run        {sim['f_min']:g}-{sim['f_max']:g} GHz, ports {', '.join(excited)}, "
           f"stops at {end_db:.0f} dB; {'numba' if fdtd_kernels.AVAILABLE else 'numpy (slow)'}"
           + (f", {threads} threads" if threads else ""))
+    if farfield_frequencies(project.settings):
+        print(f"far field  at {', '.join(f'{f:g}' for f in farfield_frequencies(project.settings))} GHz")
 
     model_fingerprint = fingerprint(project)
     if args.dry_run:
@@ -212,7 +214,8 @@ def _simulate(args, step, status, stage):
     stage["stepping"] = True
     try:
         result = simulate(materials, sim["f_min"], sim["f_max"], sim["trim_pulse"], end_db,
-                          None if excite == EXCITE_ALL else [excite], progress=progress, started=started)
+                          None if excite == EXCITE_ALL else [excite], progress=progress, started=started,
+                          farfield=farfield_frequencies(project.settings))
     except KeyboardInterrupt:
         raise
     except Exception as error:          # report, do not lose the traceback

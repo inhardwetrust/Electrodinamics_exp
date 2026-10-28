@@ -11,11 +11,13 @@
 # wall-clock time the whole run took, the eps_eff of each waveguide port's
 # line (NaN for a lumped port; for moving the reference plane), a
 # snapshot of the parameters it was computed with (JSON: settings, grid,
-# materials, vias, ports) and a fingerprint of the inputs.
+# materials, vias, ports) and a fingerprint of the inputs. With the
+# far-field monitor on, per excited port k the arrays of
+# solver/farfield.py far_field() as "ff<k>_<name>" (pattern, powers).
 #
 # Fingerprint: SHA-256 of the STEP file's bytes plus the project's body
 # types, parameter values, hole rules and [simulation] / [mesh] settings
-# (not [view]). When it differs from the current model, a run is still
+# (not [view], not [farfield]: it does not change S). When it differs from the current model, a run is still
 # shown but marked as outdated.
 #
 # An older single-result file (model.npz, format 1) is moved into the folder
@@ -28,6 +30,8 @@ import re
 import time
 
 import numpy as np
+
+from project.settings import NOT_IN_FINGERPRINT
 
 FORMAT_VERSION = 2
 
@@ -48,6 +52,7 @@ class SimulationResult:
         self.path = ""                  # its file, "" = not saved
         self.elapsed = float("nan")     # wall-clock seconds of the whole run, NaN = unknown
         self.eps_eff = [float("nan")] * len(ports)   # per port: its line's eps_eff, NaN = lumped / unknown
+        self.farfield = {}              # excited port -> {name: array} (solver/farfield.py far_field)
 
 
 def format_duration(seconds):
@@ -78,7 +83,8 @@ def fingerprint(project):
             digest.update(block)
     inputs = {
         "bodies": {name: [a.type, a.values] for name, a in sorted(project.assignments.items())},
-        "settings": {name: project.settings[name] for name in sorted(project.settings)},
+        "settings": {name: project.settings[name] for name in sorted(project.settings)
+                     if name not in NOT_IN_FINGERPRINT},
         "holes": [sorted(project.hole_diameters.items()), sorted(project.hole_single.items())],
     }
     digest.update(json.dumps(inputs, sort_keys=True, ensure_ascii=False).encode("utf-8"))
@@ -116,9 +122,12 @@ def write_result(path, result):
         if name in result.z_in:
             z_in[k] = result.z_in[name]
 
+    farfield = {f"ff{result.ports.index(port)}_{key}": np.asarray(value)
+                for port, arrays in result.farfield.items() for key, value in arrays.items()}
     temp = path + ".tmp.npz"
     np.savez_compressed(
         temp,
+        **farfield,
         version=np.array(FORMAT_VERSION),
         frequencies=np.asarray(result.frequencies, dtype=np.float64),
         ports=np.array(result.ports, dtype=str),
@@ -164,6 +173,10 @@ def read_result(path):
             result.elapsed = float(data["elapsed"])
         if "eps_eff" in data and len(data["eps_eff"]) == len(ports):
             result.eps_eff = [float(e) for e in data["eps_eff"]]
+        for key in data.files:
+            if key.startswith("ff") and "_" in key and key[2:key.index("_")].isdigit():
+                port = ports[int(key[2:key.index("_")])]
+                result.farfield.setdefault(port, {})[key[key.index("_") + 1:]] = data[key]
     result.path = path
     return result
 

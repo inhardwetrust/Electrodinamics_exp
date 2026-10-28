@@ -22,13 +22,19 @@ class Param:
     choices: tuple = ()             # non-empty: the value is one of these strings
     boolean: bool = False           # an on / off switch (a check box in the tree)
     text: bool = False              # free text (e.g. a body name), not empty
+    numbers: bool = False           # a list of numbers ("5.5, 5.757"), may be empty
     tooltip: str = ""
 
     def validate(self, value):
         """
-        A number within the limits (or one of `choices`, or a bool), or
-        ValueError naming the parameter.
+        A number within the limits (or one of `choices`, or a bool, or a
+        list of numbers as text), or ValueError naming the parameter.
         """
+        if self.numbers:
+            parts = str(value).replace(";", ",").replace(" ", ",").split(",")
+            values = [self._number(part) for part in parts if part.strip()]
+            return ", ".join(f"{v:g}" for v in sorted(set(values)))
+
         if self.text:
             text = str(value).strip()
             if not text:
@@ -51,6 +57,9 @@ class Param:
                 raise ValueError(f"{self.label}: must be one of {', '.join(self.choices)}")
             return text
 
+        return self._number(value)
+
+    def _number(self, value):
         if isinstance(value, bool):
             raise ValueError(f"{self.label}: not a number: {value!r}")
 

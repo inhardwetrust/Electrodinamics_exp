@@ -57,7 +57,10 @@ Only level 0 knows about OpenCASCADE.
      ground 7 um off its face. Copper between two dielectric layers sits
      on the thinner layer's face (`check_mesh`, the 4-layer stack).
 3. **Field monitors** (level 5): DFT fields at chosen frequencies on the
-   display grid, then far field.
+   display grid. Done: the far field (see "Far field").
+4. **Far field, the view**: polar cuts (E and H plane, co / cross
+   polarization) and a 3D pattern of a run in Results; today a run shows
+   D, G, realized G and the efficiency as text.
 
 ## Key decisions
 
@@ -1001,6 +1004,43 @@ Checks: `checks/check_result_file.py` covers:
 - a damaged file;
 - the legacy import;
 - what changes the fingerprint.
+
+## Far field (antenna pattern)
+
+`solver/farfield.py`, checked by `checks/check_farfield.py`.
+- Project `[farfield] frequencies = "5.5, 5.757"` (GHz, within f min ..
+  f max, "" = off), in the tree under Simulation > Monitors > Far field.
+  It is not in the fingerprint (`settings.NOT_IN_FINGERPRINT`): it does
+  not change S, and a run keeps the frequencies it was made with. Editing
+  it saves the project without a new mesh.
+- Monitors: `FdtdSolver.monitors`, each called `sample(solver)` after
+  every step and `reset()` with the fields. The ports stay as they are:
+  they are part of the source, and S must not move.
+- `FarFieldBox`: the Huygens box FAR_FIELD_GAP (2) cells inside the meshed
+  domain. Its faces lie on node planes: tangential E in the plane, H
+  interpolated from the cells on either side, all averaged to the face's
+  cell centers. DFT at the far-field frequencies every `stride` steps (8
+  samples per period of f0 + 3 half-bands, where the pulse's spectrum is
+  ~1e-9): E at n dt, H at (n - 1/2) dt.
+- After the run: J = n x H, M = -n x E summed over patches up to λ/20
+  (cells binned, area-weighted centroids: the fine lines near the board
+  would make the integral slow; a λ/60 patch changes D by 0.006 dB), the
+  radiation integrals to r E_theta, r E_phi on a 1° x 2° (theta, phi)
+  grid, theta from +z.
+- Powers in the run's DFT units: p_box (Poynting flux through the box),
+  p_sphere (U over the sphere), p_acc and p_inc at the excited port (its
+  power waves, solver/sparams.py). D = 4 pi U / p_sphere, G = 4 pi U /
+  p_acc, realized G = 4 pi U / p_inc, efficiency p_box / p_acc.
+- A body that crosses the box (edges in its faces not vacuum) is counted:
+  the run's info warns to raise the padding.
+- Saved per excited port k as `ff<k>_<name>` arrays in the run file;
+  `farfield.summary()` lines go to the run's info (Results > the run).
+- Accuracy: on a short dipole (λ/10) D is within 0.013 dB of the
+  sinusoidal-current formula and the pattern within 0.04 dB (the
+  transformation); a half-wave rod dipole comes ~0.1 dB above that formula
+  on a coarse and a fine mesh alike (its real current is not quite
+  sinusoidal); the sphere integral equals the box flux within 0.3 %, the
+  radiated power the accepted one within 1 % (lossless rods).
 
 ## Waveguide ports
 

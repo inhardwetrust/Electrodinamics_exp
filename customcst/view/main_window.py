@@ -40,7 +40,7 @@ from view.remote_panel import RemotePanel, RemoteRunner
 from view.results_panel import ResultsPanel
 from view.tdr_window import TdrWindow
 from view.view_buttons import ViewButtons
-from project.settings import EXCITE_ALL, accuracy_db
+from project.settings import EXCITE_ALL, NOT_IN_FINGERPRINT, accuracy_db, farfield_frequencies
 from solver.result_file import (delete_result, fingerprint, format_duration, list_results,
                                 rename_result, results_dir, save_result)
 from view.sim_runner import SimulationRunner
@@ -645,7 +645,8 @@ class MainWindow(QMainWindow):
         self.progress_bar.setFormat("starting...")
         self.progress_bar.setVisible(True)
         self.runner.start(self.materials, sim["f_min"], sim["f_max"], sim["trim_pulse"], self._end_db,
-                          None if excite == EXCITE_ALL else [excite])
+                          None if excite == EXCITE_ALL else [excite],
+                          farfield=farfield_frequencies(self.project.settings))
 
     def _sim_progress(self, port, t, level, pulse_duration):
         self.statusBar().showMessage(
@@ -1729,18 +1730,7 @@ class MainWindow(QMainWindow):
         section = SECTIONS[name]
 
         for param in section.params:
-            value = self.project.settings[name][param.name]
-            row = QTreeWidgetItem(item, [param.label, _fmt_value(value), param.unit])
-            row.setData(0, Qt.UserRole, ("setting", name, param.name))
-            if param.boolean:                       # a check box, toggled with a click
-                row.setFlags(row.flags() | Qt.ItemIsUserCheckable)
-                row.setCheckState(1, Qt.Checked if value else Qt.Unchecked)
-            else:
-                row.setFlags(row.flags() | Qt.ItemIsEditable)
-                row.setToolTip(1, "Double click to edit")
-            if param.tooltip:
-                row.setToolTip(0, param.tooltip)
-                row.setToolTip(1, param.tooltip)
+            self._setting_row(item, name, param)
 
         if section.note:
             self._note_row(item, name, section.note, "gray")
@@ -1758,8 +1748,25 @@ class MainWindow(QMainWindow):
             self._fill_monitors()
             self._fill_results()
 
+    def _setting_row(self, parent, name, param):
+        """A row of a [name] setting: editable value, or a check box for a switch."""
+        value = self.project.settings[name][param.name]
+        row = QTreeWidgetItem([param.label, _fmt_value(value), param.unit])
+        row.setData(0, Qt.UserRole, ("setting", name, param.name))  # before it joins the tree (itemChanged)
+        parent.addChild(row)
+        if param.boolean:                       # a check box, toggled with a click
+            row.setFlags(row.flags() | Qt.ItemIsUserCheckable)
+            row.setCheckState(1, Qt.Checked if value else Qt.Unchecked)
+        else:
+            row.setFlags(row.flags() | Qt.ItemIsEditable)
+            row.setToolTip(1, "Double click to edit")
+        if param.tooltip:
+            row.setToolTip(0, param.tooltip)
+            row.setToolTip(1, param.tooltip)
+        return row
+
     def _fill_monitors(self):
-        """Simulation > Monitors: what every run records (the ports' S for now)."""
+        """Simulation > Monitors: what every run records (the ports' S; the far field if set)."""
         item = self._tree_item("monitors", None)
         if item is None:
             return
@@ -1771,6 +1778,12 @@ class MainWindow(QMainWindow):
         row.setForeground(1, QColor("#2a2" if ports else "#c80"))
         row.setToolTip(0, "Every run records the voltage and current at each port: the S-parameters "
                           "(and the TDR from them)")
+
+        far = _group_item(item, "Far field", "farfield", SECTIONS["farfield"].params[0].tooltip)
+        for param in SECTIONS["farfield"].params:
+            self._setting_row(far, "farfield", param)
+        self._note_row(far, "farfield", "empty: off; D, G and efficiency under Results > the run", "gray")
+        far.setExpanded(True)
         item.setExpanded(True)
         self.tree.blockSignals(False)
 
@@ -2749,7 +2762,10 @@ class MainWindow(QMainWindow):
         item.setText(1, _fmt_value(stored))
         self.tree.blockSignals(False)
 
-        if changed:
+        if changed and role == "setting" and owner in NOT_IN_FINGERPRINT:
+            self._save()                        # no new mesh: it changes no material, no port
+            QTimer.singleShot(0, self._fill_monitors)
+        elif changed:
             self._after_edit()
 
     def _save(self):

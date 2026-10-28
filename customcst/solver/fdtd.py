@@ -141,6 +141,7 @@ class FdtdSolver:
         if active_port is not None and active_port not in names:
             raise ValueError(f"no port named {active_port!r} (have {names})")
         self.active_port = active_port
+        self.monitors = []          # sample(solver) after every step, reset() with the fields
 
         self._build_grid()
         self.dt = courant * self._dt_max()
@@ -550,6 +551,8 @@ class FdtdSolver:
         self.step_index = 0
         self.records = [PortRecord(r.name) for r in self.records]
         self._reset_elements()
+        for monitor in self.monitors:
+            monitor.reset()
 
     @property
     def t(self):
@@ -562,6 +565,8 @@ class FdtdSolver:
             self._update_e()
             self.step_index += 1
             self._record()
+            for monitor in self.monitors:
+                monitor.sample(self)
 
     def _diff(self, array, axis, inverse):
         """Forward difference along `axis` times the inverse step."""
