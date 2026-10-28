@@ -21,10 +21,10 @@ second, more serious pass:
 
 The target so far has been feed lines: an SMA connector on a 4-layer PCB, a
 grounded coplanar line, a 50 Ω load at its end. The question is how well it
-all is matched.
+all is matched. Antennas came next: the far field of a patch (pattern,
+directivity, gain, efficiency).
 
 **What is not there yet:**
-- far field and the other antenna quantities (pattern, gain, efficiency);
 - field visualization (DFT field monitors on slices);
 - wideband dispersive dielectrics.
 
@@ -35,10 +35,11 @@ numerically:
 - the mesher;
 - the discretization into the Yee grid;
 - the FDTD solver with CPML, ports and lumped elements;
-- the S-parameter extraction.
+- the S-parameter extraction;
+- the far field (a Huygens box around the model, checked on dipoles).
 
-The fields already live on the grid. Far field and field views are the next
-levels on top, not a rewrite.
+The fields already live on the grid. Field views are the next level on
+top, not a rewrite.
 
 ## Models we worked through
 
@@ -105,6 +106,20 @@ what a TDR would see of the profile alone. Here the justswitch input:
 the switch pin's reflection at the path's end shrinks from run to run.
 
 ![TDR](docs/images/tdr.png)
+
+**A patch antenna's far field**: a 5.8 GHz patch on FR4 1.6 mm, probe fed
+(`models/patch_5g8_final`). Simulation > Monitors > Far field lists the
+frequencies; the Far field tab draws a polar cut. Here the E-plane
+(φ = 0°): D 7.0 dBi, G 5.5 dBi, radiation efficiency 70 %, 85° beamwidth,
+19 dB front to back.
+
+![Far field, polar cut](docs/images/farfield_cuts.png)
+
+**The same pattern in 3D** (Far field > Show in 3D): the radius in dB over
+the chosen range, blue to red, around the model. The axes in the lower left
+corner turn with the view.
+
+![Far field in 3D](docs/images/farfield_3d.png)
 
 ## Features
 

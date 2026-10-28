@@ -418,6 +418,14 @@ Left, Right, Iso (= Reset view) and Ortho.
   comes from the transform's inverse at two depths). Not saved with the
   camera.
 - The buttons take no focus (Space keeps panning).
+- Axes gizmo in the lower left corner (`GeometryView._update_gizmo`): X Y Z
+  (red, green, blue as the XYZAxis at the origin) turning with the view,
+  in canvas pixels. Each axis is the camera's center and a step along it
+  mapped through `view.scene.transform` (the transform the model is drawn
+  with, perspective included), scaled so three orthogonal unit axes
+  project to squared lengths summing to 2: an axis toward the viewer comes
+  out short. Updated by the camera's `on_turn` after every view change and
+  on resize.
 
 ## Picking points (for measurements)
 

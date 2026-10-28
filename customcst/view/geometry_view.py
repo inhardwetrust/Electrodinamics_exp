@@ -115,6 +115,10 @@ PATH_PLANE_FILL = (0.05, 0.15, 0.7, 0.25)         # the path's plane in path mod
 PATH_PLANE_EDGE = REFERENCE_EDGE
 PATH_PX = 8                 # a click this close to a path point or segment hits it
 CLICK_PX = 4                # a press and release closer than this is a click, not a drag
+# The axes gizmo in the lower left corner: X Y Z turning with the view.
+GIZMO_LENGTH = 28           # px, one axis
+GIZMO_MARGIN = 46           # px from the corner to its origin
+GIZMO_COLORS = ((1.0, 0.35, 0.35, 1.0), (0.4, 0.9, 0.4, 1.0), (0.45, 0.65, 1.0, 1.0))   # as XYZAxis
 
 
 def _skip_redundant_qt_swap(canvas):
@@ -197,6 +201,7 @@ class TrackballCamera(scene.TurntableCamera):
 
     space_down = False
     on_change = None                # called after every view change (the window saves the camera)
+    on_turn = None                  # also called after every view change (the view's axes gizmo)
     TRACKBALL_RADIUS = 0.8          # fraction of the half view size
 
     def __init__(self, **kwargs):
@@ -207,6 +212,8 @@ class TrackballCamera(scene.TurntableCamera):
 
     def view_changed(self):
         super().view_changed()
+        if self.on_turn is not None:
+            self.on_turn()
         if self.on_change is not None:
             self.on_change()
 
@@ -512,6 +519,7 @@ class GeometryView:
 
         self._init_headlight()
         self._init_click()
+        self._init_gizmo()
 
     def _init_space_pan(self):
         """
@@ -797,6 +805,39 @@ class GeometryView:
         self._draw_path()
         if self.on_path_changed is not None:
             self.on_path_changed(self.path_points())
+
+    def _init_gizmo(self):
+        """X, Y, Z in the lower left corner (canvas pixels), turning with the camera."""
+        self._gizmo_lines = [scene.visuals.Line(width=2.0, color=color, parent=self.canvas.scene)
+                             for color in GIZMO_COLORS]
+        self._gizmo_labels = [scene.visuals.Text(name, color=color, font_size=7,
+                                                 parent=self.canvas.scene)
+                              for name, color in zip("XYZ", GIZMO_COLORS)]
+        self.view.camera.on_turn = self._update_gizmo
+        self.canvas.events.resize.connect(lambda event: self._update_gizmo())
+        self._update_gizmo()
+
+    def _update_gizmo(self):
+        # The world axes as the view draws them: the camera's center and a
+        # step along each axis mapped scene -> canvas pixels (perspective
+        # included), scaled so that three orthogonal unit axes would project
+        # to squared lengths summing to 2 (an axis toward the viewer is short).
+        camera = self.view.camera
+        center = np.asarray(camera.center[:3], dtype=float)
+        step = 0.05 * float(camera.scale_factor)
+        points = np.vstack([center, center + step * np.eye(3)])
+        mapped = np.asarray(self.view.scene.transform.map(points), dtype=float)
+        if np.any(np.abs(mapped[:, 3]) < 1e-12):
+            return
+        pixels = mapped[:, :2] / mapped[:, 3:4]
+        screen = pixels[1:] - pixels[0]                      # canvas y grows downward, as the gizmo's
+        scale = np.sqrt(np.sum(screen ** 2) / 2.0)
+        if scale < 1e-9:
+            return
+        origin = np.array([GIZMO_MARGIN, self.canvas.size[1] - GIZMO_MARGIN], dtype=float)
+        for d, line, label in zip(screen / scale, self._gizmo_lines, self._gizmo_labels):
+            line.set_data(pos=np.array([origin, origin + GIZMO_LENGTH * d], dtype=np.float32))
+            label.pos = origin + GIZMO_LENGTH * d + 8 * d / max(np.linalg.norm(d), 0.3)
 
     def _init_headlight(self):
         """The light follows the camera, so no side of a model stays dark."""
