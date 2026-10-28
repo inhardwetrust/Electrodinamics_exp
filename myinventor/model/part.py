@@ -21,6 +21,7 @@ import numpy as np
 
 from model.expressions import ExpressionError, name_error, names, rename
 from model.features import FEATURE_TYPES, FeatureError
+from model import sketch  # noqa: F401  (registers the feature types)
 
 DATUM_KINDS = ("plane", "axis", "point")
 
@@ -114,6 +115,38 @@ class Part:
     def object_names(self):
         """Datums and features: the namespace references point into."""
         return [d.name for d in self.origin] + [f.name for f in self.features]
+
+    # =====================================================
+    # Features
+    # =====================================================
+
+    def free_feature_name(self, stem):
+        """Sketch1, Sketch2...: the first one not taken (as Inventor names them)."""
+        taken = set(self.object_names())
+        n = 1
+        while f"{stem}{n}" in taken:
+            n += 1
+        return f"{stem}{n}"
+
+    def add_feature(self, feature):
+        if feature.name in self.object_names():
+            raise PartError(f"the name {feature.name!r} is taken")
+        missing = [ref for ref in feature.references() if ref not in self.object_names()]
+        if missing:
+            raise PartError(f"{feature.name}: {missing[0]!r} is not a datum or a feature above it")
+        self.features.append(feature)
+        return feature
+
+    def feature_users(self, name):
+        """Features that refer to `name`."""
+        return [f.name for f in self.features if name in f.references()]
+
+    def delete_feature(self, name):
+        """Deletes a feature nothing refers to (PartError names the users otherwise)."""
+        users = self.feature_users(name)
+        if users:
+            raise PartError(f"{name!r} is used by {', '.join(users)}")
+        self.features.remove(self.feature(name))
 
     # =====================================================
     # Parameters

@@ -17,8 +17,10 @@
 #     X-ray picks the plane through it;
 #   - every standard view finds its orientation;
 #   - Measure: a click near a corner picks the vertex exactly, |AB| in the
-#     status bar; a drag rotates (pivot kept) and picks nothing; a Shift
-#     drag pans; leaving Measure clears the points;
+#     status bar; leaving Measure clears the points;
+#   - navigation: a middle drag rotates (pivot kept) and picks nothing,
+#     Ctrl + middle pans exactly with the cursor, a right drag zooms; a
+#     left drag (plain, Shift, Ctrl) moves nothing;
 #   - the window's size goes to the redirected settings file on close.
 #
 #   python checks/check_view.py
@@ -119,10 +121,10 @@ def check_origin():
           all(np.allclose(np.cross(d.u, d.v), d.direction) for d in planes.values()))
 
 
-def mouse(native, kind, pos, buttons=Qt.NoButton, modifier=Qt.NoModifier):
+def mouse(native, kind, pos, buttons=Qt.NoButton, modifier=Qt.NoModifier, which=Qt.LeftButton):
     # QTest.mouseMove carries no pressed button in Qt 6: build the events.
     local = QPointF(float(pos[0]), float(pos[1]))
-    button = Qt.NoButton if kind == QEvent.MouseMove else Qt.LeftButton
+    button = Qt.NoButton if kind == QEvent.MouseMove else which
     event = QMouseEvent(kind, local, native.mapToGlobal(local), button, buttons, modifier)
     QApplication.sendEvent(native, event)
 
@@ -268,27 +270,55 @@ def check_window():
     w, h = view.canvas.size
     start = np.array([w // 2, h // 2])
 
-    def drag(modifier=Qt.NoModifier, dx=80, steps=8):
-        mouse(native, QEvent.MouseButtonPress, start, Qt.LeftButton, modifier)
+    def drag(button, modifier=Qt.NoModifier, dx=80, steps=8):
+        mouse(native, QEvent.MouseButtonPress, start, button, modifier, button)
         for i in range(1, steps + 1):
             QTest.qWait(15)
-            mouse(native, QEvent.MouseMove, start + (dx * i // steps, 0), Qt.LeftButton, modifier)
-        mouse(native, QEvent.MouseButtonRelease, start + (dx, 0), Qt.NoButton, modifier)
+            mouse(native, QEvent.MouseMove, start + (dx * i // steps, 0), button, modifier)
+        mouse(native, QEvent.MouseButtonRelease, start + (dx, 0), Qt.NoButton, modifier, button)
         QTest.qWait(500)
+
+    def unchanged(before, after):
+        return all(np.allclose(before[k], after[k]) for k in before)
 
     view.set_picks([None, None])
     before = camera.state()
-    drag()
+    drag(Qt.MiddleButton)
     after = camera.state()
-    check("a left drag rotates", not np.allclose(before["rotation"], after["rotation"]))
+    check("a middle drag rotates", not np.allclose(before["rotation"], after["rotation"]))
     check("  about the pivot (center unchanged)", np.allclose(before["center"], after["center"]))
     check("  and picks nothing", view.picks == [None, None])
     before = camera.state()
-    drag(Qt.ShiftModifier)
+    drag(Qt.MiddleButton, Qt.ControlModifier)
     after = camera.state()
     moved = np.linalg.norm(np.subtract(after["center"], before["center"]))
-    check("a Shift drag pans", moved > 1.0 and np.allclose(before["rotation"], after["rotation"]),
-          f"center moved {moved:.3g} mm")
+    expected = 80 * camera.scale_factor / min(camera._viewbox.size)
+    check("Ctrl + middle drag pans by the cursor's move at the pivot",
+          abs(moved - expected) < 1e-6 * expected and np.allclose(before["rotation"], after["rotation"]),
+          f"center moved {moved:.6g} mm, expected {expected:.6g}")
+    for label, modifier in (("a left drag", Qt.NoModifier), ("a Shift + left drag", Qt.ShiftModifier),
+                            ("a Ctrl + left drag", Qt.ControlModifier)):
+        before = camera.state()
+        drag(Qt.LeftButton, modifier)
+        check(f"{label} moves nothing", unchanged(before, camera.state()) and view.picks == [None, None])
+    QTest.keyPress(native, Qt.Key_Space)
+    before = camera.state()
+    drag(Qt.LeftButton)
+    QTest.keyRelease(native, Qt.Key_Space)
+    after = camera.state()
+    moved = np.linalg.norm(np.subtract(after["center"], before["center"]))
+    check("Space + left drag pans (a touchpad)", abs(moved - expected) < 1e-6 * expected
+          and not camera.space_down, f"center moved {moved:.6g} mm")
+    before = camera.state()
+    mouse(native, QEvent.MouseButtonPress, start, Qt.RightButton, which=Qt.RightButton)
+    for i in range(1, 9):
+        QTest.qWait(15)
+        mouse(native, QEvent.MouseMove, start + (0, 10 * i), Qt.RightButton)
+    mouse(native, QEvent.MouseButtonRelease, start + (0, 80), which=Qt.RightButton)
+    QTest.qWait(500)
+    after = camera.state()
+    check("a right drag zooms", after["distance"] != before["distance"]
+          and np.allclose(before["rotation"], after["rotation"]), f"{before['distance']:.4g} -> {after['distance']:.4g}")
 
     view.reset_view()
     settle()

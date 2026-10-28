@@ -13,9 +13,10 @@
 # normals to zero).
 #
 # Navigation (TrackballCamera, CAD-style like Inventor's orbit):
-#   - left drag rotates as a virtual trackball about the camera center;
-#   - Space + left drag or Shift + left drag pans;
-#   - the wheel or a right drag zooms.
+#   - middle drag rotates as a virtual trackball about the camera center;
+#   - Ctrl + middle drag pans (Space + left drag too, for a touchpad);
+#   - the wheel or a right drag zooms;
+#   - a left drag moves nothing: the left button selects (and will draw).
 #
 # Datums (set_datums): the part's work planes, axes and points (the origin
 # for now), drawn as in Inventor: a plane is a translucent square with its
@@ -29,6 +30,22 @@
 # ("datum", name) or ("body", name). set_hover / select do the same from
 # the browser; a hovered datum is drawn even when hidden (as in Inventor,
 # where hovering a hidden plane in the browser shows it).
+#
+# Picking a plane (set_pick_filter): while a command waits for a plane
+# (Start 2D Sketch), only datums of the given kinds hover and click, the
+# bodies are not selectable, and the `forced` datums are drawn and pickable
+# even when hidden (Inventor shows the origin planes for this).
+#
+# Sketch mode (set_sketch, look_at): a grid on the sketch's plane (lines
+# every `step`, a 1-2-5 number giving about SKETCH_GRID_LINES lines over the
+# model's size), its own x (u) and y (v) axes from the sketch origin, and the
+# camera looking at the plane: u to the right, v up, the normal toward the
+# viewer.
+#
+# Sketch points (set_sketches): every sketch shows its origin as a point
+# (Inventor's projected center point; all an empty sketch shows), keyed
+# ("feature", name): it hovers green and a click selects the sketch, like a
+# datum point (the origin's datums win where they coincide).
 #
 # Measure mode (set_measure): a left click without a drag (the cursor moved
 # less than CLICK_PX) picks a point of the model (view/picking.py: a CAD
@@ -53,6 +70,7 @@ import numpy as np
 from vispy import scene
 from vispy.util import keys, transforms
 
+from model.part import Datum
 from view.picking import Picker, pick_datum
 
 SCENE_UNIT = 1e-3      # one scene unit = 1 mm
@@ -74,6 +92,10 @@ HOVER_COLOR = (0.25, 1.0, 0.35, 1.0)              # pre-highlight: green
 SELECTED_COLOR = (0.35, 0.65, 1.0, 1.0)           # selection: blue
 DATUM_HALF_MIN = 10.0       # mm: half the side of an origin plane of an empty part
 AXIS_OVERHANG = 1.2         # an axis reaches this times past the planes
+SKETCH_POINT_COLOR = (0.85, 0.88, 0.95, 1.0)      # a sketch's origin point
+SKETCH_GRID_COLOR = (0.55, 0.6, 0.7, 0.35)
+SKETCH_AXIS_COLORS = ((1.0, 0.45, 0.4, 0.9), (0.45, 0.9, 0.45, 0.9))    # the sketch's x, y
+SKETCH_GRID_LINES = 20      # about this many lines across the grid
 CLICK_PX = 4                # a press and release closer than this is a click, not a drag
 # The axes gizmo in the lower left corner: X Y Z turning with the view.
 GIZMO_LENGTH = 28           # px, one axis
@@ -103,6 +125,15 @@ def box_segments(lo, hi):
     return np.array([corners[i] for pair in pairs for i in pair], dtype=np.float32)
 
 
+def _nice_step(raw):
+    """The 1-2-5 number at or above `raw` (> 0)."""
+    power = 10.0 ** np.floor(np.log10(raw))
+    for m in (1.0, 2.0, 5.0, 10.0):
+        if m * power >= raw * (1 - 1e-9):
+            return m * power
+    return 10.0 * power
+
+
 class TrackballCamera(scene.TurntableCamera):
     """
     CAD-style free rotation (as the middle-button orbit in SolidWorks or
@@ -110,15 +141,17 @@ class TrackballCamera(scene.TurntableCamera):
     zoom and projection stay the same.
 
     Orientation: a free 4x4 rotation matrix (`_rotation`), not azimuth /
-    elevation. Left drag = virtual trackball (Shoemake): the press and the
+    elevation. Middle drag = virtual trackball (Shoemake): the press and the
     current cursor are lifted onto a sphere over the view center, the model
     turns about the axis perpendicular to both. Dragging through the middle
     tilts about a screen axis; dragging around the rim rolls about the view
     direction. The pivot is the camera center (moved by panning).
 
-    Pan: Space + left drag or Shift + left drag (`space_down` is set by the
-    view's key handlers); the motion follows the screen axes in any
-    orientation.
+    Pan: Ctrl + middle drag, or Space + left drag (`space_down` is set by
+    the view's key handlers); the motion follows the screen axes in any
+    orientation. A left drag otherwise does nothing (VisPy's own left-drag
+    rotation and Shift + left pan are swallowed); the right drag and the
+    wheel zoom as in VisPy.
 
     Matrices are VisPy's row-vector convention: camera coords
     v_cam @ A @ T(pos) @ R @ S @ T(center) = world (see
@@ -181,14 +214,15 @@ class TrackballCamera(scene.TurntableCamera):
             self._pan_start = None
 
         if event.type == "mouse_move" and event.press_event is not None \
-                and 1 in event.buttons and 2 not in event.buttons:
+                and (1 in event.buttons or 3 in event.buttons) and 2 not in event.buttons:
             modifiers = event.mouse_event.modifiers
-            if self.space_down or keys.SHIFT in modifiers:
+            if 3 in event.buttons:              # the middle button (the wheel)
+                if keys.CONTROL in modifiers:
+                    self._pan(event)
+                elif not modifiers:
+                    self._trackball(event)
+            elif self.space_down:
                 self._pan(event)
-            elif not modifiers:
-                self._trackball(event)
-            else:
-                super().viewbox_mouse_event(event)
             # Moves are left unhandled, like in the stock cameras. Note:
             # VisPy drops moves that come < 10 ms after the previous one;
             # the trackball works from the last DELIVERED position and the
@@ -252,8 +286,9 @@ class TrackballCamera(scene.TurntableCamera):
 class _DatumVisual:
     """A work plane (fill + outline), axis (line) or point (dot)."""
 
-    def __init__(self, datum, half, parent):
+    def __init__(self, datum, half, parent, color=DATUM_COLOR):
         self.datum = datum
+        self.color = color
         center = datum.origin / SCENE_UNIT
         self.fill = None
         if datum.kind == "plane":
@@ -289,7 +324,8 @@ class _DatumVisual:
 
     def set_style(self, visible, state):
         """state: None, "hover" or "selected"."""
-        color = {"hover": HOVER_COLOR, "selected": SELECTED_COLOR}.get(state, DATUM_COLOR)
+        color = {"hover": HOVER_COLOR, "selected": SELECTED_COLOR}.get(state, self.color)
+        self.shown_color = color
         shown = visible or state == "hover"
         if self.datum.kind == "point":
             self.line.set_data(self._center, size=7 if state is None else 10, edge_width=1.0,
@@ -403,6 +439,7 @@ class GeometryView:
         self._bodies = {}
         self._visible = {}
         self._datums = {}               # name -> _DatumVisual
+        self._sketch_points = {}        # sketch name -> _DatumVisual (a point)
         self._datum_visible = {}
         self._datum_list = []           # Datum, as given
         self._datum_half = DATUM_HALF_MIN
@@ -411,6 +448,11 @@ class GeometryView:
         self.on_select = None           # callback(key or None): a click selected
         self.on_hover = None            # callback(key or None): the mouse moved onto / off a datum
         self.measure = False
+        self.on_escape = None           # callback() -> True if the window used the Esc key
+        self._pick_kinds = None         # datum kinds a click may pick (None: anything)
+        self._forced = set()            # datums drawn and pickable though hidden
+        self.sketch_frame = None        # model.sketch.SketchFrame in sketch mode, else None
+        self.sketch_step = None         # grid step (mm) of the shown sketch
         self.xray = False
         self.show_edges = True
         self._bounds = (-np.ones(3), np.ones(3))
@@ -421,6 +463,14 @@ class GeometryView:
             visual.set_gl_state("translucent", depth_test=False)
             visual.order = 20 + order
             visual.visible = False
+        self.sketch_grid = scene.visuals.Line(connect="segments", color=SKETCH_GRID_COLOR, width=1.0,
+                                              parent=self.view.scene)
+        self.sketch_grid.set_gl_state("translucent", depth_test=True)
+        self.sketch_axes = scene.visuals.Line(connect="segments", width=2.0, parent=self.view.scene)
+        self.sketch_axes.set_gl_state("translucent", depth_test=True)
+        self.sketch_axes.order = self.sketch_grid.order = 4
+        self.sketch_grid.visible = self.sketch_axes.visible = False
+
         self._picker = None
         self.picks = [None, None]       # points A and B: Pick or None
         self.on_pick = None             # callback([A, B])
@@ -485,6 +535,9 @@ class GeometryView:
     def _escape(self, event):
         if event.key != keys.ESCAPE:
             return
+        if self.on_escape is not None and self.on_escape():
+            event.handled = True
+            return
         if any(self.picks):
             self.set_picks([None, None])
         elif self.selected is not None:
@@ -545,23 +598,31 @@ class GeometryView:
         return {name for name, on in self._visible.items() if on}
 
     def datum_at(self, pos):
-        """("datum", name) of the shown datum under canvas pixel `pos`, or None."""
-        shown = [d for d in self._datum_list if self._datum_visible.get(d.name)]
+        """
+        ("datum", name) of the shown datum under canvas pixel `pos`, or
+        ("feature", name) of a sketch's origin point, or None.
+        """
+        shown = [(("datum", d.name), d) for d in self._datum_list
+                 if self._datum_visible.get(d.name) or d.name in self._forced]
+        shown += [(("feature", name), visual.datum) for name, visual in self._sketch_points.items()]
+        if self._pick_kinds is not None:
+            shown = [(key, d) for key, d in shown if d.kind in self._pick_kinds]
         if not shown:
             return None
         transform = self._transform()
         behind = np.inf
         if self._picker is not None and not self.xray:
             behind = self._picker.ray_hit(transform, pos, self._visible_bodies())
-        rows = [(d.name, d.kind, d.origin / SCENE_UNIT, d.direction, d.u, d.v, self._datums[d.name].half)
-                for d in shown]
+        half = {("datum", n): v.half for n, v in self._datums.items()}
+        rows = [(key, d.kind, d.origin / SCENE_UNIT, d.direction, d.u, d.v, half.get(key, 0.0))
+                for key, d in shown]
         hit = pick_datum(transform, pos, rows, behind)
-        return ("datum", hit[0]) if hit is not None else None
+        return hit[0] if hit is not None else None
 
     def key_at(self, pos):
         """What a click at `pos` selects: a datum, else a body, else None."""
         key = self.datum_at(pos)
-        if key is None and self._picker is not None:
+        if key is None and self._picker is not None and self._pick_kinds is None:
             pick = self._picker.pick(self._transform(), pos, self._visible_bodies(), occlude=not self.xray)
             key = ("body", pick.body) if pick is not None else None
         return key
@@ -684,10 +745,24 @@ class GeometryView:
             visual.remove()
         self._datums = {d.name: _DatumVisual(d, self._datum_half, self.root) for d in self._datum_list}
 
+    def set_sketches(self, sketches):
+        """[(name, model.sketch.SketchFrame)]: the sketches whose origin points are shown."""
+        for visual in self._sketch_points.values():
+            visual.remove()
+        self._sketch_points = {
+            name: _DatumVisual(Datum(name, "point", frame.origin), 0.0, self.root, SKETCH_POINT_COLOR)
+            for name, frame in sketches}
+        for key in ("hovered", "selected"):
+            value = getattr(self, key)
+            if value is not None and value[0] == "feature" and value[1] not in self._sketch_points:
+                setattr(self, key, None)
+        self._update_bounds()
+        self._restyle()
+
     def _update_bounds(self):
         """What Reset view frames: the bodies and the datums."""
         points = [v.body.vertices / SCENE_UNIT for v in self._bodies.values() if len(v.body.vertices)]
-        for visual in self._datums.values():
+        for visual in list(self._datums.values()) + list(self._sketch_points.values()):
             d = visual.datum
             center = d.origin / SCENE_UNIT
             reach = visual.half * (np.abs(d.u) + np.abs(d.v) + np.abs(d.direction) * (d.kind == "axis"))
@@ -697,6 +772,64 @@ class GeometryView:
             self._bounds = (points.min(axis=0), points.max(axis=0))
         else:
             self._bounds = (-np.ones(3), np.ones(3))
+
+    def set_pick_filter(self, kinds=None, forced=()):
+        """Only datums of `kinds` hover and click (None: anything); `forced` ones are shown meanwhile."""
+        self._pick_kinds = None if kinds is None else set(kinds)
+        self._forced = set(forced)
+        self.hovered = None
+        self._restyle()
+
+    # =====================================================
+    # Sketch mode
+    # =====================================================
+
+    def set_sketch(self, frame):
+        """Shows the grid and axes of a sketch (model.sketch.SketchFrame), or hides them (None)."""
+        self.sketch_frame = frame
+        self.sketch_grid.visible = self.sketch_axes.visible = frame is not None
+        if frame is None:
+            self.sketch_step = None
+            self.canvas.update()
+            return
+        lo, hi = self._bounds
+        half = 0.5 * float(np.max(hi - lo)) if np.all(np.isfinite([lo, hi])) else DATUM_HALF_MIN
+        half = max(half, DATUM_HALF_MIN)
+        step = _nice_step(2 * half / SKETCH_GRID_LINES)
+        n = int(np.ceil(half / step))
+        reach = n * step
+        origin = frame.origin / SCENE_UNIT
+        segments = []
+        for k in range(-n, n + 1):
+            for along, across in ((frame.u, frame.v), (frame.v, frame.u)):
+                base = origin + k * step * across
+                segments += [base - reach * along, base + reach * along]
+        self.sketch_grid.set_data(pos=np.array(segments, np.float32))
+        axes = [origin, origin + reach * frame.u, origin, origin + reach * frame.v]
+        colors = [SKETCH_AXIS_COLORS[0]] * 2 + [SKETCH_AXIS_COLORS[1]] * 2
+        self.sketch_axes.set_data(pos=np.array(axes, np.float32), color=np.array(colors, np.float32))
+        self.sketch_step = step
+        self.canvas.update()
+
+    def look_at(self, toward, up):
+        """
+        The camera looks along -toward (toward points at the viewer) with `up`
+        up the screen, framed as Reset view (Inventor's Look At).
+        VisPy's chain is cam @ A @ R = world (row vectors, see TrackballCamera):
+        the camera's right, up and back axes must land on right, up, toward.
+        """
+        toward = np.asarray(toward, float) / np.linalg.norm(toward)
+        up = np.asarray(up, float) - np.dot(up, toward) * toward
+        up /= np.linalg.norm(up)
+        right = np.cross(up, toward)
+        self.reset_view()
+        camera = self.view.camera
+        up_cam, forward, right_cam = camera._get_dim_vectors()
+        a_map = np.array([right_cam, up_cam, -forward], dtype=float)
+        rotation = np.eye(4)
+        rotation[:3, :3] = a_map.T @ np.array([right, up, toward])
+        camera._rotation = rotation
+        camera.view_changed()
 
     def set_datum_visible(self, name, visible):
         self._datum_visible[name] = bool(visible)
@@ -791,5 +924,9 @@ class GeometryView:
         for name, visual in self._datums.items():
             key = ("datum", name)
             state = "hover" if key == self.hovered else "selected" if key == self.selected else None
-            visual.set_style(self._datum_visible.get(name, True), state)
+            visual.set_style(self._datum_visible.get(name, True) or name in self._forced, state)
+        for name, visual in self._sketch_points.items():
+            key = ("feature", name)
+            state = "hover" if key == self.hovered else "selected" if key == self.selected else None
+            visual.set_style(True, state)
         self.canvas.update()

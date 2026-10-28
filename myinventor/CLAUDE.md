@@ -40,7 +40,10 @@ Compatibility with Inventor or any other CAD is not a goal.
 
 - Run with `../.venv/Scripts/python.exe main.py [name.part.toml] [--screenshot out.png]`.
   Checks (run all after a change): `checks/check_document.py` (model, no
-  window), `checks/check_view.py`, `checks/check_window_files.py`.
+  window), `checks/check_view.py`, `checks/check_window_files.py`,
+  `checks/check_sketch.py`.
+- Feature types live in their own modules (`model/sketch.py`) and are
+  registered by importing them in `model/part.py`.
 - `model/`: the document, numpy + stdlib only (no OCP, no Qt); see
   DESIGN.md "Document". `expressions.py` (safe formulas), `features.py`
   (Feature base + registry), `part.py`, `part_file.py` (TOML),
@@ -55,8 +58,12 @@ Compatibility with Inventor or any other CAD is not a goal.
   sys.path.
 - Settings: `app_settings.py`, `%APPDATA%\myinventor\settings.json`, or
   `MYINVENTOR_SETTINGS` (tests must set it).
-- QTest.mouseMove carries no pressed button in Qt 6: a synthetic drag
-  sends `QMouseEvent`s itself (`checks/check_view.py`).
+- QTest.mouseMove carries no pressed button in Qt 6 (and a plain hover
+  does not reach the canvas): synthetic moves send `QMouseEvent`s
+  themselves (`checks/check_view.py`).
+- Navigation differs from customcst: middle drag rotates, Ctrl + middle
+  pans (Space + left too), the wheel / right drag zooms; the left button
+  only selects (and will draw in sketches).
 
 ## Reuse from customcst (read the code, copy what fits)
 
