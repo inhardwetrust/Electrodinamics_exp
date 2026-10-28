@@ -346,7 +346,16 @@ model, in a JSON file: `%APPDATA%\customcst\settings.json`, or
   - "Custom" is a reserved name.
 - UI: the left dock has two tabs.
   - "Project": the tree, with a Material row per dielectric (double click
-    picks a preset).
+    picks a preset). Its levels:
+    - Simulation: settings, then Monitors (what a run collects: Ports (S)
+      for now, the far field next) and Results (one row per run);
+    - Mesh: settings, then the mesh statistics;
+    - Model: Z0 path, Holes, Bodies (each body with its type rows), last
+      because it is the long one.
+
+    Only the window groups the rows: the project TOML keeps its sections.
+    Rows carry (role, owner, param); `_tree_item(role, owner)` finds one at
+    any level, `_body_row(item)` the body a row belongs to.
   - "Materials": the library table (values, source: built-in / built-in,
     edited / model, used by). Double click a cell to edit a value or a
     name. Buttons: New, Duplicate, Delete, Reset built-in.
@@ -518,7 +527,7 @@ capacitor (its metal joins the ground elsewhere: no signal there).
   `points = [[u, v], ...]` (mm, the other two axes in order). One path per
   model. A model without it gets the default on open: the up axis, the top
   of the first body in the tree (F.Cu on a KiCad import), no points; the
-  user corrects the height in the tree ("Z0 path" after Mesh). It is a
+  user corrects the height in the tree (Model > Z0 path). It is a
   display tool like `[view]`: not in the results' fingerprint.
 - Toolbar (second row, with the plane and Z₀) > Z₀ path switches the 3D
   view to path mode (the line in orange, the first point in yellow, the

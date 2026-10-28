@@ -55,6 +55,8 @@ AXES = "xyz"
 MESH_PROGRESS_DELAY = 0.3       # s: the mesh progress bar appears after this
 REMOTE_POLL = 15000             # ms between status reads of a run going on the server
 SLIDER_STEPS = 1000             # plane positions over the model when it is not on the grid lines
+TREE_SECTIONS = ("simulation", "mesh")  # the settings sections, in the tree's order (before Model)
+TREE_GROUPS = ("model", "bodies", "section", "monitors", "results")   # rows _tree_item looks into
 
 
 class _Cancelled(Exception):
@@ -79,6 +81,20 @@ def _fmt_value(value):
     if value == "all":                      # the excite setting
         return "all ports"
     return value if isinstance(value, str) else f"{value:.6g}"
+
+
+def _group_item(parent, text, role, tooltip="", owner=None):
+    """A bold tree row that holds others (Model, Bodies, Holes, Mesh, Monitors...)."""
+    item = QTreeWidgetItem([text])
+    item.setData(0, Qt.UserRole, (role, owner, None))   # before it joins the tree (itemChanged)
+    font = item.font(0)
+    font.setBold(True)
+    item.setFont(0, font)
+    if tooltip:
+        item.setToolTip(0, tooltip)
+    if parent is not None:
+        parent.addChild(item)
+    return item
 
 
 class MainWindow(QMainWindow):
@@ -883,8 +899,10 @@ class MainWindow(QMainWindow):
                 "section": self.section_check, "flip": self.section_flip}
 
     def _body_items(self):
-        items = (self.tree.topLevelItem(i) for i in range(self.tree.topLevelItemCount()))
-        return [item for item in items if item.data(0, Qt.UserRole)[0] == "body"]
+        bodies = self._tree_item("bodies", None)
+        if bodies is None:
+            return []
+        return [bodies.child(i) for i in range(bodies.childCount())]
 
     def _view_state(self):
         state = {key: switch.isChecked() for key, switch in self._view_switches().items()}
@@ -1490,24 +1508,19 @@ class MainWindow(QMainWindow):
 
     def _fill_z0path(self):
         """The Z0 path section of the tree: its plane, the section width and the points (rebuilt in place)."""
-        old = self._top_item("z0path", None)
+        model = self._tree_item("model", None)
+        old = self._tree_item("z0path", None)
+        index = 0                                   # the first row of Model
         if old is not None:
-            index = self.tree.indexOfTopLevelItem(old)
-            self.tree.takeTopLevelItem(index)
-        else:
-            mesh = self._top_item("section", "mesh")
-            index = self.tree.indexOfTopLevelItem(mesh) + 1 if mesh is not None else 0
+            index = model.indexOfChild(old)
+            model.takeChild(index)
         if self.project is None or self.project.z0path is None:
             return
         self.tree.blockSignals(True)
         z0path = self.project.z0path
-        section = QTreeWidgetItem(["Z0 path"])
-        section.setData(0, Qt.UserRole, ("z0path", None, None))
-        section.setToolTip(0, "The path of the Z0 profile along it: draw it with Z₀ path on the toolbar")
-        font = section.font(0)
-        font.setBold(True)
-        section.setFont(0, font)
-        self.tree.insertTopLevelItem(index, section)
+        section = _group_item(None, "Z0 path", "z0path",
+                              "The path of the Z0 profile along it: draw it with Z₀ path on the toolbar")
+        model.insertChild(index, section)
         for param in Z0PATH_PARAMS:
             value = z0path[param.name]
             row = QTreeWidgetItem(section, [param.label, _fmt_value(value), param.unit])
@@ -1547,13 +1560,18 @@ class MainWindow(QMainWindow):
 
     # =====================================================
     # Tree
-    #   section row       Simulation / Mesh
-    #     setting row     "f max" | 5 (editable) | GHz
-    #     info rows       mesh statistics
-    #   body row          name (visibility checkbox) | kind | size
-    #     type row        "Type" | Dielectric
-    #       param row     "εr" | 4.3 (editable) | unit
-    #       note row      read-only explanation
+    #   Simulation        section row: settings, then
+    #     Monitors        what a run collects (the ports' S for now)
+    #     Results         one row per run
+    #   Mesh              section row: settings, then mesh statistics
+    #   Model             what the STEP is and how it is read (last: long)
+    #     Z0 path         the path of the Z0 profile
+    #     Holes           open through holes, grouped by diameter
+    #     Bodies
+    #       body row      name (visibility checkbox) | kind | size
+    #         type row    "Type" | Dielectric
+    #           param row "εr" | 4.3 (editable) | unit
+    #           note row  read-only explanation
     # Every item carries (role, owner, param) in UserRole; owner is a body
     # name for body rows and a section name for section rows.
     # =====================================================
@@ -1563,28 +1581,32 @@ class MainWindow(QMainWindow):
         self.tree.clear()
 
         if self.project is not None:
-            for name, section in SECTIONS.items():
-                item = QTreeWidgetItem([section.label])
-                item.setData(0, Qt.UserRole, ("section", name, None))
-                font = item.font(0)
-                font.setBold(True)
-                item.setFont(0, font)
+            for name in TREE_SECTIONS:
+                item = _group_item(None, SECTIONS[name].label, "section", owner=name)
                 self.tree.addTopLevelItem(item)
                 self._fill_section(item)
 
-        self.tree.blockSignals(False)
-        self._fill_z0path()
         self.tree.blockSignals(True)
-        self._fill_holes()
-
+        model = _group_item(None, "Model", "model",
+                            "The STEP's bodies and their types, its through holes, the Z0 path")
+        self.tree.addTopLevelItem(model)
+        bodies = _group_item(model, "Bodies", "bodies", "The STEP's bodies: right click one to set its type")
+        bodies.setText(1, f"{len(self.geometry.bodies)}")
         for body in self.geometry.bodies:
             lo, hi = body.bounds
             item = QTreeWidgetItem([body.name, body.kind, _fmt_mm(hi - lo)])
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setCheckState(0, Qt.Checked)
             item.setData(0, Qt.UserRole, ("body", body.name, None))
-            self.tree.addTopLevelItem(item)
+            bodies.addChild(item)
             self._fill_type(item)
+        model.setExpanded(True)
+        bodies.setExpanded(True)
+
+        self.tree.blockSignals(False)
+        self._fill_z0path()
+        self.tree.blockSignals(True)
+        self._fill_holes()
 
         self.tree.blockSignals(False)
         self._resize_columns()
@@ -1595,25 +1617,23 @@ class MainWindow(QMainWindow):
         The Holes section: open through holes, grouped by diameter, with their
         via assignment. Rebuilt in place after an edit (expanded groups kept).
         """
-        old = self._top_item("holes", None)
-        index, expanded = self.tree.topLevelItemCount(), set()
+        model = self._tree_item("model", None)
+        old = self._tree_item("holes", None)
+        index, expanded = model.indexOfChild(self._tree_item("bodies", None)), set()   # before Bodies
         if old is not None:
-            index = self.tree.indexOfTopLevelItem(old)
+            index = model.indexOfChild(old)
             expanded = {old.child(i).data(0, Qt.UserRole)[1] for i in range(old.childCount())
                         if old.child(i).isExpanded()}
-            self.tree.takeTopLevelItem(index)
+            model.takeChild(index)
         if not self.holes:
             return
 
         n_vias = len(self.project.vias(self.holes)) if self.project else 0
-        section = QTreeWidgetItem(["Holes", f"{len(self.holes)} through, {n_vias} via", ""])
-        section.setData(0, Qt.UserRole, ("holes", None, None))
-        section.setToolTip(0, "Open through holes found in the STEP. Select to highlight them, "
+        section = _group_item(None, "Holes", "holes",
+                              "Open through holes found in the STEP. Select to highlight them, "
                               "right click a diameter or a hole to make it a via.")
-        font = section.font(0)
-        font.setBold(True)
-        section.setFont(0, font)
-        self.tree.insertTopLevelItem(index, section)
+        section.setText(1, f"{len(self.holes)} through, {n_vias} via")
+        model.insertChild(index, section)
 
         gold = QColor("#c8961e")
         for diameter, holes in group_by_diameter(self.holes).items():
@@ -1728,16 +1748,31 @@ class MainWindow(QMainWindow):
         if name == "mesh":
             self._mesh_rows(item)
         if name == "simulation":
-            results = QTreeWidgetItem(item, ["Results", "", ""])
-            results.setData(0, Qt.UserRole, ("results", None, None))
-            font = results.font(0)
-            font.setBold(True)
-            results.setFont(0, font)
+            _group_item(item, "Monitors", "monitors",
+                        "What a run collects besides the field itself")
+            _group_item(item, "Results", "results")
 
         item.setExpanded(True)
         self.tree.blockSignals(False)
         if name == "simulation":
+            self._fill_monitors()
             self._fill_results()
+
+    def _fill_monitors(self):
+        """Simulation > Monitors: what every run records (the ports' S for now)."""
+        item = self._tree_item("monitors", None)
+        if item is None:
+            return
+        self.tree.blockSignals(True)
+        item.takeChildren()
+        ports = self._port_list()
+        row = QTreeWidgetItem(item, ["Ports (S)", ", ".join(ports) if ports else "no ports", ""])
+        row.setData(0, Qt.UserRole, ("info", "monitors", None))
+        row.setForeground(1, QColor("#2a2" if ports else "#c80"))
+        row.setToolTip(0, "Every run records the voltage and current at each port: the S-parameters "
+                          "(and the TDR from them)")
+        item.setExpanded(True)
+        self.tree.blockSignals(False)
 
     def _z0_note(self):
         """'' or a short note on how low Z0 of narrow lines comes out at this mesh."""
@@ -2330,13 +2365,7 @@ class MainWindow(QMainWindow):
                 f"since this run (▶ Simulate to update)", "#c80")
 
     def _results_item(self):
-        section = self._top_item("section", "simulation")
-        if section is None:
-            return None
-        for i in range(section.childCount()):
-            if section.child(i).data(0, Qt.UserRole)[0] == "results":
-                return section.child(i)
-        return None
+        return self._tree_item("results", None)
 
     def _fill_results(self):
         """Project > Simulation > Results: one row per run (tick = shown), its parameters inside."""
@@ -2473,12 +2502,26 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(f"rename: {error}", 6000)
         QTimer.singleShot(0, self._show_runs)
 
-    def _top_item(self, role, owner):
-        for i in range(self.tree.topLevelItemCount()):
-            item = self.tree.topLevelItem(i)
-            if item.data(0, Qt.UserRole)[:2] == (role, owner):
+    def _tree_item(self, role, owner):
+        """
+        A row by its (role, owner): a top-level section or group, or a row in
+        a group (Model, Bodies, Simulation's Monitors and Results).
+        """
+        rows = [self.tree.topLevelItem(i) for i in range(self.tree.topLevelItemCount())]
+        while rows:
+            item = rows.pop(0)
+            data = item.data(0, Qt.UserRole)
+            if data[:2] == (role, owner):
                 return item
+            if data[0] in TREE_GROUPS:
+                rows += [item.child(i) for i in range(item.childCount())]
         return None
+
+    def _body_row(self, item):
+        """The body row a tree row belongs to (itself or an ancestor), or None."""
+        while item is not None and item.data(0, Qt.UserRole)[0] != "body":
+            item = item.parent()
+        return item
 
     def _after_edit(self):
         """Save, recompute ports and mesh, refresh the dependent tree rows."""
@@ -2489,9 +2532,10 @@ class MainWindow(QMainWindow):
     def _refresh_rows(self):
         """The tree rows that depend on the ports and the mesh."""
         for body in self.geometry.bodies:
-            self._fill_type(self._top_item("body", body.name))
-        self._fill_section(self._top_item("section", "mesh"))
+            self._fill_type(self._tree_item("body", body.name))
+        self._fill_section(self._tree_item("section", "mesh"))
         self._fill_holes()
+        self._fill_monitors()                   # the ports may have changed
         self._resize_columns()
         self._show_summary()
         self._fill_materials()
@@ -2531,10 +2575,7 @@ class MainWindow(QMainWindow):
         if role == "pending":
             self._pending_menu(item, name)
             return
-        top = item
-        while top.parent() is not None:
-            top = top.parent()
-        if top.data(0, Qt.UserRole)[0] != "body":
+        if self._body_row(item) is None:
             return
 
         body = self.geometry[name]
@@ -2625,7 +2666,7 @@ class MainWindow(QMainWindow):
 
     def _set_excite(self, value):
         self.project.set_setting("simulation", "excite", value)
-        self._fill_section(self._top_item("section", "simulation"))
+        self._fill_section(self._tree_item("section", "simulation"))
         self._after_edit()
 
     def _material_menu(self, item, body_name):
@@ -2759,14 +2800,11 @@ class MainWindow(QMainWindow):
             self._show_holes_info(holes)
             return
 
-        top = item
-        while top.parent() is not None:
-            top = top.parent()
-        role, name, _ = top.data(0, Qt.UserRole)
-
-        if role != "body":
+        body_row = self._body_row(item)
+        if body_row is None:
             self.view.select(None)
             return
+        name = body_row.data(0, Qt.UserRole)[1]
 
         self.view.select(name)
         body = self.geometry[name]
