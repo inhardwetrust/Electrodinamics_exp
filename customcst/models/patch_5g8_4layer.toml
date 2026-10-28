@@ -16,7 +16,7 @@ min_step = 0.0   # mm
 slanted = true
 
 [farfield]
-frequencies = "5.6, 5.7, 5.8, 5.9, 6"   # GHz
+frequencies = "5.6, 5.7, 5.757, 5.8, 5.9"   # GHz
 
 [bodies.dielectric]
 type = "dielectric"
@@ -47,6 +47,25 @@ type = "pec"
 
 [view]
 up = "z"
+edges = true
+xray = false
+ref_planes = true
+mesh = false
+materials = false
+section = false
+flip = false
+plane = "z"
+at = 0.75   # mm
+hidden = []
+camera_center = [0.0, 0.0, 0.75]   # mm
+camera_distance = 70.7379   # mm
+camera_rotation = [-0.493835, -0.851481, 0.176369, 0.125415, -0.270451, -0.95453, 0.860464, -0.449261, 0.240346]
+
+[z0path]
+axis = "z"
+at = 0.225   # mm
+half_width = 2.0   # mm
+points = []   # mm
 
 [materials.Default]
 eps_r = 1.0

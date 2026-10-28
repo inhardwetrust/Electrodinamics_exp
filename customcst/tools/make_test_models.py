@@ -204,10 +204,13 @@ def patch_5g8_dual_project(path):
 # vias at 1.5 / 2.0 / 2.5 mm -> 11.4 and 2.0 (S11 -23.5 dB at 5.76 GHz);
 # the meander 6.3 / 7.1 / 7.9 mm tilted the beam 3 degrees to -x, 3 to -x,
 # 1 to +x -> 7.7 for 180 degrees, and L 11.25 to bring S11 back to 5.8.
-PATCH_5G8_4L = {"w": 15.9, "l": 11.25, "side": 40.0, "via_x": 2.0, "via_r": 0.15, "antipad": 0.45,
+# The final run (40 / 8) of that resonated at 5.862 GHz (the fine mesh
+# moves it up): retuned to the carrier, 5.757 GHz, the lengths scaled by
+# 5.862 / 5.757 = 1.018: L 11.46, the meander 7.85, the quarter wave 7.13.
+PATCH_5G8_4L = {"w": 15.9, "l": 11.46, "side": 40.0, "via_x": 2.0, "via_r": 0.15, "antipad": 0.45,
                 "h_feed": 0.21, "t_ground": 0.015, "h_patch": 1.275, "t": 0.035,
-                "w50": 0.41, "w35": 0.74, "quarter": 7.0, "tee_y": -9.0,
-                "meander": 7.7, "meander_y": (-3.0, -6.0)}
+                "w50": 0.41, "w35": 0.74, "quarter": 7.13, "tee_y": -9.0,
+                "meander": 7.85, "meander_y": (-3.0, -6.0)}
 
 
 def patch_5g8_4layer():
@@ -242,7 +245,7 @@ def patch_5g8_4layer():
     ]
 
 
-def patch_5g8_4layer_project(path):
+def patch_5g8_4layer_project(path, farfield="5.6, 5.7, 5.757, 5.8, 5.9"):
     """patch_5g8_4layer.toml: as patch_5g8's (types, FR4 at 5.8 GHz, band, far field)."""
     project = Project(path)
     for body in read_step(path).bodies:
@@ -256,7 +259,7 @@ def patch_5g8_4layer_project(path):
     project.set_setting("simulation", "padding", 26.0)            # lambda / 2: the far-field box away from the board
     project.set_setting("mesh", "cells_per_wavelength", 40.0)
     project.set_setting("mesh", "cells_per_feature", 8.0)
-    project.set_setting("farfield", "frequencies", "5.6, 5.7, 5.8, 5.9, 6.0")
+    project.set_setting("farfield", "frequencies", farfield)
     project.save()
 
 
