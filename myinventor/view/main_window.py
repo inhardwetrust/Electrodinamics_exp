@@ -41,7 +41,8 @@
 #   Line draws polylines (view/sketch_tools.py: a click per point, a preview
 #   of the next line; Esc ends the chain, a second Esc the tool); every line
 #   is one undo step; Sketch > Point puts explicit points (a dot in a
-#   gapped cross, as Inventor draws them);
+#   gapped cross, as Inventor draws them); Sketch > Circle: the center, then
+#   the radius;
 # - several sketch entities can be selected (Shift + click, a box: see
 #   view/geometry_view.py); a click on a point takes the points at the same
 #   place with it;
@@ -78,7 +79,10 @@ from model.part import PartError
 from model.part_file import EXTENSION, PartFileError
 from model.rebuild import rebuild
 from model.sketch import Sketch
-from view.sketch_tools import ALIGN_PX, PointTool, PolylineTool, align, fmt_mm
+from view.sketch_tools import (
+    ALIGN_PX, CURVE_SNAP_PX, SNAP_PX, CircleTool, PointTool, PolylineTool, align, curve_snap, fmt_mm,
+    radius_snap,
+)
 from view.geometry_view import GeometryView
 from view.parameters_panel import COMMENT, FORMULA, NAME, ParametersPanel
 from view.ribbon import Ribbon
@@ -92,6 +96,7 @@ MEASURE_HINT = "Measure: click: point A, Shift + click: point B, Esc: clear the 
 LINE_HINT = ("Line: click points; click the first point to close, the last one to stop · "
              "Esc: end the chain, Esc again: leave Line")
 POINT_HINT = "Point: click to put a point · Esc: leave Point"
+CIRCLE_HINT = "Circle: click the center, then a point on the circle · Esc: drop the center, again: leave Circle"
 PICK_PLANE_HINT = "Start 2D Sketch: select a plane (in 3D or in the browser), Esc: cancel"
 ERROR_COLOR = QColor(200, 30, 30)
 EDITING_ROW = QColor(0, 120, 215, 45)        # the sketch being edited
@@ -161,7 +166,8 @@ class MainWindow(QMainWindow):
         self.view.on_escape = self._escape
         self.view.on_delete = self.delete_selected
         self.view.on_drag = self._drag_entity
-        self._dragged = None        # {point name: (x0, y0) mm, None where a formula} while dragging
+        self._dragged = None        # while dragging: {"circle": name or None, "radius": r0 or None,
+        #                              "points": {name: (x0, y0) mm, None where a formula}}
         self.setCentralWidget(self.view.canvas.native)
         self.view_buttons = ViewButtons(self.view)        # standard views over the 3D view
 
@@ -240,6 +246,11 @@ class MainWindow(QMainWindow):
         self.point_action = self._action("Point", self._set_point_tool, checkable=True,
                                          tip="Put points: a click per point; Esc leaves the tool")
         group.add_action(self.point_action)
+        self.circle_action = self._action("Circle", self._set_circle_tool, checkable=True,
+                                          tip="Circles: click the center, then a point on the circle; "
+                                              "Esc drops the center, again leaves the tool")
+        group.add_action(self.circle_action)
+        self.tool_actions = (self.line_action, self.point_action, self.circle_action)
         group = sketch.add_group("View")
         group.add_action(self._action("Look At", self._look_at_sketch, tip="Look at the sketch's plane again"))
         group = sketch.add_group("Exit")
@@ -533,8 +544,8 @@ class MainWindow(QMainWindow):
         if built is None:
             self.show_error(f"{name} cannot be edited: {self.result.feature_errors.get(name, 'not built')}")
             return
-        self.line_action.setChecked(False)
-        self.point_action.setChecked(False)
+        for action in self.tool_actions:
+            action.setChecked(False)
         self.editing = name
         self.view.select(None)
         self.view.set_sketch(built.frame, name)
@@ -548,8 +559,8 @@ class MainWindow(QMainWindow):
     def finish_sketch(self, refresh=True):
         if self.editing is None:
             return
-        self.line_action.setChecked(False)
-        self.point_action.setChecked(False)
+        for action in self.tool_actions:
+            action.setChecked(False)
         self.editing = None
         self.view.set_sketch(None)
         self.ribbon.set_tab_enabled("Sketch", False)
@@ -574,10 +585,15 @@ class MainWindow(QMainWindow):
             self.view, self.editing, self._edited_result, self._add_point,
             on_exit=lambda: self.point_action.setChecked(False)))
 
+    def _set_circle_tool(self, on):
+        self._set_tool(on, self.circle_action, lambda: CircleTool(
+            self.view, self.editing, self._edited_result, self._add_circle,
+            on_exit=lambda: self.circle_action.setChecked(False)))
+
     def _set_tool(self, on, action, make):
-        """One drawing tool at a time: turning one on turns the other off."""
+        """One drawing tool at a time: turning one on turns the others off."""
         if on and self.editing is not None:
-            for other in (self.line_action, self.point_action):
+            for other in self.tool_actions:
                 if other is not action and other.isChecked():
                     other.blockSignals(True)
                     other.setChecked(False)
@@ -585,9 +601,20 @@ class MainWindow(QMainWindow):
             self.view.select(None)
             self._on_view_select(None)
             self.view.set_tool(make())
-        elif not any(a.isChecked() for a in (self.line_action, self.point_action)):
+        elif not any(a.isChecked() for a in self.tool_actions):
             self.view.set_tool(None)
         self._on_pick(self.view.picks)
+
+    def _add_circle(self, center, radius):
+        """The Circle tool's callback: the center (a new point, or an existing one) and the circle; one undo step."""
+        sketch = self.part.feature(self.editing)
+        if center[0] == "point":
+            name = center[1]
+        else:
+            name = sketch.add_point(fmt_mm(center[1][0]), fmt_mm(center[1][1]))
+        circle = sketch.add_circle(name, fmt_mm(radius))
+        self._commit()
+        return circle
 
     def _add_point(self, xy):
         """The Point tool's callback: an explicit point at (x, y) mm; one undo step."""
@@ -616,52 +643,78 @@ class MainWindow(QMainWindow):
 
     def _drag_entity(self, keys, moved, phase):
         """
-        A left drag on sketch points and lines (GeometryView.on_drag, keys:
-        the selected entities): every point of them follows by `moved` (mm)
-        from where it was; a coordinate that is a formula stays (the
-        parametric model wins). When the points all sit at one place (one
-        point, or a coincident group) they take the alignment hints. One undo
-        step on release; Esc puts everything back.
+        A left drag on sketch entities (GeometryView.on_drag, keys: the
+        selected ones), as in Inventor:
+        - one circle alone, dragged by its rim: its radius follows the cursor
+          (the distance from the center), or goes through a point that comes
+          within SNAP_PX of the circle (radius_snap; a green dot marks it);
+        - else every point of them (a line's ends, a circle's center) follows
+          by `moved` (mm) from where it was; when they all sit at one place
+          (one point, a coincident group) they land on a line or circle
+          nearby (not their own), else take the alignment hints.
+        A coordinate or radius that is a formula stays (the parametric model
+        wins). One undo step on release; Esc puts everything back.
         """
         sketch_name = keys[0][1] if keys else self.editing
         if phase == "start":
             sketch = self.part.feature(sketch_name)
-            names = []
-            for _, _, name in keys:
-                if any(p.name == name for p in sketch.points):
-                    names.append(name)
-                else:
-                    line = sketch.line(name)
-                    names += [line.start, line.end]
-            self._dragged = {n: (_number(sketch.point(n).x), _number(sketch.point(n).y))
-                             for n in dict.fromkeys(names)}
+            names = [k[2] for k in keys]
+            if len(names) == 1 and sketch.kind_of(names[0]) == "circle":
+                circle = sketch.circle(names[0])
+                self._dragged = {"circle": circle.name, "radius": _number(circle.radius), "points": {}}
+                return
+            points = [p for n in names for p in sketch.points_of(n)]
+            self._dragged = {"circle": None, "points": {
+                n: (_number(sketch.point(n).x), _number(sketch.point(n).y)) for n in dict.fromkeys(points)}}
             return
         if self._dragged is None:
             return
         if phase == "move":
             sketch = self.part.feature(sketch_name)
             before = self.result.outputs[sketch_name]
-            group = list(self._dragged)
-            first = group[0]
-            offset, guides = np.asarray(moved, float), []
-            if all(np.allclose(before.points[n], before.points[first], atol=1e-6) for n in group):
-                x0, y0 = self._dragged[first]
-                fixed = (x0 is None, y0 is None)
-                target = np.where(fixed, before.points[first], np.array([x0 or 0.0, y0 or 0.0]) + offset)
-                aligned, guides = align(target, before.points, ALIGN_PX * self.view._mm_per_px(),
-                                        exclude=set(group), fixed=fixed)
-                offset = offset + (aligned - target)
-            for n, (x0, y0) in self._dragged.items():
-                point = sketch.point(n)
-                if x0 is not None:
-                    point.x = fmt_mm(x0 + offset[0])
-                if y0 is not None:
-                    point.y = fmt_mm(y0 + offset[1])
+            guides, spot = [], None
+            if self._dragged["circle"] is not None:
+                circle = sketch.circle(self._dragged["circle"])
+                if self._dragged["radius"] is not None:
+                    cursor = self.view.drag_start + moved
+                    center = before.points[circle.center]
+                    radius = float(np.linalg.norm(cursor - center))
+                    others = {n: p for n, p in before.points.items() if not np.allclose(p, center, atol=1e-6)}
+                    through = radius_snap(center, radius, others, SNAP_PX * self.view._mm_per_px())
+                    if through is not None:     # the circle through a point nearby
+                        radius, spot = through
+                    circle.radius = fmt_mm(max(radius, 1e-3))
+            else:
+                dragged = self._dragged["points"]
+                group = list(dragged)
+                first = group[0]
+                offset = np.asarray(moved, float)
+                if all(np.allclose(before.points[n], before.points[first], atol=1e-6) for n in group):
+                    x0, y0 = dragged[first]
+                    fixed = (x0 is None, y0 is None)
+                    target = np.where(fixed, before.points[first], np.array([x0 or 0.0, y0 or 0.0]) + offset)
+                    mine = {e.name for e in before.lines if {e.start, e.end} & set(group)}                         | {c.name for c in before.circles if c.center in group}
+                    on_curve = None if any(fixed) else curve_snap(
+                        target, before, CURVE_SNAP_PX * self.view._mm_per_px(), exclude=mine)
+                    if on_curve is not None:    # onto another line or circle
+                        aligned = on_curve[0]
+                    else:
+                        aligned, guides = align(target, before.points, ALIGN_PX * self.view._mm_per_px(),
+                                                exclude=set(group), fixed=fixed)
+                    offset = offset + (aligned - target)
+                for n, (x0, y0) in dragged.items():
+                    point = sketch.point(n)
+                    if x0 is not None:
+                        point.x = fmt_mm(x0 + offset[0])
+                    if y0 is not None:
+                        point.y = fmt_mm(y0 + offset[1])
             self.show_result(rebuild(self.part))
             self.view.set_guides(before.frame, guides)
+            self.view.set_snap_marker(before.frame, spot)
             self._say_fixed()
             return
         self.view.set_guides(None, [])
+        self.view.set_snap_marker(None, None)
         if phase == "end":
             self._commit()
             self._say_fixed()
@@ -671,7 +724,10 @@ class MainWindow(QMainWindow):
         self._dragged = None
 
     def _say_fixed(self):
-        fixed = [f"{n}.{axis}" for n, xy in self._dragged.items() for axis, v in zip("xy", xy) if v is None]
+        dragged = self._dragged
+        fixed = [f"{n}.{axis}" for n, xy in dragged["points"].items() for axis, v in zip("xy", xy) if v is None]
+        if dragged["circle"] is not None and dragged["radius"] is None:
+            fixed.append(f"{dragged['circle']}.radius")
         if fixed:
             self.statusBar().showMessage(f"{', '.join(fixed)}: a formula, it stays", 5000)
 
@@ -684,8 +740,11 @@ class MainWindow(QMainWindow):
         if entities:
             for _, sketch_name, name in entities:
                 sketch = self.part.feature(sketch_name)
-                if any(p.name == name for p in sketch.points) or any(line.name == name for line in sketch.lines):
-                    sketch.delete(name)         # an earlier delete may have taken it already
+                try:
+                    sketch.kind_of(name)
+                except KeyError:
+                    continue                    # an earlier delete took it already
+                sketch.delete(name)
             self.view.select(None)
             self._commit()
             self._show_info(None)
@@ -903,6 +962,11 @@ class MainWindow(QMainWindow):
             p = sketch.point(name)
             kind = "sketch point" if p.explicit else "point"
             return f"<b>{name}</b> ({kind} of {sketch_name})<br>x = {p.x}, y = {p.y} mm<br>{where(name)}"
+        if sketch.kind_of(name) == "circle":
+            circle = sketch.circle(name)
+            radius = self.result.outputs[sketch_name].radii[name]
+            return (f"<b>{name}</b> (circle of {sketch_name})<br>center {where(circle.center)}"
+                    f"<br>radius = {circle.radius} mm ({radius:.6g})<br>diameter {2 * radius:.6g} mm")
         line = sketch.line(name)
         length = float(((points[line.end] - points[line.start]) ** 2).sum() ** 0.5)
         return (f"<b>{name}</b> (line of {sketch_name})<br>from {where(line.start)}<br>to {where(line.end)}"
@@ -956,8 +1020,9 @@ class MainWindow(QMainWindow):
         hint = MEASURE_HINT if self.view.measure else PICK_PLANE_HINT if self.picking_plane else HINT
         if self.editing is not None and not self.view.measure:
             tool = self.view.tool
-            hint = f"{self.editing}: " + (LINE_HINT if isinstance(tool, PolylineTool) else POINT_HINT
-                                          if tool is not None else "Finish Sketch to leave it · " + HINT)
+            hints = {PolylineTool: LINE_HINT, PointTool: POINT_HINT, CircleTool: CIRCLE_HINT}
+            hint = f"{self.editing}: " + (hints[type(tool)] if tool is not None
+                                          else "Finish Sketch to leave it · " + HINT)
         self.statusBar().showMessage("   ".join(parts) if parts else hint)
 
     # =====================================================

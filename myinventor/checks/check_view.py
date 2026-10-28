@@ -315,6 +315,15 @@ def check_window():
     moved = np.linalg.norm(np.subtract(after["center"], before["center"]))
     check("Space + left drag pans (a touchpad)", abs(moved - expected) < 1e-6 * expected
           and not camera.space_down, f"center moved {moved:.6g} mm")
+    errors_before = len(VISPY_ERRORS)
+    before = camera.state()
+    QTest.keyClick(native, Qt.Key_Backspace)                # VisPy's camera reset used to crash here
+    settle()
+    check("Backspace: no error, the camera stays", len(VISPY_ERRORS) == errors_before
+          and unchanged(before, camera.state()), f"{VISPY_ERRORS[errors_before:][:1]}")
+    view.reset_view()
+    camera.set_view_state(**before)
+    check("set_view_state(**state()) restores the view", unchanged(before, camera.state()))
     before = camera.state()
     mouse(native, QEvent.MouseButtonPress, start, Qt.RightButton, which=Qt.RightButton)
     for i in range(1, 9):

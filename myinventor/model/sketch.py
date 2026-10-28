@@ -1,9 +1,10 @@
 # sketch.py
 #
-# The 2D sketch feature: a frame on a plane, and its geometry: points and
-# lines, as in Inventor or SolveSpace. A line refers to its two end points
-# by name, so a polyline is lines sharing points (a closed chain is a
-# profile, later), and constraints will attach to the points.
+# The 2D sketch feature: a frame on a plane, and its geometry: points, lines
+# and circles, as in Inventor or SolveSpace. A line refers to its two end
+# points by name, a circle to its center point, so a polyline is lines
+# sharing points (a closed chain is a profile, later), and constraints will
+# attach to the points.
 #
 #   [[feature]]
 #   name = "Sketch1"
@@ -21,14 +22,20 @@
 #   start = "P1"
 #   end = "P2"
 #
+#   [[feature.circle]]
+#   name = "C1"
+#   center = "P3"
+#   radius = "d / 2"          # a formula (mm), > 0
+#
 # An explicit point is a sketch point in its own right (Inventor's Point),
-# not just the end of lines: it is drawn as a dot in a gapped cross even
-# outside sketch mode, and it stays when the lines on it are deleted.
+# not just the end of lines or a circle's center: it is drawn as a dot in a
+# gapped cross even outside sketch mode, and it stays when what uses it is
+# deleted. Other points go with the last line or circle using them.
 #
 # Its build result is a SketchResult: the frame (where the sketch lies in 3D)
-# and the evaluated points (mm). The frame's u and v are the plane's in-plane
-# axes, so the sketch's x runs along u, its y along v, and u x v is the
-# normal (the side the sketch is seen from).
+# and the evaluated points and radii (mm). The frame's u and v are the
+# plane's in-plane axes, so the sketch's x runs along u, its y along v, and
+# u x v is the normal (the side the sketch is seen from).
 
 from dataclasses import dataclass, field
 
@@ -38,6 +45,7 @@ from model.expressions import ExpressionError, evaluate
 from model.features import Feature, FeatureError, Field, feature_type
 
 MM = 1e-3
+CIRCLE_SEGMENTS = 96        # a circle drawn (and picked) as this many segments
 
 
 @dataclass
@@ -74,11 +82,20 @@ class SketchLine:
 
 
 @dataclass
+class SketchCircle:
+    name: str
+    center: str             # point name
+    radius: str             # formula, mm
+
+
+@dataclass
 class SketchResult:
     frame: SketchFrame
     points: dict = field(default_factory=dict)      # name -> (2,) mm in the sketch
     lines: list = field(default_factory=list)       # SketchLine
     explicit: set = field(default_factory=set)      # names of the explicit points
+    circles: list = field(default_factory=list)     # SketchCircle
+    radii: dict = field(default_factory=dict)       # circle name -> radius (mm)
 
     def world_mm(self, name):
         """A point's position in the scene (mm)."""
@@ -90,6 +107,17 @@ class SketchResult:
             return np.zeros((0, 2, 3))
         return np.array([[self.world_mm(line.start), self.world_mm(line.end)] for line in self.lines])
 
+    def circle_xy(self, name, n=CIRCLE_SEGMENTS):
+        """(n + 1, 2) a closed polyline around the circle, in the sketch (mm)."""
+        circle = next(c for c in self.circles if c.name == name)
+        t = np.linspace(0.0, 2.0 * np.pi, n + 1)
+        return self.points[circle.center] + self.radii[name] * np.stack([np.cos(t), np.sin(t)], axis=1)
+
+    def circle_segments_mm(self, name, n=CIRCLE_SEGMENTS):
+        """(n, 2, 3) the circle as segments in the scene (mm)."""
+        ring = self.frame.to_world(self.circle_xy(name, n) * MM) / MM
+        return np.stack([ring[:-1], ring[1:]], axis=1)
+
 
 @feature_type
 class Sketch(Feature):
@@ -98,11 +126,12 @@ class Sketch(Feature):
         Field("plane", "ref", doc="the plane the sketch lies on"),
     )
 
-    def __init__(self, name, points=(), lines=(), **values):
+    def __init__(self, name, points=(), lines=(), circles=(), **values):
         super().__init__(name, **values)
         self.points = list(points)
         self.lines = list(lines)
-        names = [p.name for p in self.points] + [line.name for line in self.lines]
+        self.circles = list(circles)
+        names = [p.name for p in self.points] + [e.name for e in self.lines + self.circles]
         duplicates = sorted({n for n in names if names.count(n) > 1})
         if duplicates:
             raise FeatureError(f"{name}: duplicate sketch names {duplicates}")
@@ -113,6 +142,9 @@ class Sketch(Feature):
                     raise FeatureError(f"{name}: line {line.name}: no point {end!r}")
             if line.start == line.end:
                 raise FeatureError(f"{name}: line {line.name} starts and ends at {line.start}")
+        for circle in self.circles:
+            if circle.center not in points:
+                raise FeatureError(f"{name}: circle {circle.name}: no point {circle.center!r}")
 
     # =====================================================
     # Plain data
@@ -125,7 +157,9 @@ class Sketch(Feature):
         data.pop("type", None)
         points = [_point(name, i, row) for i, row in enumerate(_rows(name, data.pop("point", []), "point"), 1)]
         lines = [_line(name, i, row) for i, row in enumerate(_rows(name, data.pop("line", []), "line"), 1)]
-        return cls(name, points=points, lines=lines, **data)
+        circles = [_circle(name, i, row)
+                   for i, row in enumerate(_rows(name, data.pop("circle", []), "circle"), 1)]
+        return cls(name, points=points, lines=lines, circles=circles, **data)
 
     def to_dict(self):
         data = super().to_dict()
@@ -134,36 +168,51 @@ class Sketch(Feature):
                              for p in self.points]
         if self.lines:
             data["line"] = [{"name": line.name, "start": line.start, "end": line.end} for line in self.lines]
+        if self.circles:
+            data["circle"] = [{"name": c.name, "center": c.center, "radius": c.radius} for c in self.circles]
         return data
 
     def formulas(self):
         rows = super().formulas()
         for p in self.points:
             rows += [(f"{p.name}.x", p.x), (f"{p.name}.y", p.y)]
+        rows += [(f"{c.name}.radius", c.radius) for c in self.circles]
         return rows
 
     def rename_formulas(self, rename):
         super().rename_formulas(rename)
         for p in self.points:
             p.x, p.y = rename(p.x), rename(p.y)
+        for c in self.circles:
+            c.radius = rename(c.radius)
 
     # =====================================================
     # Editing
     # =====================================================
 
     def free_name(self, prefix):
-        """P1, P2... or L1, L2...: the first one not taken in this sketch."""
-        taken = {p.name for p in self.points} | {line.name for line in self.lines}
+        """P1, P2..., L1..., C1...: the first one not taken in this sketch."""
+        taken = {p.name for p in self.points} | {e.name for e in self.lines + self.circles}
         n = 1
         while f"{prefix}{n}" in taken:
             n += 1
         return f"{prefix}{n}"
+
+    def kind_of(self, name):
+        """"point", "line" or "circle" (KeyError if the sketch has no such entity)."""
+        for kind, items in (("point", self.points), ("line", self.lines), ("circle", self.circles)):
+            if any(item.name == name for item in items):
+                return kind
+        raise KeyError(name)
 
     def point(self, name):
         return next(p for p in self.points if p.name == name)
 
     def line(self, name):
         return next(line for line in self.lines if line.name == name)
+
+    def circle(self, name):
+        return next(c for c in self.circles if c.name == name)
 
     def add_point(self, x, y, explicit=False):
         name = self.free_name("P")
@@ -179,21 +228,39 @@ class Sketch(Feature):
         self.lines.append(SketchLine(name, start, end))
         return name
 
+    def add_circle(self, center, radius):
+        self.point(center)
+        name = self.free_name("C")
+        self.circles.append(SketchCircle(name, center, str(radius)))
+        return name
+
+    def points_of(self, name):
+        """The points an entity is made of: a point itself, a line's ends, a circle's center."""
+        kind = self.kind_of(name)
+        if kind == "point":
+            return [name]
+        if kind == "line":
+            line = self.line(name)
+            return [line.start, line.end]
+        return [self.circle(name).center]
+
     def delete(self, name):
         """
-        Deletes a point (with the lines that use it) or a line (with its end
-        points if no other line uses them and they are not explicit, as
-        Inventor does).
+        Deletes a point (with the lines and circles that use it), or a line or
+        a circle (with its points if nothing else uses them and they are not
+        explicit, as Inventor does).
         """
-        if any(p.name == name for p in self.points):
+        kind = self.kind_of(name)
+        if kind == "point":
             self.lines = [line for line in self.lines if name not in (line.start, line.end)]
+            self.circles = [c for c in self.circles if c.center != name]
             self.points = [p for p in self.points if p.name != name]
             return
-        line = self.line(name)
-        self.lines.remove(line)
-        used = {e for other in self.lines for e in (other.start, other.end)}
-        self.points = [p for p in self.points
-                       if p.explicit or p.name in used or p.name not in (line.start, line.end)]
+        mine = self.points_of(name)
+        self.lines = [line for line in self.lines if line.name != name]
+        self.circles = [c for c in self.circles if c.name != name]
+        used = {e for line in self.lines for e in (line.start, line.end)} | {c.center for c in self.circles}
+        self.points = [p for p in self.points if p.explicit or p.name in used or p.name not in mine]
 
     # =====================================================
     # Build
@@ -214,7 +281,16 @@ class Sketch(Feature):
                 points[p.name] = np.array([evaluate(p.x, ctx.values), evaluate(p.y, ctx.values)])
             except ExpressionError as error:
                 raise ValueError(f"point {p.name}: {error}") from None
-        return SketchResult(frame, points, list(self.lines), {p.name for p in self.points if p.explicit})
+        radii = {}
+        for c in self.circles:
+            try:
+                radii[c.name] = evaluate(c.radius, ctx.values)
+            except ExpressionError as error:
+                raise ValueError(f"circle {c.name}: radius {error}") from None
+            if radii[c.name] <= 0:
+                raise ValueError(f"circle {c.name}: the radius must be > 0, it is {radii[c.name]:g} mm")
+        return SketchResult(frame, points, list(self.lines), {p.name for p in self.points if p.explicit},
+                            list(self.circles), radii)
 
 
 def _rows(owner, rows, kind):
@@ -239,8 +315,12 @@ def _keys(owner, where, row, allowed):
         raise FeatureError(f"{owner}: {where}: unknown key(s) {unknown}")
 
 
+def _where(kind, i, row):
+    return f"{kind} {i}" + (f" ({row['name']})" if isinstance(row.get("name"), str) else "")
+
+
 def _point(owner, i, row):
-    where = f"point {i}" + (f" ({row['name']})" if isinstance(row.get("name"), str) else "")
+    where = _where("point", i, row)
     _keys(owner, where, row, ("name", "x", "y", "explicit"))
     explicit = row.get("explicit", False)
     if not isinstance(explicit, bool):
@@ -250,7 +330,14 @@ def _point(owner, i, row):
 
 
 def _line(owner, i, row):
-    where = f"line {i}" + (f" ({row['name']})" if isinstance(row.get("name"), str) else "")
+    where = _where("line", i, row)
     _keys(owner, where, row, ("name", "start", "end"))
     return SketchLine(_text(owner, where, row, "name"), _text(owner, where, row, "start"),
                       _text(owner, where, row, "end"))
+
+
+def _circle(owner, i, row):
+    where = _where("circle", i, row)
+    _keys(owner, where, row, ("name", "center", "radius"))
+    return SketchCircle(_text(owner, where, row, "name"), _text(owner, where, row, "center"),
+                        _text(owner, where, row, "radius", True))

@@ -99,6 +99,7 @@ from vispy import scene
 from vispy.util import keys, transforms
 
 from model.part import Datum
+from model.sketch import CIRCLE_SEGMENTS
 from view.picking import Picker, _project, _ray, pick_datum
 
 SCENE_UNIT = 1e-3      # one scene unit = 1 mm
@@ -125,6 +126,7 @@ SKETCH_LINE_COLOR = (0.85, 0.88, 0.95, 1.0)       # its lines
 SKETCH_DOT_COLOR = (0.95, 0.95, 1.0, 1.0)         # its points, in sketch mode
 GUIDE_COLOR = (0.55, 0.85, 1.0, 0.9)              # alignment hints (dashed)
 GUIDE_DASH_PX, GUIDE_GAP_PX = 6.0, 4.0
+SNAP_MARKER_COLOR = (0.25, 1.0, 0.35, 1.0)        # where a drag snapped (green, as the tools' marker)
 BOX_COLOR_WINDOW = (0.45, 0.75, 1.0, 1.0)         # the selection box: solid, wholly inside
 BOX_COLOR_CROSSING = (0.45, 1.0, 0.6, 1.0)        # dashed: inside or crossing
 COINCIDENT_MM = 1e-6        # points this close are at the same place
@@ -230,13 +232,21 @@ class TrackballCamera(scene.TurntableCamera):
         return {"center": [float(v) for v in self.center[:3]], "distance": float(self.scale_factor),
                 "rotation": [float(v) for v in np.asarray(rotation)[:3, :3].ravel()]}
 
-    def set_state(self, center, distance, rotation):
+    def set_view_state(self, center, distance, rotation):
+        """The inverse of state(). Not `set_state`: that is VisPy's (BaseCamera.reset calls it)."""
         matrix = np.eye(4)
         matrix[:3, :3] = np.asarray(rotation, dtype=float).reshape(3, 3)
         self._rotation = matrix
         self.center = tuple(float(v) for v in center)
         self.scale_factor = float(distance)
         self.view_changed()
+
+    def viewbox_key_event(self, event):
+        """
+        No camera keys: VisPy's Backspace reset knows nothing of the free
+        rotation (Reset view and the view buttons do that), and Backspace is
+        left to the window.
+        """
 
     def set_orientation(self, elevation, azimuth):
         """Reset to a turntable-style view (up axis vertical)."""
@@ -395,8 +405,12 @@ class _SketchVisual:
 
     def __init__(self, name, result, parent):
         self.name = name
-        self.segments = result.segments_mm()                  # (K, 2, 3) mm
         self.line_names = [line.name for line in result.lines]
+        self.circle_names = [c.name for c in result.circles]
+        # Lines, then each circle as CIRCLE_SEGMENTS pieces; seg_owner: the entity of each segment.
+        blocks = [result.segments_mm()] + [result.circle_segments_mm(n) for n in self.circle_names]
+        self.segments = np.concatenate(blocks) if blocks else np.zeros((0, 2, 3))     # (K, 2, 3) mm
+        self.seg_owner = self.line_names + [n for n in self.circle_names for _ in range(CIRCLE_SEGMENTS)]
         self.point_names = list(result.points)
         self.point_pos = np.array([result.world_mm(n) for n in self.point_names]).reshape(-1, 3)
         self.explicit = [n in result.explicit for n in self.point_names]
@@ -431,7 +445,7 @@ class _SketchVisual:
         self.shown_colors = {}
         if len(self.segments):
             colors = []
-            for n in self.line_names:
+            for n in self.seg_owner:
                 key = self.key(n, editing)
                 c = color(key) or SKETCH_LINE_COLOR
                 self.shown_colors[key] = c
@@ -472,7 +486,7 @@ class _SketchVisual:
     def rows(self, editing):
         """Pick rows (see picking.pick_datum): lines as axes; points as points (explicit ones always)."""
         out = []
-        for n, (a, b) in zip(self.line_names, self.segments):
+        for n, (a, b) in zip(self.seg_owner, self.segments):
             length = float(np.linalg.norm(b - a))
             if length > 0:
                 out.append((self.key(n, editing), "axis", 0.5 * (a + b), (b - a) / length,
@@ -593,6 +607,7 @@ class GeometryView:
         self.on_delete = None           # callback(): the Delete key
         self.on_drag = None             # callback(key, (2,) mm moved or None, "start" | "move" | "end" | "cancel")
         self._drag = None               # a left drag on a sketch entity: {"keys", "start" (2,) mm, "started"}
+        self.drag_start = None          # (2,) sketch mm where the current drag began
         self._box = None                # a box being drawn: {"start" (2,) px, "add": Shift}
         self.box_line = scene.visuals.Line(width=1.0, connect="segments", parent=self.canvas.scene)
         self.box_line.visible = False
@@ -628,6 +643,11 @@ class GeometryView:
         self.guide_lines.order = 29
         self.guide_lines.visible = False
         self.guides = []                # the alignment hints shown: [(from, to) (2,) sketch mm]
+        self.snap_marker = scene.visuals.Markers(parent=self.view.scene)
+        self.snap_marker.set_gl_state("translucent", depth_test=False)
+        self.snap_marker.order = 30
+        self.snap_marker.visible = False
+        self.snap_spot = None           # (2,) sketch mm where a drag snapped (a radius through a point)
 
         self._picker = None
         self.picks = [None, None]       # points A and B: Pick or None
@@ -779,6 +799,7 @@ class GeometryView:
             if drag["key"] not in self.selection:
                 self._click_select(drag["key"])
             drag["keys"] = [k for k in self.selection if k[0] == "entity"]
+            self.drag_start = drag["start"]     # where the drag began, sketch mm (a radius drag needs it)
             if self.on_drag is not None:
                 self.on_drag(drag["keys"], np.zeros(2), "start")
         xy = self.sketch_xy(pos)
@@ -900,13 +921,14 @@ class GeometryView:
             xy, front = _project(transform, visual.point_pos)
             out += [("entity", visual.name, n) for n, i, f in zip(visual.point_names, inside(xy), front) if i and f]
         if len(visual.segments):
+            # A line or circle is in when all its pieces are inside (or, crossing, when one touches the box).
             ends, front = _project(transform, visual.segments.reshape(-1, 3))
             ends, front = ends.reshape(-1, 2, 2), front.reshape(-1, 2)
-            for n, (p, q), f in zip(visual.line_names, ends, front):
-                if not f.all():
-                    continue
-                if inside(p) and inside(q) or crossing and _segment_meets_box(p, q, lo, hi):
-                    out.append(("entity", visual.name, n))
+            whole, touch = {}, {}
+            for n, (p, q), f in zip(visual.seg_owner, ends, front):
+                whole[n] = whole.get(n, True) and bool(f.all() and inside(p) and inside(q))
+                touch[n] = touch.get(n, False) or bool(f.all() and _segment_meets_box(p, q, lo, hi))
+            out += [("entity", visual.name, n) for n in whole if whole[n] or crossing and touch[n]]
         return out
 
     def _select_box(self, a, b, add):
@@ -1128,7 +1150,7 @@ class GeometryView:
                 return key[1] in self._sketch_points
             if key[0] == "entity":
                 visual = self._sketch_geometry.get(key[1])
-                return visual is not None and key[2] in visual.line_names + visual.point_names
+                return visual is not None and key[2] in visual.line_names + visual.circle_names + visual.point_names
             return True
 
         if self.hovered is not None and not alive(self.hovered):
@@ -1207,6 +1229,16 @@ class GeometryView:
                 segments += [start + t * direction, start + min(t + dash, length) * direction]
         self.guide_lines.set_data(pos=np.array(segments, np.float32))
         self.guide_lines.visible = bool(segments)
+        self.canvas.update()
+
+    def set_snap_marker(self, frame, xy):
+        """A green dot where a drag snapped, in the sketch's plane (frame); xy None hides it."""
+        self.snap_spot = None if frame is None or xy is None else np.asarray(xy, float)
+        if self.snap_spot is not None:
+            spot = frame.to_world(self.snap_spot[None] * SCENE_UNIT)[0] / SCENE_UNIT
+            self.snap_marker.set_data(spot[None].astype(np.float32), size=11, edge_width=1.0,
+                                      face_color=SNAP_MARKER_COLOR, edge_color=(0, 0, 0, 1))
+        self.snap_marker.visible = self.snap_spot is not None
         self.canvas.update()
 
     def look_at(self, toward, up):

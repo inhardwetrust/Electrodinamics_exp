@@ -43,7 +43,8 @@ Compatibility with Inventor or any other CAD is not a goal.
   window), `checks/check_view.py`, `checks/check_window_files.py`,
   `checks/check_sketch.py`, `checks/check_sketch_line.py`,
   `checks/check_sketch_drag.py`, `checks/check_sketch_point.py`,
-  `checks/check_sketch_align.py`, `checks/check_sketch_select.py`.
+  `checks/check_sketch_align.py`, `checks/check_sketch_select.py`,
+  `checks/check_sketch_circle.py`, `checks/check_sketch_snap.py`.
 - VisPy swallows an exception raised in an event callback (it only logs
   "ERROR: Invoking ..."): every window check installs
   `checks/vispy_errors.py` and fails on any such log.
@@ -140,6 +141,10 @@ Compatibility with Inventor or any other CAD is not a goal.
 - `SceneCanvas(keys="interactive")` closes the canvas on Esc (the 3D view
   vanishes from the window) whatever our handlers do: use `keys=None`.
   customcst still has "interactive".
+- VisPy's camera resets on Backspace through `BaseCamera.set_state(state)`:
+  a camera subclass must not define its own `set_state` (ours is
+  `set_view_state`), and ours ignores camera keys (`viewbox_key_event`).
+  customcst's TrackballCamera still overrides `set_state`.
 - An overlay drawn on a face (the section glass) needs a small offset
   toward the viewer (~2e-4 of the model size), or it stripes (z-fighting).
 - Translucent bodies look hollow: keep the fill opaque and make only

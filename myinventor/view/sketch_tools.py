@@ -9,7 +9,9 @@
 # put a point (bigger and green when it snaps). The cursor snaps to the
 # sketch's points and its origin within SNAP_PX; elsewhere a point lies
 # where the ray through the cursor meets the sketch's plane, rounded to 1 um.
-# Off the points, alignment hints (align(), Inventor's inference lines): a
+# Off the points, a line or circle within CURVE_SNAP_PX takes the point
+# (curve_snap(): the nearest place on it; the window's point drag uses it
+# too). Off those, alignment hints (align(), Inventor's inference lines): a
 # new point within ALIGN_PX of the vertical or horizontal through another
 # point (or the sketch origin) takes that x or y exactly, and a dashed guide
 # runs from that point to it (GeometryView.set_guides); the window's point
@@ -27,6 +29,8 @@
 #   add_line(start, end) (the window) makes the points and the line and
 #   returns (start name, end name).
 #
+# CircleTool (Sketch > Circle): a center, then the radius (see the class).
+#
 # PointTool (Sketch > Point), as Inventor's Point: every click puts an
 # explicit point (add_point((x, y) mm), the window); a click on an existing
 # point puts nothing; Esc leaves the tool.
@@ -38,6 +42,7 @@ from vispy import scene
 from view.picking import _project, _ray
 
 SNAP_PX = 8.0
+CURVE_SNAP_PX = 6.0             # a new or dragged point lands on a line or circle this close
 ALIGN_PX = 6.0                  # alignment hints catch within this many pixels
 ROUND_MM = 1e-3                 # new points are rounded to 1 um
 PREVIEW_COLOR = (1.0, 0.85, 0.3, 1.0)
@@ -73,6 +78,60 @@ def align(xy, points, tolerance, exclude=(), fixed=(False, False)):
     return xy, guides
 
 
+def curve_snap(xy, result, tolerance, exclude=()):
+    """
+    The nearest place on a line or circle of the sketch within `tolerance`
+    (mm) of `xy` (mm): ((2,) mm, entity name), or None. For a line, the
+    foot of the perpendicular (clamped to the segment); for a circle, the
+    point on it along the radius through xy. `exclude`: entity names that
+    do not attract (the lines and circles of a dragged point).
+    """
+    xy = np.asarray(xy, dtype=float)
+    best = None
+    for line in result.lines:
+        if line.name in exclude:
+            continue
+        a, b = result.points[line.start], result.points[line.end]
+        ab = b - a
+        t = float(np.clip(np.dot(xy - a, ab) / max(float(np.dot(ab, ab)), 1e-18), 0.0, 1.0))
+        foot = a + t * ab
+        gap = float(np.linalg.norm(xy - foot))
+        if gap <= tolerance and (best is None or gap < best[0]):
+            best = (gap, foot, line.name)
+    for circle in result.circles:
+        if circle.name in exclude:
+            continue
+        center, radius = result.points[circle.center], result.radii[circle.name]
+        away = xy - center
+        r = float(np.linalg.norm(away))
+        if r < 1e-12:
+            continue                            # at the center: no direction
+        gap = abs(r - radius)
+        if gap <= tolerance and (best is None or gap < best[0]):
+            best = (gap, center + away * (radius / r), circle.name)
+    return None if best is None else (best[1], best[2])
+
+
+def radius_snap(center, radius, points, tolerance, exclude=()):
+    """
+    A circle around `center` (2,) mm with `radius` (mm) taken through a
+    point of the sketch whose distance from it is within `tolerance` (mm) of
+    the radius, wherever on the circle it lies (the nearest such point): (the
+    new radius, (2,) mm of the point), or None. points: {name: (2,) mm}; the
+    sketch origin counts too; `exclude`: names that do not count (the
+    circle's own center).
+    """
+    center = np.asarray(center, dtype=float)
+    candidates = [np.zeros(2)] + [np.asarray(p, float) for n, p in points.items() if n not in exclude]
+    best = None
+    for p in candidates:
+        r = float(np.linalg.norm(p - center))
+        gap = abs(r - radius)
+        if r > ROUND_MM and gap <= tolerance and (best is None or gap < best[0]):
+            best = (gap, r, p)
+    return None if best is None else (best[1], best[2])
+
+
 def fmt_mm(value):
     """A coordinate (mm) as the formula text of a new point: rounded to 1 um, no '-0'."""
     text = f"{round(value / ROUND_MM) * ROUND_MM + 0.0:.3f}".rstrip("0").rstrip(".")
@@ -93,6 +152,7 @@ class SketchTool:
         self.on_exit = on_exit
         self.preview = None         # (start (2,) mm or None, end (2,) mm, snapped anchor or None)
         self.guides = []            # alignment hints of the last snap: [(from, to) (2,) mm]
+        self.curve = None           # the line or circle the last snap landed on
         parent = view.view.scene
         self.line = scene.visuals.Line(color=PREVIEW_COLOR, width=2.0, parent=parent)
         self.marker = scene.visuals.Markers(parent=parent)
@@ -115,8 +175,14 @@ class SketchTool:
         return self.sketch_result().points.get(anchor[1])
 
     def snap(self, pos):
-        """(anchor, (2,) mm, snapped) for canvas pixel `pos`, or None off the plane; sets self.guides."""
+        """
+        (anchor, (2,) mm, snapped) for canvas pixel `pos`, or None off the
+        plane. Snaps in this order: a point (SNAP_PX), a line or circle
+        (CURVE_SNAP_PX, self.curve names it), else the alignment hints
+        (self.guides).
+        """
         self.guides = []
+        self.curve = None
         result = self.sketch_result()
         frame = result.frame
         transform = self.view._transform()
@@ -139,6 +205,10 @@ class SketchTool:
         t = float(np.dot(frame.origin / MM - origin, normal)) / facing
         hit = origin + t * direction
         local = frame.to_sketch(hit[None] * MM)[0] / MM
+        on_curve = curve_snap(local, result, CURVE_SNAP_PX * self.view._mm_per_px())
+        if on_curve is not None:               # onto a line or circle (exact, not rounded)
+            self.curve = on_curve[1]
+            return ("xy", (float(on_curve[0][0]), float(on_curve[0][1]))), on_curve[0], True
         local = np.round(local / ROUND_MM) * ROUND_MM
         sources = dict(result.points)
         sources.update({f"pending {i}": p for i, (_, p) in enumerate(pending)})
@@ -263,6 +333,97 @@ class PolylineTool(SketchTool):
         """Esc: ends the chain, or leaves the tool when there is none."""
         if self.last is not None:
             self.end_chain()
+        else:
+            self.on_exit()
+        return True
+
+
+class CircleTool(SketchTool):
+    """
+    Sketch > Circle, as Inventor's Center Point Circle: a click puts the
+    center (snapping and alignment as for points), the preview circle follows
+    the cursor, a second click sets the radius (taken through a point that
+    lies within SNAP_PX of the circle: radius_snap()); add_circle(center anchor,
+    radius mm) (the window) makes it. Esc drops a center not used yet, then
+    leaves the tool.
+    """
+
+    name = "Circle"
+
+    def __init__(self, view, sketch, sketch_result, add_circle, on_exit):
+        super().__init__(view, sketch, sketch_result, on_exit)
+        self.add_circle = add_circle
+        self.center = None          # anchor of the center, once clicked
+        self.radius = None          # of the preview (mm)
+        self.through = None         # (2,) mm: the point the preview radius snapped to
+
+    def _pending(self):
+        if self.center is not None and self.center[0] == "xy":
+            return [(self.center, np.asarray(self.center[1], float))]
+        return []
+
+    def move(self, pos):
+        center = self._xy(self.center)
+        if self.center is not None and center is None:
+            self.center = None                  # its point was undone
+        if center is None:
+            self._show(pos)
+            return
+        hit = self._show(pos)
+        self.line.visible = False
+        if hit is None:
+            return
+        self.radius = float(np.linalg.norm(hit[1] - center))
+        self.through = None
+        through = radius_snap(center, self.radius, self._points_but_center(), SNAP_PX * self.view._mm_per_px())
+        if through is not None:                 # the circle through a point nearby
+            self.radius, self.through = through
+            frame = self.sketch_result().frame
+            spot = frame.to_world(self.through[None] * MM)[0] / MM
+            self.marker.set_data(spot[None].astype(np.float32), size=11, edge_width=1.0, face_color=SNAP_COLOR,
+                                 edge_color=(0, 0, 0, 1))
+        if self.radius <= 0:
+            return
+        t = np.linspace(0.0, 2.0 * np.pi, 97)
+        ring = center + self.radius * np.stack([np.cos(t), np.sin(t)], axis=1)
+        frame = self.sketch_result().frame
+        self.line.set_data(pos=(frame.to_world(ring * MM) / MM).astype(np.float32))
+        self.line.visible = True
+        self.preview = (center, hit[1], hit[0] if hit[2] else None)
+        self.view.canvas.update()
+
+    def click(self, pos):
+        hit = self.snap(pos)
+        if hit is None:
+            return
+        center = self._xy(self.center)
+        if center is None:
+            self.center = hit[0]
+            self.move(pos)
+            return
+        radius = float(np.linalg.norm(hit[1] - center))
+        through = radius_snap(center, radius, self._points_but_center(), SNAP_PX * self.view._mm_per_px())
+        if through is not None:
+            radius = through[0]
+        if radius < ROUND_MM:
+            return                              # a click on the center: no circle
+        self.add_circle(self.center, radius)
+        self.center = None
+        self.radius = None
+        self.line.visible = False
+        self.move(pos)
+
+    def _points_but_center(self):
+        points = dict(self.sketch_result().points)
+        if self.center is not None and self.center[0] == "point":
+            points.pop(self.center[1], None)
+        return points
+
+    def escape(self):
+        if self.center is not None:
+            self.center = None
+            self.line.visible = False
+            self.view.canvas.update()
         else:
             self.on_exit()
         return True
