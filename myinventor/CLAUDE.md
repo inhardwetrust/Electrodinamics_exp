@@ -41,7 +41,18 @@ Compatibility with Inventor or any other CAD is not a goal.
 - Run with `../.venv/Scripts/python.exe main.py [name.part.toml] [--screenshot out.png]`.
   Checks (run all after a change): `checks/check_document.py` (model, no
   window), `checks/check_view.py`, `checks/check_window_files.py`,
-  `checks/check_sketch.py`.
+  `checks/check_sketch.py`, `checks/check_sketch_line.py`,
+  `checks/check_sketch_drag.py`, `checks/check_sketch_point.py`,
+  `checks/check_sketch_align.py`, `checks/check_sketch_select.py`.
+- VisPy swallows an exception raised in an event callback (it only logs
+  "ERROR: Invoking ..."): every window check installs
+  `checks/vispy_errors.py` and fails on any such log.
+- Synthetic mouse moves in checks wait ~20 ms first: VisPy drops a move
+  that comes < 10 ms after the previous one (a flaky hover otherwise).
+- A check's window opens on the user's screen, maybe under their cursor:
+  real mouse moves then mix with the synthetic ones (a flaky preview).
+  Checks that send mouse events set `WA_TransparentForMouseEvents` on the
+  canvas (`check_sketch_line.shield`); `sendEvent` still delivers.
 - Feature types live in their own modules (`model/sketch.py`) and are
   registered by importing them in `model/part.py`.
 - `model/`: the document, numpy + stdlib only (no OCP, no Qt); see
@@ -126,6 +137,9 @@ Compatibility with Inventor or any other CAD is not a goal.
   own vertices: shared vertices average the normals to zero.
 - `set_gl_state` does not accept `depth_mask`; passing it broke all
   drawing.
+- `SceneCanvas(keys="interactive")` closes the canvas on Esc (the 3D view
+  vanishes from the window) whatever our handlers do: use `keys=None`.
+  customcst still has "interactive".
 - An overlay drawn on a face (the section glass) needs a small offset
   toward the viewer (~2e-4 of the model size), or it stripes (z-fighting).
 - Translucent bodies look hollow: keep the fill opaque and make only

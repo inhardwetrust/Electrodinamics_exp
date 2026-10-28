@@ -33,6 +33,11 @@ from vispy import app                                                 # noqa: E4
 app.use_app("pyside6")
 app.use_app().create()
 
+sys.path.insert(0, os.path.join(ROOT, "checks"))
+from vispy_errors import install as _watch_vispy  # noqa: E402
+
+VISPY_ERRORS = _watch_vispy()
+
 from PySide6.QtCore import Qt                                        # noqa: E402
 from PySide6.QtTest import QTest                                      # noqa: E402
 
@@ -173,6 +178,7 @@ def main():
 
     answers["save_changes"] = "discard"
     window.close()
+    check("no errors in VisPy callbacks", not VISPY_ERRORS, f"{VISPY_ERRORS[:3]}")
     print("FAILED: " + ", ".join(FAILED) if FAILED else "all checks passed")
     return 1 if FAILED else 0
 

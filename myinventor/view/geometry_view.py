@@ -36,16 +36,44 @@
 # bodies are not selectable, and the `forced` datums are drawn and pickable
 # even when hidden (Inventor shows the origin planes for this).
 #
-# Sketch mode (set_sketch, look_at): a grid on the sketch's plane (lines
-# every `step`, a 1-2-5 number giving about SKETCH_GRID_LINES lines over the
-# model's size), its own x (u) and y (v) axes from the sketch origin, and the
-# camera looking at the plane: u to the right, v up, the normal toward the
-# viewer.
+# Sketch mode (set_sketch, look_at): the sketch's horizontal (u, red) and
+# vertical (v, green) through its origin, endless (no grid),
+# and the camera looking at the plane: u to the right, v up, the normal
+# toward the viewer.
 #
-# Sketch points (set_sketches): every sketch shows its origin as a point
-# (Inventor's projected center point; all an empty sketch shows), keyed
-# ("feature", name): it hovers green and a click selects the sketch, like a
-# datum point (the origin's datums win where they coincide).
+# Sketches (set_sketches): every sketch shows its origin as a point
+# (Inventor's projected center point; all an empty sketch shows) and its
+# lines. Outside sketch mode they are keyed ("feature", name): hovering any
+# of them turns the whole sketch green, a click selects the sketch (the
+# origin's datums win where they coincide). In sketch mode (set_sketch with
+# the sketch's name) the edited sketch's lines and points are keyed
+# ("entity", sketch, "L1" / "P1") and hover / select one by one; its points
+# are drawn as dots; other sketches are not picked meanwhile.
+#
+# Selection: `selection` is a list of keys (`selected`: the last one, or
+# None). In sketch mode (no tool on), as in Inventor:
+#   - a click selects a line, or a point together with every point at the
+#     same place (the ends of different lines, explicit points); Shift +
+#     click adds or removes (a coincident group as one);
+#   - a left drag from empty space draws a box: left to right (solid) takes
+#     what lies wholly inside, right to left (dashed) what lies inside or
+#     crosses it; Shift adds to the selection.
+#
+# Dragging (on_drag): a left drag that starts on a point or line of the
+# edited sketch moves the whole selection if it is selected, else selects it
+# (with its coincident points) and moves that: on_drag(keys, moved, phase)
+# gets the move in the sketch's plane from the press (mm; exact in
+# perspective: both are ray hits on the plane), phase "start", "move"...,
+# then "end" on release or "cancel" on Esc. A press and release within
+# CLICK_PX stays a click.
+#
+# Alignment hints (set_guides): dashed lines in the sketch's plane, from a
+# point to the one being placed or dragged that took its x or y.
+#
+# Tools (set_tool, view/sketch_tools.py): while a drawing tool is on, mouse
+# moves without a button, left clicks and Esc go to it, not to hovering and
+# selecting; middle drags still turn the camera. Delete (on_delete) is for
+# the window: it deletes the selection.
 #
 # Measure mode (set_measure): a left click without a drag (the cursor moved
 # less than CLICK_PX) picks a point of the model (view/picking.py: a CAD
@@ -71,7 +99,7 @@ from vispy import scene
 from vispy.util import keys, transforms
 
 from model.part import Datum
-from view.picking import Picker, pick_datum
+from view.picking import Picker, _project, _ray, pick_datum
 
 SCENE_UNIT = 1e-3      # one scene unit = 1 mm
 
@@ -93,9 +121,17 @@ SELECTED_COLOR = (0.35, 0.65, 1.0, 1.0)           # selection: blue
 DATUM_HALF_MIN = 10.0       # mm: half the side of an origin plane of an empty part
 AXIS_OVERHANG = 1.2         # an axis reaches this times past the planes
 SKETCH_POINT_COLOR = (0.85, 0.88, 0.95, 1.0)      # a sketch's origin point
-SKETCH_GRID_COLOR = (0.55, 0.6, 0.7, 0.35)
+SKETCH_LINE_COLOR = (0.85, 0.88, 0.95, 1.0)       # its lines
+SKETCH_DOT_COLOR = (0.95, 0.95, 1.0, 1.0)         # its points, in sketch mode
+GUIDE_COLOR = (0.55, 0.85, 1.0, 0.9)              # alignment hints (dashed)
+GUIDE_DASH_PX, GUIDE_GAP_PX = 6.0, 4.0
+BOX_COLOR_WINDOW = (0.45, 0.75, 1.0, 1.0)         # the selection box: solid, wholly inside
+BOX_COLOR_CROSSING = (0.45, 1.0, 0.6, 1.0)        # dashed: inside or crossing
+COINCIDENT_MM = 1e-6        # points this close are at the same place
+CROSS_GAP_PX = 3.0          # an explicit point's cross: its arms run from this far from the point
+CROSS_ARM_PX = 9.0          # to this far (pixels)
 SKETCH_AXIS_COLORS = ((1.0, 0.45, 0.4, 0.9), (0.45, 0.9, 0.45, 0.9))    # the sketch's x, y
-SKETCH_GRID_LINES = 20      # about this many lines across the grid
+SKETCH_AXIS_REACH = 1000.0  # the sketch's axes reach this many model sizes each way (endless)
 CLICK_PX = 4                # a press and release closer than this is a click, not a drag
 # The axes gizmo in the lower left corner: X Y Z turning with the view.
 GIZMO_LENGTH = 28           # px, one axis
@@ -125,13 +161,24 @@ def box_segments(lo, hi):
     return np.array([corners[i] for pair in pairs for i in pair], dtype=np.float32)
 
 
-def _nice_step(raw):
-    """The 1-2-5 number at or above `raw` (> 0)."""
-    power = 10.0 ** np.floor(np.log10(raw))
-    for m in (1.0, 2.0, 5.0, 10.0):
-        if m * power >= raw * (1 - 1e-9):
-            return m * power
-    return 10.0 * power
+def _segment_meets_box(p, q, lo, hi):
+    """Does the 2D segment p-q touch the box lo..hi (Liang-Barsky clipping)?"""
+    t0, t1 = 0.0, 1.0
+    d = q - p
+    for axis in (0, 1):
+        for edge, sign in ((lo[axis], -1.0), (hi[axis], 1.0)):
+            denominator = sign * d[axis]
+            numerator = sign * (edge - p[axis])
+            if abs(denominator) < 1e-12:
+                if numerator < 0:
+                    return False                # parallel and outside
+                continue
+            t = numerator / denominator
+            if denominator > 0:
+                t1 = min(t1, t)
+            else:
+                t0 = max(t0, t)
+    return t0 <= t1
 
 
 class TrackballCamera(scene.TurntableCamera):
@@ -338,6 +385,104 @@ class _DatumVisual:
             self.fill.visible = shown
 
 
+class _SketchVisual:
+    """
+    A sketch's lines (always), its explicit points (a dot in a gapped cross,
+    always) and the other points (dots, in sketch mode). The cross lies in
+    the sketch's plane and keeps its size in pixels: draw_crosses(mm per
+    pixel) after every camera change.
+    """
+
+    def __init__(self, name, result, parent):
+        self.name = name
+        self.segments = result.segments_mm()                  # (K, 2, 3) mm
+        self.line_names = [line.name for line in result.lines]
+        self.point_names = list(result.points)
+        self.point_pos = np.array([result.world_mm(n) for n in self.point_names]).reshape(-1, 3)
+        self.explicit = [n in result.explicit for n in self.point_names]
+        self.axes = (result.frame.u, result.frame.v)
+        self.lines = scene.visuals.Line(connect="segments", width=2.0, parent=parent)
+        self.lines.order = 6
+        self.dots = scene.visuals.Markers(parent=parent)
+        self.dots.set_gl_state("translucent", depth_test=False)
+        self.dots.order = 7
+        self.dots.visible = False
+        self.crosses = scene.visuals.Line(connect="segments", width=1.5, parent=parent)
+        self.crosses.set_gl_state("translucent", depth_test=False)
+        self.crosses.order = 7
+        self.crosses.visible = any(self.explicit)
+        self.cross_segments = np.zeros((0, 2, 3))             # as last drawn, mm (for the checks)
+        self._cross_colors = []
+        self.lines.visible = len(self.segments) > 0
+        self.shown_colors = {}      # key -> color last drawn (for the checks)
+
+    def remove(self):
+        for visual in (self.lines, self.dots, self.crosses):
+            visual.parent = None
+
+    def key(self, entity, editing):
+        return ("entity", self.name, entity) if editing else ("feature", self.name)
+
+    def set_style(self, hovered, selected, editing, mm_per_px):
+        """selected: the set of selected keys."""
+        def color(key):
+            return HOVER_COLOR if key == hovered else SELECTED_COLOR if key in selected else None
+
+        self.shown_colors = {}
+        if len(self.segments):
+            colors = []
+            for n in self.line_names:
+                key = self.key(n, editing)
+                c = color(key) or SKETCH_LINE_COLOR
+                self.shown_colors[key] = c
+                colors += [c, c]
+            self.lines.set_data(pos=self.segments.reshape(-1, 3).astype(np.float32),
+                                color=np.array(colors, np.float32), width=2.0)
+        shown = [i for i, e in enumerate(self.explicit) if e or editing]
+        self.dots.visible = bool(shown)
+        if shown:
+            colors = []
+            for i in shown:
+                key = self.key(self.point_names[i], editing)
+                c = color(key) or SKETCH_DOT_COLOR
+                self.shown_colors[key] = c
+                colors.append(c)
+            self.dots.set_data(self.point_pos[shown].astype(np.float32), size=6 if editing else 5,
+                               edge_width=1.0, face_color=np.array(colors), edge_color=(0, 0, 0, 1))
+        self._cross_colors = [self.shown_colors.get(self.key(n, editing), SKETCH_LINE_COLOR)
+                              for n, e in zip(self.point_names, self.explicit) if e]
+        self.draw_crosses(mm_per_px)
+
+    def draw_crosses(self, mm_per_px):
+        """The crosses of the explicit points, CROSS_GAP_PX..CROSS_ARM_PX from the point along u and v."""
+        centers = self.point_pos[np.array(self.explicit, bool)] if len(self.explicit) else np.zeros((0, 3))
+        if not len(centers):
+            return
+        gap, arm = CROSS_GAP_PX * mm_per_px, CROSS_ARM_PX * mm_per_px
+        u, v = self.axes
+        segments, colors = [], []
+        for center, c in zip(centers, self._cross_colors):
+            for d in (u, -u, v, -v):
+                segments.append([center + gap * d, center + arm * d])
+                colors += [c, c]
+        self.cross_segments = np.array(segments)
+        self.crosses.set_data(pos=self.cross_segments.reshape(-1, 3).astype(np.float32),
+                              color=np.array(colors, np.float32), width=1.5)
+
+    def rows(self, editing):
+        """Pick rows (see picking.pick_datum): lines as axes; points as points (explicit ones always)."""
+        out = []
+        for n, (a, b) in zip(self.line_names, self.segments):
+            length = float(np.linalg.norm(b - a))
+            if length > 0:
+                out.append((self.key(n, editing), "axis", 0.5 * (a + b), (b - a) / length,
+                            np.zeros(3), np.zeros(3), 0.5 * length))
+        for n, point, explicit in zip(self.point_names, self.point_pos, self.explicit):
+            if editing or explicit:
+                out.append((self.key(n, editing), "point", point, np.zeros(3), np.zeros(3), np.zeros(3), 0.0))
+        return out
+
+
 class _BodyVisual:
     """Mesh + edge lines of one body."""
 
@@ -417,7 +562,9 @@ class GeometryView:
     """
 
     def __init__(self, canvas_size=(1000, 750), show=False):
-        self.canvas = scene.SceneCanvas(keys="interactive", size=canvas_size, bgcolor=BACKGROUND, show=show)
+        # keys=None: VisPy's "interactive" keys close the canvas on Esc (the 3D view vanished
+        # from the window) and toggle full screen on F11; the keys are ours.
+        self.canvas = scene.SceneCanvas(keys=None, size=canvas_size, bgcolor=BACKGROUND, show=show)
         _skip_redundant_qt_swap(self.canvas)
 
         self.view = self.canvas.central_widget.add_view()
@@ -440,10 +587,19 @@ class GeometryView:
         self._visible = {}
         self._datums = {}               # name -> _DatumVisual
         self._sketch_points = {}        # sketch name -> _DatumVisual (a point)
+        self._sketch_geometry = {}      # sketch name -> _SketchVisual
+        self.editing_sketch = None      # name of the sketch in sketch mode
+        self.tool = None                # a drawing tool (view/sketch_tools.py) or None
+        self.on_delete = None           # callback(): the Delete key
+        self.on_drag = None             # callback(key, (2,) mm moved or None, "start" | "move" | "end" | "cancel")
+        self._drag = None               # a left drag on a sketch entity: {"keys", "start" (2,) mm, "started"}
+        self._box = None                # a box being drawn: {"start" (2,) px, "add": Shift}
+        self.box_line = scene.visuals.Line(width=1.0, connect="segments", parent=self.canvas.scene)
+        self.box_line.visible = False
         self._datum_visible = {}
         self._datum_list = []           # Datum, as given
         self._datum_half = DATUM_HALF_MIN
-        self.selected = None            # ("datum" | "body", name) or None
+        self.selection = []             # selected keys ("datum" | "body" | "feature" | "entity", ...)
         self.hovered = None             # ("datum", name) or None
         self.on_select = None           # callback(key or None): a click selected
         self.on_hover = None            # callback(key or None): the mouse moved onto / off a datum
@@ -452,7 +608,6 @@ class GeometryView:
         self._pick_kinds = None         # datum kinds a click may pick (None: anything)
         self._forced = set()            # datums drawn and pickable though hidden
         self.sketch_frame = None        # model.sketch.SketchFrame in sketch mode, else None
-        self.sketch_step = None         # grid step (mm) of the shown sketch
         self.xray = False
         self.show_edges = True
         self._bounds = (-np.ones(3), np.ones(3))
@@ -463,13 +618,16 @@ class GeometryView:
             visual.set_gl_state("translucent", depth_test=False)
             visual.order = 20 + order
             visual.visible = False
-        self.sketch_grid = scene.visuals.Line(connect="segments", color=SKETCH_GRID_COLOR, width=1.0,
-                                              parent=self.view.scene)
-        self.sketch_grid.set_gl_state("translucent", depth_test=True)
-        self.sketch_axes = scene.visuals.Line(connect="segments", width=2.0, parent=self.view.scene)
+        self.sketch_axes = scene.visuals.Line(connect="segments", width=1.5, parent=self.view.scene)
         self.sketch_axes.set_gl_state("translucent", depth_test=True)
-        self.sketch_axes.order = self.sketch_grid.order = 4
-        self.sketch_grid.visible = self.sketch_axes.visible = False
+        self.sketch_axes.order = 4
+        self.sketch_axes.visible = False
+        self.guide_lines = scene.visuals.Line(connect="segments", color=GUIDE_COLOR, width=1.0,
+                                              parent=self.view.scene)
+        self.guide_lines.set_gl_state("translucent", depth_test=False)
+        self.guide_lines.order = 29
+        self.guide_lines.visible = False
+        self.guides = []                # the alignment hints shown: [(from, to) (2,) sketch mm]
 
         self._picker = None
         self.picks = [None, None]       # points A and B: Pick or None
@@ -533,7 +691,23 @@ class GeometryView:
         self.canvas.events.key_press.connect(self._escape)
 
     def _escape(self, event):
+        if event.key == keys.DELETE and self.on_delete is not None and self.tool is None:
+            self.on_delete()
+            event.handled = True
+            return
         if event.key != keys.ESCAPE:
+            return
+        if self._drag_end("cancel"):
+            event.handled = True
+            return
+        if self._box is not None:
+            self._box = None
+            self.box_line.visible = False
+            self.canvas.update()
+            event.handled = True
+            return
+        if self.tool is not None and self.tool.escape():
+            event.handled = True
             return
         if self.on_escape is not None and self.on_escape():
             event.handled = True
@@ -545,7 +719,18 @@ class GeometryView:
         event.handled = True
 
     def _mouse_move(self, event):
-        if event.button is not None or event.is_dragging or self.measure:
+        if self._drag is not None and event.is_dragging and 1 in event.buttons:
+            self._drag_move(event.pos)
+            return
+        if self._box is not None and event.is_dragging and 1 in event.buttons:
+            self._draw_box(event.pos)
+            return
+        if event.button is not None or event.is_dragging:
+            return
+        if self.tool is not None:
+            self.tool.move(event.pos)
+            return
+        if self.measure:
             return
         key = self.datum_at(event.pos)
         if key != self.hovered:
@@ -555,8 +740,69 @@ class GeometryView:
 
     def _mouse_press(self, event):
         self._press = np.array(event.pos[:2], float) if event.button == 1 else None
+        self._drag = self._box = None
+        modifiers = set(event.modifiers)
+        if event.button != 1 or self.tool is not None or self.measure or self.view.camera.space_down \
+                or self.editing_sketch is None or modifiers - {keys.SHIFT}:
+            return
+        key = self.datum_at(event.pos)
+        start = self.sketch_xy(event.pos)
+        if key is not None and key[0] == "entity":
+            if not modifiers and start is not None:     # Shift + press on an entity: a toggle on release
+                self._drag = {"key": key, "start": start, "started": False}
+        else:
+            self._box = {"start": self._press.copy(), "add": keys.SHIFT in modifiers}
+
+    # =====================================================
+    # Dragging sketch entities
+    # =====================================================
+
+    def sketch_xy(self, pos):
+        """Where the ray through canvas pixel `pos` meets the sketch's plane: (2,) mm, or None."""
+        frame = self.sketch_frame
+        if frame is None:
+            return None
+        origin, direction = _ray(self._transform(), pos)
+        facing = float(np.dot(direction, frame.normal))
+        if abs(facing) < 1e-9:
+            return None                         # the plane is seen edge-on
+        t = float(np.dot(frame.origin / SCENE_UNIT - origin, frame.normal)) / facing
+        hit = origin + t * direction
+        return frame.to_sketch(hit[None] * SCENE_UNIT)[0] / SCENE_UNIT
+
+    def _drag_move(self, pos):
+        drag = self._drag
+        if not drag["started"]:
+            if np.linalg.norm(np.asarray(pos[:2], float) - self._press) < CLICK_PX:
+                return                          # still a click
+            drag["started"] = True
+            if drag["key"] not in self.selection:
+                self._click_select(drag["key"])
+            drag["keys"] = [k for k in self.selection if k[0] == "entity"]
+            if self.on_drag is not None:
+                self.on_drag(drag["keys"], np.zeros(2), "start")
+        xy = self.sketch_xy(pos)
+        if xy is not None and self.on_drag is not None:
+            self.on_drag(drag["keys"], xy - drag["start"], "move")
+
+    def _drag_end(self, phase):
+        """phase: "end" (released: keep) or "cancel" (Esc: put everything back)."""
+        drag, self._drag = self._drag, None
+        if drag is not None and drag["started"] and self.on_drag is not None:
+            self.on_drag(drag["keys"], None, phase)
+        return drag is not None and drag["started"]
 
     def _mouse_release(self, event):
+        if event.button == 1 and self._drag_end("end"):
+            self._press = None
+            return
+        if event.button == 1 and self._box is not None:
+            box, self._box = self._box, None
+            self.box_line.visible = False
+            if np.linalg.norm(np.asarray(event.pos[:2], float) - box["start"]) >= CLICK_PX:
+                self._press = None
+                self._select_box(box["start"], np.asarray(event.pos[:2], float), box["add"])
+                return
         press, self._press = self._press, None
         modifiers = set(event.modifiers)
         if press is None or event.button != 1 or self.view.camera.space_down \
@@ -564,9 +810,15 @@ class GeometryView:
             return
         if np.linalg.norm(np.array(event.pos[:2], float) - press) >= CLICK_PX:
             return                      # a drag: rotated or panned
+        if self.tool is not None:
+            if not modifiers:
+                self.tool.click(event.pos)
+            return
         if not self.measure:
             if not modifiers:
                 self._click_select(self.key_at(event.pos))
+            elif self.editing_sketch is not None:
+                self._toggle(self.key_at(event.pos))
             return
         pick = self.pick_at(event.pos)
         if pick is not None:
@@ -575,13 +827,118 @@ class GeometryView:
             self.set_picks(picks)
 
     def _click_select(self, key):
-        self.select(key)
+        """A click selected `key` (a point with its coincident points), or nothing."""
+        self.select_keys(self.coincident(key) if key is not None else [])
         if self.on_select is not None:
-            self.on_select(key)
+            self.on_select(self.selected)
+
+    def _toggle(self, key):
+        """Shift + click: adds `key` (with its coincident points) or takes it out."""
+        if key is None or key[0] != "entity":
+            return
+        group = self.coincident(key)
+        if key in self.selection:
+            self.select_keys([k for k in self.selection if k not in group])
+        else:
+            self.select_keys(self.selection + [k for k in group if k not in self.selection])
+        if self.on_select is not None:
+            self.on_select(self.selected)
+
+    def coincident(self, key):
+        """A sketch point's key and the keys of the edited sketch's points at the same place."""
+        if key is None or key[0] != "entity" or key[1] not in self._sketch_geometry:
+            return [key]
+        visual = self._sketch_geometry[key[1]]
+        if key[2] not in visual.point_names:
+            return [key]
+        at = visual.point_pos[visual.point_names.index(key[2])]
+        same = np.linalg.norm(visual.point_pos - at, axis=1) <= COINCIDENT_MM
+        return [key] + [("entity", key[1], n) for n, s in zip(visual.point_names, same) if s and n != key[2]]
+
+    # =====================================================
+    # Box selection
+    # =====================================================
+
+    def _draw_box(self, pos):
+        """The box from the press to `pos` (canvas pixels): solid left to right, dashed right to left."""
+        a, b = self._box["start"], np.asarray(pos[:2], float)
+        corners = np.array([a, (b[0], a[1]), b, (a[0], b[1]), a])
+        crossing = b[0] < a[0]
+        segments = []
+        for p, q in zip(corners[:-1], corners[1:]):
+            if not crossing:
+                segments += [p, q]
+                continue
+            length = float(np.linalg.norm(q - p))
+            d = (q - p) / max(length, 1e-9)
+            for t in np.arange(0.0, length, GUIDE_DASH_PX + GUIDE_GAP_PX):
+                segments += [p + t * d, p + min(t + GUIDE_DASH_PX, length) * d]
+        self.box_line.set_data(pos=np.array(segments, np.float32),
+                               color=BOX_COLOR_CROSSING if crossing else BOX_COLOR_WINDOW)
+        self.box_line.visible = len(segments) > 0
+        self.box_crossing = crossing
+        self.canvas.update()
+
+    def box_keys(self, a, b):
+        """
+        The edited sketch's entities in the box from canvas pixel a (the
+        press) to b: drawn left to right, what lies wholly inside; right to
+        left, what lies inside or crosses it.
+        """
+        visual = self._sketch_geometry.get(self.editing_sketch)
+        if visual is None:
+            return []
+        crossing = b[0] < a[0]
+        lo, hi = np.minimum(a, b), np.maximum(a, b)
+        transform = self._transform()
+
+        def inside(xy):
+            return np.all((xy >= lo) & (xy <= hi), axis=-1)
+
+        out = []
+        if len(visual.point_pos):
+            xy, front = _project(transform, visual.point_pos)
+            out += [("entity", visual.name, n) for n, i, f in zip(visual.point_names, inside(xy), front) if i and f]
+        if len(visual.segments):
+            ends, front = _project(transform, visual.segments.reshape(-1, 3))
+            ends, front = ends.reshape(-1, 2, 2), front.reshape(-1, 2)
+            for n, (p, q), f in zip(visual.line_names, ends, front):
+                if not f.all():
+                    continue
+                if inside(p) and inside(q) or crossing and _segment_meets_box(p, q, lo, hi):
+                    out.append(("entity", visual.name, n))
+        return out
+
+    def _select_box(self, a, b, add):
+        found = self.box_keys(a, b)
+        keys = (self.selection if add else []) + found
+        self.select_keys(list(dict.fromkeys(k for k in keys if k[0] == "entity")))
+        if self.on_select is not None:
+            self.on_select(self.selected)
+
+    @property
+    def selected(self):
+        """The last selected key, or None."""
+        return self.selection[-1] if self.selection else None
+
+    @selected.setter
+    def selected(self, key):
+        self.selection = [] if key is None else [key]
+
+    def select_keys(self, keys):
+        self.selection = list(keys)
+        self._restyle()
 
     def _double_click(self, event):
         if self.measure and event.button == 1 and any(self.picks) and self.pick_at(event.pos) is None:
             self.set_picks([None, None])
+
+    def set_tool(self, tool):
+        """A drawing tool takes the mouse (None: hover and select again)."""
+        if self.tool is not None:
+            self.tool.remove()
+        self.tool = tool
+        self.set_hover(None)
 
     def set_measure(self, on):
         """Measure mode: clicks pick points A / B instead of selecting; off clears them."""
@@ -602,20 +959,24 @@ class GeometryView:
         ("datum", name) of the shown datum under canvas pixel `pos`, or
         ("feature", name) of a sketch's origin point, or None.
         """
-        shown = [(("datum", d.name), d) for d in self._datum_list
-                 if self._datum_visible.get(d.name) or d.name in self._forced]
-        shown += [(("feature", name), visual.datum) for name, visual in self._sketch_points.items()]
+        rows = [(("datum", d.name), d.kind, d.origin / SCENE_UNIT, d.direction, d.u, d.v,
+                 self._datums[d.name].half)
+                for d in self._datum_list if self._datum_visible.get(d.name) or d.name in self._forced]
+        if self.editing_sketch is None:
+            rows += [(("feature", name), "point", v.datum.origin / SCENE_UNIT, np.zeros(3), np.zeros(3),
+                      np.zeros(3), 0.0) for name, v in self._sketch_points.items()]
+            for visual in self._sketch_geometry.values():
+                rows += visual.rows(editing=False)
+        elif self.editing_sketch in self._sketch_geometry:
+            rows += self._sketch_geometry[self.editing_sketch].rows(editing=True)
         if self._pick_kinds is not None:
-            shown = [(key, d) for key, d in shown if d.kind in self._pick_kinds]
-        if not shown:
+            rows = [row for row in rows if row[1] in self._pick_kinds]
+        if not rows:
             return None
         transform = self._transform()
         behind = np.inf
         if self._picker is not None and not self.xray:
             behind = self._picker.ray_hit(transform, pos, self._visible_bodies())
-        half = {("datum", n): v.half for n, v in self._datums.items()}
-        rows = [(key, d.kind, d.origin / SCENE_UNIT, d.direction, d.u, d.v, half.get(key, 0.0))
-                for key, d in shown]
         hit = pick_datum(transform, pos, rows, behind)
         return hit[0] if hit is not None else None
 
@@ -659,9 +1020,20 @@ class GeometryView:
         self._gizmo_labels = [scene.visuals.Text(name, color=color, font_size=7,
                                                  parent=self.canvas.scene)
                               for name, color in zip("XYZ", GIZMO_COLORS)]
-        self.view.camera.on_turn = self._update_gizmo
+        self.view.camera.on_turn = self._camera_moved
         self.canvas.events.resize.connect(lambda event: self._update_gizmo())
         self._update_gizmo()
+
+    def _camera_moved(self):
+        self._update_gizmo()
+        mm_per_px = self._mm_per_px()
+        for visual in self._sketch_geometry.values():
+            visual.draw_crosses(mm_per_px)
+
+    def _mm_per_px(self):
+        """Scene mm per canvas pixel at the camera's pivot depth (as the pan uses)."""
+        camera = self.view.camera
+        return float(camera.scale_factor) / max(min(camera._viewbox.size), 1.0)
 
     def _update_gizmo(self):
         # The world axes as the view draws them: the camera's center and a
@@ -708,8 +1080,7 @@ class GeometryView:
 
         self._bodies = {b.name: _BodyVisual(b, self.root) for b in geometry.bodies}
         self._visible = {name: self._visible.get(name, True) for name in self._bodies}
-        if self.selected is not None and self.selected[0] == "body" and self.selected[1] not in self._bodies:
-            self.selected = None
+        self.selection = [k for k in self.selection if k[0] != "body" or k[1] in self._bodies]
         self._picker = Picker(geometry.bodies)
         self.set_picks([None, None])
 
@@ -733,8 +1104,7 @@ class GeometryView:
         """The part's datums (model.part.Datum), shown as their `visible` says."""
         self._datum_list = list(datums)
         self._datum_visible = {d.name: d.visible for d in self._datum_list}
-        if self.selected is not None and self.selected[0] == "datum" and self.selected[1] not in self._datum_visible:
-            self.selected = None
+        self.selection = [k for k in self.selection if k[0] != "datum" or k[1] in self._datum_visible]
         self.hovered = None
         self._build_datums()
         self._update_bounds()
@@ -746,16 +1116,24 @@ class GeometryView:
         self._datums = {d.name: _DatumVisual(d, self._datum_half, self.root) for d in self._datum_list}
 
     def set_sketches(self, sketches):
-        """[(name, model.sketch.SketchFrame)]: the sketches whose origin points are shown."""
-        for visual in self._sketch_points.values():
+        """[(name, model.sketch.SketchResult)]: the sketches drawn (origin point and lines)."""
+        for visual in list(self._sketch_points.values()) + list(self._sketch_geometry.values()):
             visual.remove()
         self._sketch_points = {
-            name: _DatumVisual(Datum(name, "point", frame.origin), 0.0, self.root, SKETCH_POINT_COLOR)
-            for name, frame in sketches}
-        for key in ("hovered", "selected"):
-            value = getattr(self, key)
-            if value is not None and value[0] == "feature" and value[1] not in self._sketch_points:
-                setattr(self, key, None)
+            name: _DatumVisual(Datum(name, "point", result.frame.origin), 0.0, self.root, SKETCH_POINT_COLOR)
+            for name, result in sketches}
+        self._sketch_geometry = {name: _SketchVisual(name, result, self.root) for name, result in sketches}
+        def alive(key):
+            if key[0] == "feature":
+                return key[1] in self._sketch_points
+            if key[0] == "entity":
+                visual = self._sketch_geometry.get(key[1])
+                return visual is not None and key[2] in visual.line_names + visual.point_names
+            return True
+
+        if self.hovered is not None and not alive(self.hovered):
+            self.hovered = None
+        self.selection = [k for k in self.selection if alive(k)]
         self._update_bounds()
         self._restyle()
 
@@ -767,6 +1145,7 @@ class GeometryView:
             center = d.origin / SCENE_UNIT
             reach = visual.half * (np.abs(d.u) + np.abs(d.v) + np.abs(d.direction) * (d.kind == "axis"))
             points.append(np.array([center - reach, center + reach]))
+        points += [v.segments.reshape(-1, 3) for v in self._sketch_geometry.values() if len(v.segments)]
         if points:
             points = np.concatenate(points)
             self._bounds = (points.min(axis=0), points.max(axis=0))
@@ -784,31 +1163,50 @@ class GeometryView:
     # Sketch mode
     # =====================================================
 
-    def set_sketch(self, frame):
-        """Shows the grid and axes of a sketch (model.sketch.SketchFrame), or hides them (None)."""
+    def set_sketch(self, frame, name=None):
+        """
+        Sketch mode on the sketch `name`: its axes (frame: a
+        model.sketch.SketchFrame), its entities picked one by one; frame=None
+        leaves sketch mode.
+        """
         self.sketch_frame = frame
-        self.sketch_grid.visible = self.sketch_axes.visible = frame is not None
+        self.editing_sketch = name if frame is not None else None
+        self._restyle()
+        self.sketch_axes.visible = frame is not None
         if frame is None:
-            self.sketch_step = None
             self.canvas.update()
             return
+        # "Endless": the ends lie far beyond the camera's far plane, which cuts the lines.
         lo, hi = self._bounds
-        half = 0.5 * float(np.max(hi - lo)) if np.all(np.isfinite([lo, hi])) else DATUM_HALF_MIN
-        half = max(half, DATUM_HALF_MIN)
-        step = _nice_step(2 * half / SKETCH_GRID_LINES)
-        n = int(np.ceil(half / step))
-        reach = n * step
+        reach = SKETCH_AXIS_REACH * max(float(np.max(hi - lo)), DATUM_HALF_MIN)
         origin = frame.origin / SCENE_UNIT
-        segments = []
-        for k in range(-n, n + 1):
-            for along, across in ((frame.u, frame.v), (frame.v, frame.u)):
-                base = origin + k * step * across
-                segments += [base - reach * along, base + reach * along]
-        self.sketch_grid.set_data(pos=np.array(segments, np.float32))
-        axes = [origin, origin + reach * frame.u, origin, origin + reach * frame.v]
+        axes = [origin - reach * frame.u, origin + reach * frame.u, origin - reach * frame.v, origin + reach * frame.v]
         colors = [SKETCH_AXIS_COLORS[0]] * 2 + [SKETCH_AXIS_COLORS[1]] * 2
         self.sketch_axes.set_data(pos=np.array(axes, np.float32), color=np.array(colors, np.float32))
-        self.sketch_step = step
+        self.canvas.update()
+
+    def set_guides(self, frame, guides):
+        """
+        Alignment hints: dashed lines in the sketch's plane (frame), from a
+        point to the one aligned with it; [(from, to) (2,) sketch mm]. Dashes
+        and gaps are GUIDE_DASH_PX / GUIDE_GAP_PX long on the screen.
+        """
+        self.guides = list(guides) if frame is not None else []
+        if not self.guides:
+            self.guide_lines.visible = False
+            self.canvas.update()
+            return
+        mm_per_px = self._mm_per_px()
+        dash, gap = GUIDE_DASH_PX * mm_per_px, GUIDE_GAP_PX * mm_per_px
+        segments = []
+        for a, b in self.guides:
+            start, end = frame.to_world(np.array([a, b]) * SCENE_UNIT) / SCENE_UNIT
+            length = float(np.linalg.norm(end - start))
+            direction = (end - start) / max(length, 1e-12)
+            for t in np.arange(0.0, length, dash + gap)[:2000]:
+                segments += [start + t * direction, start + min(t + dash, length) * direction]
+        self.guide_lines.set_data(pos=np.array(segments, np.float32))
+        self.guide_lines.visible = bool(segments)
         self.canvas.update()
 
     def look_at(self, toward, up):
@@ -914,19 +1312,22 @@ class GeometryView:
         self.canvas.update()
 
     def _restyle(self):
+        selected = set(self.selection)
         for name, visual in self._bodies.items():
             visual.set_style(
                 visible=self._visible[name],
-                selected=(("body", name) == self.selected),
+                selected=("body", name) in selected,
                 xray=self.xray,
                 show_edges=self.show_edges,
             )
         for name, visual in self._datums.items():
             key = ("datum", name)
-            state = "hover" if key == self.hovered else "selected" if key == self.selected else None
+            state = "hover" if key == self.hovered else "selected" if key in selected else None
             visual.set_style(self._datum_visible.get(name, True) or name in self._forced, state)
         for name, visual in self._sketch_points.items():
             key = ("feature", name)
-            state = "hover" if key == self.hovered else "selected" if key == self.selected else None
+            state = "hover" if key == self.hovered else "selected" if key in selected else None
             visual.set_style(True, state)
+        for name, visual in self._sketch_geometry.items():
+            visual.set_style(self.hovered, selected, name == self.editing_sketch, self._mm_per_px())
         self.canvas.update()

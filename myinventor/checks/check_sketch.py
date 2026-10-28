@@ -7,7 +7,7 @@
 #     refused on load, a used feature cannot be deleted;
 #   - the ribbon: File, 3D Model, Sketch; Sketch disabled outside sketch mode;
 #   - right click on each origin plane > New Sketch: the sketch is added
-#     (browser row, file), sketch mode starts (Sketch tab, grid on the plane),
+#     (browser row, file), sketch mode starts (Sketch tab, its endless axes),
 #     and the camera looks at the plane: u to the right, v up the screen,
 #     the normal toward the viewer; Finish Sketch leaves it;
 #   - Start 2D Sketch: with a plane selected it starts there; else the
@@ -39,6 +39,11 @@ from vispy import app                                                 # noqa: E4
 
 app.use_app("pyside6")
 app.use_app().create()
+
+sys.path.insert(0, os.path.join(ROOT, "checks"))
+from vispy_errors import install as _watch_vispy  # noqa: E402
+
+VISPY_ERRORS = _watch_vispy()
 
 from PySide6.QtCore import QEvent, QPointF, Qt                      # noqa: E402
 from PySide6.QtGui import QMouseEvent                                 # noqa: E402
@@ -75,7 +80,7 @@ def check_model():
         part.add_feature(Sketch(part.free_feature_name("Sketch"), plane=plane))
     check("names Sketch1..3", [f.name for f in part.features] == ["Sketch1", "Sketch2", "Sketch3"])
     result = rebuild(part)
-    frames = [result.outputs[f.name] for f in part.features]
+    frames = [result.outputs[f.name].frame for f in part.features]
     check("frames: u x v = normal = the plane's normal",
           all(np.allclose(np.cross(f.u, f.v), f.normal) for f in frames)
           and [tuple(f.normal) for f in frames] == [(0, 0, 1), (0, 1, 0), (1, 0, 0)])
@@ -106,6 +111,7 @@ def check_model():
 
 def hover(native, pos):
     """A mouse move without a button (QTest.mouseMove does not reach the canvas in Qt 6)."""
+    QTest.qWait(20)                 # VisPy drops a move < 10 ms after the previous one
     local = QPointF(float(pos[0]), float(pos[1]))
     event = QMouseEvent(QEvent.MouseMove, local, native.mapToGlobal(local), Qt.NoButton, Qt.NoButton,
                         Qt.NoModifier)
@@ -130,6 +136,7 @@ def check_window():
     window.resize(1200, 800)
     window.show()
     settle(300)
+    window.view.canvas.native.setAttribute(Qt.WA_TransparentForMouseEvents)     # the real mouse stays out
     view = window.view
     ribbon = window.ribbon
 
@@ -148,15 +155,20 @@ def check_window():
         feature = window.part.feature(name) if name else None
         check(f"{plane}: {name} created and edited", feature is not None and feature["plane"] == plane
               and ("feature", name) in window._rows)
-        check(f"{plane}: Sketch tab on, grid shown", ribbon.current_title() == "Sketch" and ribbon.isTabEnabled(2)
-              and view.sketch_grid.visible and view.sketch_frame is not None)
+        ends = view.sketch_axes.pos
+        reach = np.linalg.norm(ends[1] - ends[0]) / 2
+        through = np.allclose((ends[0] + ends[1]) / 2, 0) and np.allclose((ends[2] + ends[3]) / 2, 0)
+        along = np.allclose(np.cross(ends[1] - ends[0], view.sketch_frame.u), 0, atol=1e-3)             and np.allclose(np.cross(ends[3] - ends[2], view.sketch_frame.v), 0, atol=1e-3)
+        check(f"{plane}: Sketch tab on, axes through the origin along u and v, far out both ways",
+              ribbon.current_title() == "Sketch" and ribbon.isTabEnabled(2) and view.sketch_axes.visible
+              and through and along and reach > 1e4 and not hasattr(view, "sketch_grid"), f"reach {reach:.3g} mm")
         moves = screen_moves(view, view.sketch_frame)
         u, v, n = moves
         check(f"{plane}: u right, v up, normal toward the viewer",
               u[0] > 10 and abs(u[1]) < 0.5 and v[1] < -10 and abs(v[0]) < 0.5
               and abs(n[0]) < 0.5 and abs(n[1]) < 0.5 and n[2] < 0, f"{np.round(moves, 3).tolist()}")
         window.finish_sketch_action.trigger()
-        check(f"{plane}: Finish Sketch leaves it", window.editing is None and not view.sketch_grid.visible
+        check(f"{plane}: Finish Sketch leaves it", window.editing is None and not view.sketch_axes.visible
               and ribbon.current_title() == "3D Model" and not ribbon.isTabEnabled(2))
     check("browser: Sketch1..3 under the part", [window.tree.topLevelItem(0).child(i).text(0) for i in (1, 2, 3)]
           == ["Sketch1", "Sketch2", "Sketch3"])
@@ -255,7 +267,7 @@ def check_window():
     created = window.editing
     window.undo()
     check("undo of the creation leaves sketch mode", window.editing is None
-          and created not in [f.name for f in window.part.features] and not view.sketch_grid.visible)
+          and created not in [f.name for f in window.part.features] and not view.sketch_axes.visible)
 
     # --- save, open, new
     path = os.path.join(TMP, "sketches.part.toml")
@@ -277,6 +289,7 @@ def check_window():
 def main():
     check_model()
     check_window()
+    check("no errors in VisPy callbacks", not VISPY_ERRORS, f"{VISPY_ERRORS[:3]}")
     print("FAILED: " + ", ".join(FAILED) if FAILED else "all checks passed")
     return 1 if FAILED else 0
 

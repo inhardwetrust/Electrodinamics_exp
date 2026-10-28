@@ -43,6 +43,11 @@ from vispy import app                                                 # noqa: E4
 app.use_app("pyside6")
 app.use_app().create()
 
+sys.path.insert(0, os.path.join(ROOT, "checks"))
+from vispy_errors import install as _watch_vispy  # noqa: E402
+
+VISPY_ERRORS = _watch_vispy()
+
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt              # noqa: E402
 from PySide6.QtGui import QMouseEvent                                 # noqa: E402
 from PySide6.QtTest import QTest                                      # noqa: E402
@@ -137,6 +142,7 @@ def check_window():
     settle(300)
     view = window.view
     native = view.canvas.native
+    native.setAttribute(Qt.WA_TransparentForMouseEvents)    # the real mouse stays out (the check sends its own)
 
     # --- the browser of a new part
     root = window.tree.topLevelItem(0)
@@ -339,6 +345,7 @@ def main():
     check_cube()
     check_origin()
     check_window()
+    check("no errors in VisPy callbacks", not VISPY_ERRORS, f"{VISPY_ERRORS[:3]}")
     print("FAILED: " + ", ".join(FAILED) if FAILED else "all checks passed")
     return 1 if FAILED else 0
 

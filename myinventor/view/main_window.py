@@ -35,8 +35,22 @@
 #   selected it starts there, else the origin planes are shown and a click on
 #   one (in 3D or in the browser) starts it; Esc cancels;
 # - sketch mode: the Sketch tab, the camera looking at the plane, the
-#   sketch's grid; Finish Sketch leaves it (Look At looks again). Undo past
-#   the sketch's creation, New and Open leave it too.
+#   sketch's endless axes; Finish Sketch leaves it (Look At looks again). Undo past
+#   the sketch's creation, New and Open leave it too;
+# - in sketch mode a click selects a line or a point of the sketch; Sketch >
+#   Line draws polylines (view/sketch_tools.py: a click per point, a preview
+#   of the next line; Esc ends the chain, a second Esc the tool); every line
+#   is one undo step; Sketch > Point puts explicit points (a dot in a
+#   gapped cross, as Inventor draws them);
+# - several sketch entities can be selected (Shift + click, a box: see
+#   view/geometry_view.py); a click on a point takes the points at the same
+#   place with it;
+# - a left drag moves the selected sketch points and lines (a coordinate
+#   given by a formula stays; points at one place take the alignment hints,
+#   view/sketch_tools.py align()); one undo step, Esc while dragging puts it
+#   back;
+# - Delete deletes the selection: a sketch line (with its end points no
+#   other line uses) or point (with its lines), or a feature nothing uses.
 #
 # A click in 3D selects; the Measure button switches to picking points A / B
 # (view/geometry_view.py), shown with the distance in the status bar.
@@ -45,7 +59,10 @@
 # The window's size and the recent files are app settings (app_settings.py,
 # MYINVENTOR_SETTINGS for tests).
 
+import math
 import os
+
+import numpy as np
 
 from PySide6.QtCore import QEvent, QRect, Qt
 from PySide6.QtGui import QAction, QBrush, QColor, QGuiApplication, QKeySequence
@@ -61,6 +78,7 @@ from model.part import PartError
 from model.part_file import EXTENSION, PartFileError
 from model.rebuild import rebuild
 from model.sketch import Sketch
+from view.sketch_tools import ALIGN_PX, PointTool, PolylineTool, align, fmt_mm
 from view.geometry_view import GeometryView
 from view.parameters_panel import COMMENT, FORMULA, NAME, ParametersPanel
 from view.ribbon import Ribbon
@@ -71,6 +89,9 @@ HOVER_ROW = QColor(60, 200, 90, 70)          # the row of the datum hovered in 3
 HINT = ("Middle drag: rotate · Ctrl + middle drag: pan · wheel: zoom · "
         "click: select, Esc: clear")
 MEASURE_HINT = "Measure: click: point A, Shift + click: point B, Esc: clear the points"
+LINE_HINT = ("Line: click points; click the first point to close, the last one to stop · "
+             "Esc: end the chain, Esc again: leave Line")
+POINT_HINT = "Point: click to put a point · Esc: leave Point"
 PICK_PLANE_HINT = "Start 2D Sketch: select a plane (in 3D or in the browser), Esc: cancel"
 ERROR_COLOR = QColor(200, 30, 30)
 EDITING_ROW = QColor(0, 120, 215, 45)        # the sketch being edited
@@ -89,6 +110,15 @@ def _fmt_point(values):
 
 def _fmt_vector(values):
     return "(" + ", ".join(f"{v + 0.0:.6g}" for v in values) + ")"     # + 0.0: no "-0"
+
+
+def _number(text):
+    """The value of a formula that is a plain number (a point that may be dragged), else None."""
+    try:
+        value = float(text)
+    except ValueError:
+        return None
+    return value if math.isfinite(value) else None
 
 
 def _group_item(parent, text):
@@ -129,6 +159,9 @@ class MainWindow(QMainWindow):
         self.view.on_select = self._on_view_select
         self.view.on_hover = self._on_view_hover
         self.view.on_escape = self._escape
+        self.view.on_delete = self.delete_selected
+        self.view.on_drag = self._drag_entity
+        self._dragged = None        # {point name: (x0, y0) mm, None where a formula} while dragging
         self.setCentralWidget(self.view.canvas.native)
         self.view_buttons = ViewButtons(self.view)        # standard views over the 3D view
 
@@ -199,6 +232,14 @@ class MainWindow(QMainWindow):
         self.box_check.toggled.connect(self.view.set_show_box)
 
         sketch = self.ribbon.add_tab("Sketch")
+        group = sketch.add_group("Create")
+        self.line_action = self._action("Line", self._set_line_tool, checkable=True,
+                                        tip="Draw lines: a click per point; Esc ends the chain, "
+                                            "a second Esc the tool")
+        group.add_action(self.line_action)
+        self.point_action = self._action("Point", self._set_point_tool, checkable=True,
+                                         tip="Put points: a click per point; Esc leaves the tool")
+        group.add_action(self.point_action)
         group = sketch.add_group("View")
         group.add_action(self._action("Look At", self._look_at_sketch, tip="Look at the sketch's plane again"))
         group = sketch.add_group("Exit")
@@ -281,15 +322,14 @@ class MainWindow(QMainWindow):
         self.view.set_datums(self.part.origin)
         self.view.set_sketches([(f.name, result.outputs[f.name]) for f in self.part.features
                                 if f.TYPE == "sketch" and f.name in result.outputs])
+        if self.editing is not None and self.editing in result.outputs:
+            self.view.set_sketch(result.outputs[self.editing].frame, self.editing)
         self.view.set_geometry(Geometry(result.bodies), reset=reset_view)
         self._fill_tree()
         self.parameters.show_parameters(self.part.parameters, result.values, result.errors)
         if self.editing is not None:
-            frame = result.outputs.get(self.editing)
-            if frame is None:                   # undone, deleted, or it fails now
+            if self.editing not in result.outputs:     # undone, deleted, or it fails now
                 self.finish_sketch(refresh=False)
-            else:
-                self.view.set_sketch(frame)
         self._update_title()
         self._on_pick(self.view.picks)
 
@@ -489,13 +529,15 @@ class MainWindow(QMainWindow):
     def edit_sketch(self, name):
         """Sketch mode on an existing sketch."""
         self._stop_picking_plane()
-        frame = self.result.outputs.get(name)
-        if frame is None:
+        built = self.result.outputs.get(name)
+        if built is None:
             self.show_error(f"{name} cannot be edited: {self.result.feature_errors.get(name, 'not built')}")
             return
+        self.line_action.setChecked(False)
+        self.point_action.setChecked(False)
         self.editing = name
         self.view.select(None)
-        self.view.set_sketch(frame)
+        self.view.set_sketch(built.frame, name)
         self._look_at_sketch()
         self.ribbon.set_tab_enabled("Sketch", True)
         self.ribbon.show_tab("Sketch")
@@ -506,6 +548,8 @@ class MainWindow(QMainWindow):
     def finish_sketch(self, refresh=True):
         if self.editing is None:
             return
+        self.line_action.setChecked(False)
+        self.point_action.setChecked(False)
         self.editing = None
         self.view.set_sketch(None)
         self.ribbon.set_tab_enabled("Sketch", False)
@@ -519,6 +563,134 @@ class MainWindow(QMainWindow):
         frame = self.view.sketch_frame
         if frame is not None:
             self.view.look_at(frame.normal, frame.v)
+
+    def _set_line_tool(self, on):
+        self._set_tool(on, self.line_action, lambda: PolylineTool(
+            self.view, self.editing, self._edited_result, self._add_line,
+            on_exit=lambda: self.line_action.setChecked(False)))
+
+    def _set_point_tool(self, on):
+        self._set_tool(on, self.point_action, lambda: PointTool(
+            self.view, self.editing, self._edited_result, self._add_point,
+            on_exit=lambda: self.point_action.setChecked(False)))
+
+    def _set_tool(self, on, action, make):
+        """One drawing tool at a time: turning one on turns the other off."""
+        if on and self.editing is not None:
+            for other in (self.line_action, self.point_action):
+                if other is not action and other.isChecked():
+                    other.blockSignals(True)
+                    other.setChecked(False)
+                    other.blockSignals(False)
+            self.view.select(None)
+            self._on_view_select(None)
+            self.view.set_tool(make())
+        elif not any(a.isChecked() for a in (self.line_action, self.point_action)):
+            self.view.set_tool(None)
+        self._on_pick(self.view.picks)
+
+    def _add_point(self, xy):
+        """The Point tool's callback: an explicit point at (x, y) mm; one undo step."""
+        sketch = self.part.feature(self.editing)
+        name = sketch.add_point(fmt_mm(xy[0]), fmt_mm(xy[1]), explicit=True)
+        self._commit()
+        return name
+
+    def _edited_result(self):
+        return self.result.outputs[self.editing]
+
+    def _add_line(self, start, end):
+        """The Line tool's callback: anchors -> points (new ones as numbers) and a line; one undo step."""
+        sketch = self.part.feature(self.editing)
+
+        def point(anchor):
+            if anchor[0] == "point":
+                return anchor[1]
+            x, y = anchor[1]
+            return sketch.add_point(fmt_mm(x), fmt_mm(y))
+
+        a, b = point(start), point(end)
+        sketch.add_line(a, b)
+        self._commit()
+        return a, b
+
+    def _drag_entity(self, keys, moved, phase):
+        """
+        A left drag on sketch points and lines (GeometryView.on_drag, keys:
+        the selected entities): every point of them follows by `moved` (mm)
+        from where it was; a coordinate that is a formula stays (the
+        parametric model wins). When the points all sit at one place (one
+        point, or a coincident group) they take the alignment hints. One undo
+        step on release; Esc puts everything back.
+        """
+        sketch_name = keys[0][1] if keys else self.editing
+        if phase == "start":
+            sketch = self.part.feature(sketch_name)
+            names = []
+            for _, _, name in keys:
+                if any(p.name == name for p in sketch.points):
+                    names.append(name)
+                else:
+                    line = sketch.line(name)
+                    names += [line.start, line.end]
+            self._dragged = {n: (_number(sketch.point(n).x), _number(sketch.point(n).y))
+                             for n in dict.fromkeys(names)}
+            return
+        if self._dragged is None:
+            return
+        if phase == "move":
+            sketch = self.part.feature(sketch_name)
+            before = self.result.outputs[sketch_name]
+            group = list(self._dragged)
+            first = group[0]
+            offset, guides = np.asarray(moved, float), []
+            if all(np.allclose(before.points[n], before.points[first], atol=1e-6) for n in group):
+                x0, y0 = self._dragged[first]
+                fixed = (x0 is None, y0 is None)
+                target = np.where(fixed, before.points[first], np.array([x0 or 0.0, y0 or 0.0]) + offset)
+                aligned, guides = align(target, before.points, ALIGN_PX * self.view._mm_per_px(),
+                                        exclude=set(group), fixed=fixed)
+                offset = offset + (aligned - target)
+            for n, (x0, y0) in self._dragged.items():
+                point = sketch.point(n)
+                if x0 is not None:
+                    point.x = fmt_mm(x0 + offset[0])
+                if y0 is not None:
+                    point.y = fmt_mm(y0 + offset[1])
+            self.show_result(rebuild(self.part))
+            self.view.set_guides(before.frame, guides)
+            self._say_fixed()
+            return
+        self.view.set_guides(None, [])
+        if phase == "end":
+            self._commit()
+            self._say_fixed()
+        else:                                   # cancel
+            self.doc.revert()
+            self._refresh()
+        self._dragged = None
+
+    def _say_fixed(self):
+        fixed = [f"{n}.{axis}" for n, xy in self._dragged.items() for axis, v in zip("xy", xy) if v is None]
+        if fixed:
+            self.statusBar().showMessage(f"{', '.join(fixed)}: a formula, it stays", 5000)
+
+    def delete_selected(self):
+        """The Delete key: the selected sketch entities, or the selected feature."""
+        key = self.view.selected
+        if key is None:
+            return
+        entities = [k for k in self.view.selection if k[0] == "entity"]
+        if entities:
+            for _, sketch_name, name in entities:
+                sketch = self.part.feature(sketch_name)
+                if any(p.name == name for p in sketch.points) or any(line.name == name for line in sketch.lines):
+                    sketch.delete(name)         # an earlier delete may have taken it already
+            self.view.select(None)
+            self._commit()
+            self._show_info(None)
+        elif key[0] == "feature":
+            self.delete_feature(key[1])
 
     def delete_feature(self, name):
         try:
@@ -640,8 +812,8 @@ class MainWindow(QMainWindow):
         selected = self._rows.get(self.view.selected)
         if selected is not None:
             self.tree.setCurrentItem(selected)
-        else:
-            self.view.select(None)
+        elif self.view.selected is not None and self.view.selected[0] != "entity":
+            self.view.select(None)              # gone (sketch entities are not in the tree)
         self.tree.blockSignals(False)
         self._show_info(self.view.selected)
 
@@ -678,13 +850,18 @@ class MainWindow(QMainWindow):
             self._plane_picked(key)
             return
         self.tree.blockSignals(True)
-        if key is None:
+        if key is None or key not in self._rows:
             self.tree.setCurrentItem(None)
             self.tree.clearSelection()
         else:
             self.tree.setCurrentItem(self._rows[key])
         self.tree.blockSignals(False)
-        self._show_info(key)
+        selection = self.view.selection
+        if len(selection) > 1:
+            names = ", ".join(k[-1] for k in selection)
+            self.info.setText(f"<b>{len(selection)} selected</b><br>{names}")
+        else:
+            self._show_info(key)
 
     def _on_view_hover(self, key):
         """The mouse moved onto (or off) a datum in 3D: mark its row."""
@@ -699,6 +876,8 @@ class MainWindow(QMainWindow):
             self.info.setText("")
         elif key[0] == "datum":
             self.info.setText(self._datum_info(self.part.datum(key[1])))
+        elif key[0] == "entity":
+            self.info.setText(self._entity_info(key[1], key[2]))
         elif key[0] == "feature":
             feature = self.part.feature(key[1])
             lines = [f"<b>{feature.name}</b> ({feature.TYPE})"]
@@ -711,6 +890,23 @@ class MainWindow(QMainWindow):
         else:
             body = next(b for b in self.result.bodies if b.name == key[1])
             self.info.setText(self._body_info(body))
+
+    def _entity_info(self, sketch_name, name):
+        sketch = self.part.feature(sketch_name)
+        points = self.result.outputs[sketch_name].points
+
+        def where(p):
+            x, y = points[p]
+            return f"{p} ({x:.6g}, {y:.6g})"
+
+        if any(p.name == name for p in sketch.points):
+            p = sketch.point(name)
+            kind = "sketch point" if p.explicit else "point"
+            return f"<b>{name}</b> ({kind} of {sketch_name})<br>x = {p.x}, y = {p.y} mm<br>{where(name)}"
+        line = sketch.line(name)
+        length = float(((points[line.end] - points[line.start]) ** 2).sum() ** 0.5)
+        return (f"<b>{name}</b> (line of {sketch_name})<br>from {where(line.start)}<br>to {where(line.end)}"
+                f"<br>length {length:.6g} mm")
 
     @staticmethod
     def _datum_info(datum):
@@ -759,7 +955,9 @@ class MainWindow(QMainWindow):
                          f"(dx {_fmt_mm(d[0])}, dy {_fmt_mm(d[1])}, dz {_fmt_mm(d[2])})")
         hint = MEASURE_HINT if self.view.measure else PICK_PLANE_HINT if self.picking_plane else HINT
         if self.editing is not None and not self.view.measure:
-            hint = f"{self.editing}: Finish Sketch to leave it · " + HINT
+            tool = self.view.tool
+            hint = f"{self.editing}: " + (LINE_HINT if isinstance(tool, PolylineTool) else POINT_HINT
+                                          if tool is not None else "Finish Sketch to leave it · " + HINT)
         self.statusBar().showMessage("   ".join(parts) if parts else hint)
 
     # =====================================================
