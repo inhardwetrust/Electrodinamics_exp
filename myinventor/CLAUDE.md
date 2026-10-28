@@ -1,8 +1,11 @@
-# CLAUDE.md — myinventor
+# CLAUDE.md — myCad
 
 Context for Claude sessions. Read this first, then `DESIGN.md`.
 
-myinventor is a simple parametric 3D modeler, written from scratch. Its
+myCad is a simple parametric 3D modeler, written from scratch. (It was
+"myinventor" until 2026-10-28; renamed because Inventor is Autodesk's
+trademark. Old part files and settings still load. The folder itself may
+still be `myinventor/` until it is renamed; nothing depends on its name.) Its
 output is STEP. Later it becomes a part of `../customcst` (our CST-like
 FDTD simulator, which reads STEP), so STEP stays the base format.
 Compatibility with Inventor or any other CAD is not a goal.
@@ -44,7 +47,8 @@ Compatibility with Inventor or any other CAD is not a goal.
   `checks/check_sketch.py`, `checks/check_sketch_line.py`,
   `checks/check_sketch_drag.py`, `checks/check_sketch_point.py`,
   `checks/check_sketch_align.py`, `checks/check_sketch_select.py`,
-  `checks/check_sketch_circle.py`, `checks/check_sketch_snap.py`.
+  `checks/check_sketch_circle.py`, `checks/check_sketch_snap.py`,
+  `checks/check_sketch_construction.py`.
 - VisPy swallows an exception raised in an event callback (it only logs
   "ERROR: Invoking ..."): every window check installs
   `checks/vispy_errors.py` and fails on any such log.
@@ -68,8 +72,8 @@ Compatibility with Inventor or any other CAD is not a goal.
   (`geometry_view.py` and `picking.py` are trimmed copies of customcst's).
   Imports are package-relative to this folder; `main.py` puts it on
   sys.path.
-- Settings: `app_settings.py`, `%APPDATA%\myinventor\settings.json`, or
-  `MYINVENTOR_SETTINGS` (tests must set it).
+- Settings: `app_settings.py`, `%APPDATA%\myCad\settings.json`, or
+  `MYCAD_SETTINGS` (tests must set it).
 - QTest.mouseMove carries no pressed button in Qt 6 (and a plain hover
   does not reach the canvas): synthetic moves send `QMouseEvent`s
   themselves (`checks/check_view.py`).

@@ -2,7 +2,7 @@
 #
 # The part file: TOML, `name.part.toml`.
 #
-#   format = "myinventor-part"
+#   format = "mycad-part"
 #   version = 1
 #
 #   [origin]
@@ -33,7 +33,8 @@ import tomllib
 
 from model.part import Part, PartError
 
-FORMAT = "myinventor-part"
+FORMAT = "mycad-part"
+LEGACY_FORMATS = ("myinventor-part",)       # written before the program was renamed (myCad); still read
 VERSION = 1
 EXTENSION = ".part.toml"
 
@@ -56,8 +57,8 @@ def load(path):
 
 def from_data(data, path="the part"):
     data = dict(data)
-    if data.pop("format", None) != FORMAT:
-        raise PartFileError(f"{path}: not a myinventor part (format = {FORMAT!r} is missing)")
+    if data.pop("format", None) not in (FORMAT, *LEGACY_FORMATS):
+        raise PartFileError(f"{path}: not a myCad part (format = {FORMAT!r} is missing)")
     version = data.pop("version", None)
     if not isinstance(version, int) or isinstance(version, bool) or version < 1:
         raise PartFileError(f"{path}: version must be a positive integer")

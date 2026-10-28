@@ -2,9 +2,9 @@
 #
 # Settings of the application itself (not of a model): a small JSON file in
 # the user's profile,
-#   Windows: %APPDATA%\myinventor\settings.json
-#   else:    ~/.config/myinventor/settings.json
-# or the path in the MYINVENTOR_SETTINGS environment variable (tests).
+#   Windows: %APPDATA%\myCad\settings.json
+#   else:    ~/.config/myCad/settings.json
+# or the path in the MYCAD_SETTINGS environment variable (tests).
 #
 #   {
 #     "version": 1,
@@ -27,12 +27,22 @@ FORMAT_VERSION = 1
 MAX_RECENT = 10
 
 
+def _base():
+    return os.environ.get("APPDATA") or os.path.join(os.path.expanduser("~"), ".config")
+
+
 def settings_path():
-    override = os.environ.get("MYINVENTOR_SETTINGS")
+    override = os.environ.get("MYCAD_SETTINGS")
     if override:
         return override
-    base = os.environ.get("APPDATA") or os.path.join(os.path.expanduser("~"), ".config")
-    return os.path.join(base, "myinventor", "settings.json")
+    return os.path.join(_base(), "myCad", "settings.json")
+
+
+def legacy_path():
+    """Where the program kept its settings before it was renamed (myinventor -> myCad), or None."""
+    if os.environ.get("MYCAD_SETTINGS"):
+        return None                         # a redirected (test) file has no past
+    return os.path.join(_base(), "myinventor", "settings.json")
 
 
 def _window(value):
@@ -64,7 +74,10 @@ class AppSettings:
     def load(cls):
         path = settings_path()
         if not os.path.isfile(path):
-            return cls()
+            legacy = legacy_path()
+            if legacy is None or not os.path.isfile(legacy):
+                return cls()
+            path = legacy                   # read once; the next save writes the new place
         try:
             with open(path, encoding="utf-8") as f:
                 data = json.load(f)

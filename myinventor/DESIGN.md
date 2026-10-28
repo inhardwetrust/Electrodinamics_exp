@@ -1,4 +1,4 @@
-# myinventor — design
+# myCad — design
 
 ## Goal
 

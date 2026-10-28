@@ -130,6 +130,7 @@ SNAP_MARKER_COLOR = (0.25, 1.0, 0.35, 1.0)        # where a drag snapped (green,
 BOX_COLOR_WINDOW = (0.45, 0.75, 1.0, 1.0)         # the selection box: solid, wholly inside
 BOX_COLOR_CROSSING = (0.45, 1.0, 0.6, 1.0)        # dashed: inside or crossing
 COINCIDENT_MM = 1e-6        # points this close are at the same place
+CONSTRUCTION_DASH_PX, CONSTRUCTION_GAP_PX = 8.0, 5.0     # construction lines: dashed
 CROSS_GAP_PX = 3.0          # an explicit point's cross: its arms run from this far from the point
 CROSS_ARM_PX = 9.0          # to this far (pixels)
 SKETCH_AXIS_COLORS = ((1.0, 0.45, 0.4, 0.9), (0.45, 0.9, 0.45, 0.9))    # the sketch's x, y
@@ -161,6 +162,35 @@ def box_segments(lo, hi):
     pairs = [(0, 1), (1, 3), (3, 2), (2, 0), (4, 5), (5, 7), (7, 6), (6, 4),
              (0, 4), (1, 5), (2, 6), (3, 7)]
     return np.array([corners[i] for pair in pairs for i in pair], dtype=np.float32)
+
+
+def _dash_polyline(points, dash, gap, most=20000):
+    """
+    (K, 2, 3) dashes along a polyline (N, 3): `dash` long every dash + gap,
+    measured along it (a dash may turn a corner: then it is two pieces).
+    At most `most` dashes: a very long line (zoomed far in) gets longer ones.
+    """
+    lengths = np.linalg.norm(np.diff(points, axis=0), axis=1)
+    total = float(lengths.sum())
+    period = dash + gap
+    if total <= 0 or period <= 0:
+        return np.zeros((0, 2, 3))
+    if total / period > most:
+        dash, period = dash * total / (period * most), total / most
+    out = []
+    s0 = 0.0
+    for a, b, length in zip(points[:-1], points[1:], lengths):
+        if length <= 0:
+            continue
+        d = (b - a) / length
+        k = int(np.floor(s0 / period))
+        while k * period < s0 + length:
+            lo, hi = max(k * period, s0), min(k * period + dash, s0 + length)
+            if hi > lo:
+                out.append([a + (lo - s0) * d, a + (hi - s0) * d])
+            k += 1
+        s0 += length
+    return np.array(out).reshape(-1, 2, 3)
 
 
 def _segment_meets_box(p, q, lo, hi):
@@ -397,10 +427,11 @@ class _DatumVisual:
 
 class _SketchVisual:
     """
-    A sketch's lines (always), its explicit points (a dot in a gapped cross,
-    always) and the other points (dots, in sketch mode). The cross lies in
-    the sketch's plane and keeps its size in pixels: draw_crosses(mm per
-    pixel) after every camera change.
+    A sketch's lines and circles (always; construction ones dashed), its
+    explicit points (a dot in a gapped cross, always) and the other points
+    (dots, in sketch mode). The crosses and the dashes lie in the sketch's
+    plane and keep their size in pixels: draw_screen_sized(mm per pixel)
+    after every camera change.
     """
 
     def __init__(self, name, result, parent):
@@ -411,6 +442,7 @@ class _SketchVisual:
         blocks = [result.segments_mm()] + [result.circle_segments_mm(n) for n in self.circle_names]
         self.segments = np.concatenate(blocks) if blocks else np.zeros((0, 2, 3))     # (K, 2, 3) mm
         self.seg_owner = self.line_names + [n for n in self.circle_names for _ in range(CIRCLE_SEGMENTS)]
+        self.construction = {e.name for e in result.lines + result.circles if e.construction}
         self.point_names = list(result.points)
         self.point_pos = np.array([result.world_mm(n) for n in self.point_names]).reshape(-1, 3)
         self.explicit = [n in result.explicit for n in self.point_names]
@@ -427,11 +459,16 @@ class _SketchVisual:
         self.crosses.visible = any(self.explicit)
         self.cross_segments = np.zeros((0, 2, 3))             # as last drawn, mm (for the checks)
         self._cross_colors = []
+        self.dashes = scene.visuals.Line(connect="segments", width=2.0, parent=parent)
+        self.dashes.order = 6
+        self.dashes.visible = bool(self.construction)
+        self.dash_segments = {}     # construction entity -> (K, 2, 3) mm, as last drawn (for the checks)
+        self._dash_colors = {}
         self.lines.visible = len(self.segments) > 0
         self.shown_colors = {}      # key -> color last drawn (for the checks)
 
     def remove(self):
-        for visual in (self.lines, self.dots, self.crosses):
+        for visual in (self.lines, self.dots, self.crosses, self.dashes):
             visual.parent = None
 
     def key(self, entity, editing):
@@ -443,14 +480,20 @@ class _SketchVisual:
             return HOVER_COLOR if key == hovered else SELECTED_COLOR if key in selected else None
 
         self.shown_colors = {}
-        if len(self.segments):
-            colors = []
-            for n in self.seg_owner:
-                key = self.key(n, editing)
-                c = color(key) or SKETCH_LINE_COLOR
-                self.shown_colors[key] = c
+        self._dash_colors = {}
+        solid = [i for i, n in enumerate(self.seg_owner) if n not in self.construction]
+        colors = []
+        for n in self.seg_owner:
+            key = self.key(n, editing)
+            c = color(key) or SKETCH_LINE_COLOR
+            self.shown_colors[key] = c
+            if n in self.construction:
+                self._dash_colors[n] = c
+            else:
                 colors += [c, c]
-            self.lines.set_data(pos=self.segments.reshape(-1, 3).astype(np.float32),
+        self.lines.visible = bool(solid)
+        if solid:
+            self.lines.set_data(pos=self.segments[solid].reshape(-1, 3).astype(np.float32),
                                 color=np.array(colors, np.float32), width=2.0)
         shown = [i for i, e in enumerate(self.explicit) if e or editing]
         self.dots.visible = bool(shown)
@@ -465,9 +508,30 @@ class _SketchVisual:
                                edge_width=1.0, face_color=np.array(colors), edge_color=(0, 0, 0, 1))
         self._cross_colors = [self.shown_colors.get(self.key(n, editing), SKETCH_LINE_COLOR)
                               for n, e in zip(self.point_names, self.explicit) if e]
-        self.draw_crosses(mm_per_px)
+        self.draw_screen_sized(mm_per_px)
 
-    def draw_crosses(self, mm_per_px):
+    def draw_screen_sized(self, mm_per_px):
+        self._draw_dashes(mm_per_px)
+        self._draw_crosses(mm_per_px)
+
+    def _draw_dashes(self, mm_per_px):
+        """Construction lines and circles: dashes of CONSTRUCTION_DASH_PX, gaps of CONSTRUCTION_GAP_PX."""
+        if not self.construction:
+            return
+        owner = np.array(self.seg_owner)
+        segments, colors = [], []
+        self.dash_segments = {}
+        for n in self.construction:
+            pieces = self.segments[owner == n]
+            polyline = np.vstack([pieces[:1, 0], pieces[:, 1]])
+            dashes = _dash_polyline(polyline, CONSTRUCTION_DASH_PX * mm_per_px, CONSTRUCTION_GAP_PX * mm_per_px)
+            self.dash_segments[n] = dashes
+            segments.append(dashes.reshape(-1, 3))
+            colors += [self._dash_colors.get(n, SKETCH_LINE_COLOR)] * (2 * len(dashes))
+        self.dashes.set_data(pos=np.concatenate(segments).astype(np.float32),
+                             color=np.array(colors, np.float32), width=2.0)
+
+    def _draw_crosses(self, mm_per_px):
         """The crosses of the explicit points, CROSS_GAP_PX..CROSS_ARM_PX from the point along u and v."""
         centers = self.point_pos[np.array(self.explicit, bool)] if len(self.explicit) else np.zeros((0, 3))
         if not len(centers):
@@ -1050,7 +1114,7 @@ class GeometryView:
         self._update_gizmo()
         mm_per_px = self._mm_per_px()
         for visual in self._sketch_geometry.values():
-            visual.draw_crosses(mm_per_px)
+            visual.draw_screen_sized(mm_per_px)
 
     def _mm_per_px(self):
         """Scene mm per canvas pixel at the camera's pivot depth (as the pan uses)."""

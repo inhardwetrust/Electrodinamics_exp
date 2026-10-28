@@ -35,7 +35,7 @@ sys.path.insert(0, ROOT)
 sys.stdout.reconfigure(encoding="utf-8")
 
 SETTINGS = os.path.join(tempfile.mkdtemp(), "settings.json")
-os.environ["MYINVENTOR_SETTINGS"] = SETTINGS            # never the user's settings
+os.environ["MYCAD_SETTINGS"] = SETTINGS            # never the user's settings
 
 import numpy as np                                                    # noqa: E402
 from vispy import app                                                 # noqa: E402

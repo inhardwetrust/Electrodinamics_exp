@@ -140,7 +140,7 @@ def check_file():
     with open(path, encoding="utf-8") as f:
         text = f.read()
     check("the file is valid TOML", isinstance(tomllib.loads(text), dict))
-    check("the file starts with the format", text.startswith('format = "myinventor-part"\nversion = 1\n'))
+    check("the file starts with the format", text.startswith('format = "mycad-part"\nversion = 1\n'))
     back = load(path)
     check("round trip: the same part", back.to_dict() == part.to_dict())
     check("round trip: parameter order and comment",
@@ -148,14 +148,14 @@ def check_file():
           == [("L", "11.46", "patch length"), ("h", "L / 10", "")])
     check("round trip: origin visibility", [d.name for d in back.origin if d.visible] == ["XY Plane"])
     check("round trip: features", back.features == part.features and back.features[1]["flip"] is True)
-    check("a new part writes only the header", dumps(Part()) == 'format = "myinventor-part"\nversion = 1\n')
+    check("a new part writes only the header", dumps(Part()) == 'format = "mycad-part"\nversion = 1\n')
 
-    head = 'format = "myinventor-part"\nversion = 1\n'
+    head = 'format = "mycad-part"\nversion = 1\n'
     feature = '[[feature]]\nname = "Pad1"\ntype = "test_pad"\non = "XY Plane"\nsize = ["1", "2"]\nheight = "1"\n'
     broken = {
         "not TOML": ("format = = 1", "not valid TOML"),
-        "no format": ("version = 1\n", "not a myinventor part"),
-        "newer version": ('format = "myinventor-part"\nversion = 99\n', "newer"),
+        "no format": ("version = 1\n", "not a myCad part"),
+        "newer version": ('format = "mycad-part"\nversion = 99\n', "newer"),
         "unknown top key": (head + "colour = 1\n", "unknown key"),
         "unknown origin item": (head + '[origin]\nvisible = ["AB Plane"]\n', "AB Plane"),
         "parameter without formula": (head + '[[parameter]]\nname = "a"\n', "parameter 1"),
@@ -229,6 +229,36 @@ def check_document():
     check("revert drops an uncommitted edit", doc.part.parameter("a").formula == "3")
 
 
+def check_rename_compat():
+    """The program was myinventor before: its files and its settings still load."""
+    path = os.path.join(TMP, "old.part.toml")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write('format = "myinventor-part"\nversion = 1\n[[parameter]]\nname = "a"\nformula = "1"\n')
+    check("a file written as myinventor-part still opens", load(path).parameter("a").formula == "1")
+    check("new files are written as mycad-part", dumps(Part()).startswith('format = "mycad-part"'))
+
+    import json
+    import app_settings
+    saved = {k: os.environ.get(k) for k in ("MYCAD_SETTINGS", "APPDATA")}
+    appdata = os.path.join(TMP, "appdata")
+    os.makedirs(os.path.join(appdata, "myinventor"))
+    with open(os.path.join(appdata, "myinventor", "settings.json"), "w", encoding="utf-8") as f:
+        json.dump({"version": 1, "recent_files": ["C:/old.part.toml"]}, f)
+    try:
+        os.environ.pop("MYCAD_SETTINGS", None)
+        os.environ["APPDATA"] = appdata
+        settings = app_settings.AppSettings.load()
+        check("old settings (APPDATA/myinventor) are read once", settings.recent_files == ["C:/old.part.toml"])
+        settings.save()
+        check("  and saved to APPDATA/myCad", os.path.isfile(os.path.join(appdata, "myCad", "settings.json")))
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
 def check_rebuild():
     part = sample_part()
     part.add_parameter("bad", "nope * 2")
@@ -252,6 +282,7 @@ def main():
     check_features()
     check_document()
     check_rebuild()
+    check_rename_compat()
     print("FAILED: " + ", ".join(FAILED) if FAILED else "all checks passed")
     return 1 if FAILED else 0
 

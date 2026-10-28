@@ -26,7 +26,7 @@ sys.path.insert(0, ROOT)
 sys.stdout.reconfigure(encoding="utf-8")
 
 TMP = tempfile.mkdtemp()
-os.environ["MYINVENTOR_SETTINGS"] = os.path.join(TMP, "settings.json")     # never the user's settings
+os.environ["MYCAD_SETTINGS"] = os.path.join(TMP, "settings.json")     # never the user's settings
 
 from vispy import app                                                 # noqa: E402
 
@@ -157,7 +157,7 @@ def main():
     check("Open: the part comes back", window.open_file(path) and window.part.to_dict() == back.to_dict()
           and window.doc.name == "patch")
     broken = os.path.join(TMP, "broken.part.toml")
-    text = 'format = "myinventor-part"\nversion = 1\n[[parameter]]\nname = "1a"\nformula = "1"\n'
+    text = 'format = "mycad-part"\nversion = 1\n[[parameter]]\nname = "1a"\nformula = "1"\n'
     with open(broken, "w", encoding="utf-8") as f:
         f.write(text)
     count = len(errors)

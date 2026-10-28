@@ -42,7 +42,9 @@
 #   of the next line; Esc ends the chain, a second Esc the tool); every line
 #   is one undo step; Sketch > Point puts explicit points (a dot in a
 #   gapped cross, as Inventor draws them); Sketch > Circle: the center, then
-#   the radius;
+#   the radius; Sketch > Construction: new lines and circles are construction
+#   ones (dashed), or, with lines or circles selected, shows and sets theirs
+#   (on only if all are; a click sets them all);
 # - several sketch entities can be selected (Shift + click, a box: see
 #   view/geometry_view.py); a click on a point takes the points at the same
 #   place with it;
@@ -58,7 +60,7 @@
 #
 # Dialogs go through ask_* methods, so the checks can answer them.
 # The window's size and the recent files are app settings (app_settings.py,
-# MYINVENTOR_SETTINGS for tests).
+# MYCAD_SETTINGS for tests).
 
 import math
 import os
@@ -100,7 +102,7 @@ CIRCLE_HINT = "Circle: click the center, then a point on the circle · Esc: drop
 PICK_PLANE_HINT = "Start 2D Sketch: select a plane (in 3D or in the browser), Esc: cancel"
 ERROR_COLOR = QColor(200, 30, 30)
 EDITING_ROW = QColor(0, 120, 215, 45)        # the sketch being edited
-FILE_FILTER = f"myinventor part (*{EXTENSION});;All files (*)"
+FILE_FILTER = f"myCad part (*{EXTENSION});;All files (*)"
 
 
 def _fmt_mm(value):
@@ -158,6 +160,7 @@ class MainWindow(QMainWindow):
         self._rows = {}             # key -> tree row
         self._hover_row = None
         self.editing = None         # name of the sketch in sketch mode, or None
+        self.construction_mode = False  # new lines and circles are construction ones
         self.picking_plane = False  # Start 2D Sketch waits for a plane
         self.view = GeometryView()
         self.view.on_pick = self._on_pick
@@ -251,6 +254,12 @@ class MainWindow(QMainWindow):
                                               "Esc drops the center, again leaves the tool")
         group.add_action(self.circle_action)
         self.tool_actions = (self.line_action, self.point_action, self.circle_action)
+        group = sketch.add_group("Format")
+        self.construction_action = self._action(
+            "Construction", self._construction_toggled, checkable=True,
+            tip="Construction lines and circles (dashed). With lines or circles selected: theirs (on only if "
+                "all are); a click sets them all. With none: for the new ones")
+        group.add_action(self.construction_action)
         group = sketch.add_group("View")
         group.add_action(self._action("Look At", self._look_at_sketch, tip="Look at the sketch's plane again"))
         group = sketch.add_group("Exit")
@@ -343,6 +352,7 @@ class MainWindow(QMainWindow):
                 self.finish_sketch(refresh=False)
         self._update_title()
         self._on_pick(self.view.picks)
+        self._sync_construction()
 
     def _commit(self, refresh=True):
         """An edit of doc.part is done: one undo step, then rebuild and show."""
@@ -353,7 +363,7 @@ class MainWindow(QMainWindow):
             self._update_title()
 
     def _update_title(self):
-        self.setWindowTitle(f"{self.doc.name}{'*' if self.doc.modified else ''} — myinventor")
+        self.setWindowTitle(f"{self.doc.name}{'*' if self.doc.modified else ''} — myCad")
         self.undo_action.setEnabled(self.doc.can_undo)
         self.redo_action.setEnabled(self.doc.can_redo)
 
@@ -372,7 +382,7 @@ class MainWindow(QMainWindow):
     def ask_save_changes(self):
         """'save', 'discard' or 'cancel' for a modified part about to be left."""
         answer = QMessageBox.question(
-            self, "myinventor", f"Save the changes to {self.doc.name}?",
+            self, "myCad", f"Save the changes to {self.doc.name}?",
             QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Save)
         return {QMessageBox.Save: "save", QMessageBox.Discard: "discard"}.get(answer, "cancel")
 
@@ -390,12 +400,12 @@ class MainWindow(QMainWindow):
 
     def ask_overwrite_changed(self):
         answer = QMessageBox.question(
-            self, "myinventor", f"{self.doc.path}\nchanged on disk since it was opened. Overwrite it?",
+            self, "myCad", f"{self.doc.path}\nchanged on disk since it was opened. Overwrite it?",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         return answer == QMessageBox.Yes
 
     def show_error(self, text):
-        QMessageBox.critical(self, "myinventor", text)
+        QMessageBox.critical(self, "myCad", text)
 
     def _may_leave(self):
         """True if the current part may be replaced or closed (saved or discarded)."""
@@ -612,9 +622,40 @@ class MainWindow(QMainWindow):
             name = center[1]
         else:
             name = sketch.add_point(fmt_mm(center[1][0]), fmt_mm(center[1][1]))
-        circle = sketch.add_circle(name, fmt_mm(radius))
+        circle = sketch.add_circle(name, fmt_mm(radius), construction=self.construction_mode)
         self._commit()
         return circle
+
+    def _selected_curves(self):
+        """Names of the selected lines and circles of the edited sketch."""
+        if self.editing is None:
+            return []
+        sketch = self.part.feature(self.editing)
+        names = {e.name for e in sketch.lines + sketch.circles}
+        return [k[2] for k in self.view.selection if k[0] == "entity" and k[1] == self.editing and k[2] in names]
+
+    def _sync_construction(self):
+        """The Construction button shows the selected curves' type (on only if all are), else the mode."""
+        curves = self._selected_curves()
+        if curves:
+            sketch = self.part.feature(self.editing)
+            on = all(sketch.curve(n).construction for n in curves)
+        else:
+            on = self.construction_mode
+        self.construction_action.blockSignals(True)
+        self.construction_action.setChecked(on)
+        self.construction_action.blockSignals(False)
+
+    def _construction_toggled(self, on):
+        curves = self._selected_curves()
+        if curves:                              # the selection takes it (one undo step)
+            sketch = self.part.feature(self.editing)
+            for n in curves:
+                sketch.curve(n).construction = on
+            self._commit()
+        else:                                   # the mode for the new ones
+            self.construction_mode = on
+        self._sync_construction()
 
     def _add_point(self, xy):
         """The Point tool's callback: an explicit point at (x, y) mm; one undo step."""
@@ -637,7 +678,7 @@ class MainWindow(QMainWindow):
             return sketch.add_point(fmt_mm(x), fmt_mm(y))
 
         a, b = point(start), point(end)
-        sketch.add_line(a, b)
+        sketch.add_line(a, b, construction=self.construction_mode)
         self._commit()
         return a, b
 
@@ -908,6 +949,7 @@ class MainWindow(QMainWindow):
         if self.picking_plane:
             self._plane_picked(key)
             return
+        self._sync_construction()
         self.tree.blockSignals(True)
         if key is None or key not in self._rows:
             self.tree.setCurrentItem(None)

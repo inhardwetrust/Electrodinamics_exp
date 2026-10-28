@@ -21,16 +21,21 @@
 #   name = "L1"
 #   start = "P1"
 #   end = "P2"
+#   construction = true       # optional: a construction line (drawn dashed)
 #
 #   [[feature.circle]]
 #   name = "C1"
 #   center = "P3"
 #   radius = "d / 2"          # a formula (mm), > 0
+#   construction = true       # optional, as for lines
 #
 # An explicit point is a sketch point in its own right (Inventor's Point),
 # not just the end of lines or a circle's center: it is drawn as a dot in a
 # gapped cross even outside sketch mode, and it stays when what uses it is
 # deleted. Other points go with the last line or circle using them.
+#
+# Construction lines and circles (Inventor's Construction) help to draw and
+# to place things; they are drawn dashed and will not be part of a profile.
 #
 # Its build result is a SketchResult: the frame (where the sketch lies in 3D)
 # and the evaluated points and radii (mm). The frame's u and v are the
@@ -79,6 +84,7 @@ class SketchLine:
     name: str
     start: str              # point names
     end: str
+    construction: bool = False
 
 
 @dataclass
@@ -86,6 +92,7 @@ class SketchCircle:
     name: str
     center: str             # point name
     radius: str             # formula, mm
+    construction: bool = False
 
 
 @dataclass
@@ -167,9 +174,11 @@ class Sketch(Feature):
             data["point"] = [{"name": p.name, "x": p.x, "y": p.y, **({"explicit": True} if p.explicit else {})}
                              for p in self.points]
         if self.lines:
-            data["line"] = [{"name": line.name, "start": line.start, "end": line.end} for line in self.lines]
+            data["line"] = [{"name": line.name, "start": line.start, "end": line.end, **_construction(line)}
+                            for line in self.lines]
         if self.circles:
-            data["circle"] = [{"name": c.name, "center": c.center, "radius": c.radius} for c in self.circles]
+            data["circle"] = [{"name": c.name, "center": c.center, "radius": c.radius, **_construction(c)}
+                              for c in self.circles]
         return data
 
     def formulas(self):
@@ -219,20 +228,24 @@ class Sketch(Feature):
         self.points.append(SketchPoint(name, str(x), str(y), explicit))
         return name
 
-    def add_line(self, start, end):
+    def add_line(self, start, end, construction=False):
         if start == end:
             raise FeatureError(f"{self.name}: a line needs two different points")
         for p in (start, end):
             self.point(p)
         name = self.free_name("L")
-        self.lines.append(SketchLine(name, start, end))
+        self.lines.append(SketchLine(name, start, end, construction))
         return name
 
-    def add_circle(self, center, radius):
+    def add_circle(self, center, radius, construction=False):
         self.point(center)
         name = self.free_name("C")
-        self.circles.append(SketchCircle(name, center, str(radius)))
+        self.circles.append(SketchCircle(name, center, str(radius), construction))
         return name
+
+    def curve(self, name):
+        """A line or a circle by name."""
+        return next(e for e in self.lines + self.circles if e.name == name)
 
     def points_of(self, name):
         """The points an entity is made of: a point itself, a line's ends, a circle's center."""
@@ -293,6 +306,17 @@ class Sketch(Feature):
                             list(self.circles), radii)
 
 
+def _construction(entity):
+    return {"construction": True} if entity.construction else {}
+
+
+def _flag(owner, where, row, key):
+    value = row.get(key, False)
+    if not isinstance(value, bool):
+        raise FeatureError(f"{owner}: {where}: {key} must be true or false")
+    return value
+
+
 def _rows(owner, rows, kind):
     if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
         raise FeatureError(f"{owner}: {kind} must be an array of tables ([[feature.{kind}]])")
@@ -331,13 +355,13 @@ def _point(owner, i, row):
 
 def _line(owner, i, row):
     where = _where("line", i, row)
-    _keys(owner, where, row, ("name", "start", "end"))
+    _keys(owner, where, row, ("name", "start", "end", "construction"))
     return SketchLine(_text(owner, where, row, "name"), _text(owner, where, row, "start"),
-                      _text(owner, where, row, "end"))
+                      _text(owner, where, row, "end"), _flag(owner, where, row, "construction"))
 
 
 def _circle(owner, i, row):
     where = _where("circle", i, row)
-    _keys(owner, where, row, ("name", "center", "radius"))
+    _keys(owner, where, row, ("name", "center", "radius", "construction"))
     return SketchCircle(_text(owner, where, row, "name"), _text(owner, where, row, "center"),
-                        _text(owner, where, row, "radius", True))
+                        _text(owner, where, row, "radius", True), _flag(owner, where, row, "construction"))

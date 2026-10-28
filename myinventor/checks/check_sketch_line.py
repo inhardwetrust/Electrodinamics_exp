@@ -35,7 +35,7 @@ sys.path.insert(0, ROOT)
 sys.stdout.reconfigure(encoding="utf-8")
 
 TMP = tempfile.mkdtemp()
-os.environ["MYINVENTOR_SETTINGS"] = os.path.join(TMP, "settings.json")     # never the user's settings
+os.environ["MYCAD_SETTINGS"] = os.path.join(TMP, "settings.json")     # never the user's settings
 
 import numpy as np                                                    # noqa: E402
 from vispy import app                                                 # noqa: E402
@@ -125,7 +125,7 @@ def check_model():
           f"{errors}")
     sketch.point("P3").x = "w"
 
-    head = 'format = "myinventor-part"\nversion = 1\n[[feature]]\nname = "S"\ntype = "sketch"\nplane = "XY Plane"\n'
+    head = 'format = "mycad-part"\nversion = 1\n[[feature]]\nname = "S"\ntype = "sketch"\nplane = "XY Plane"\n'
     pts = '[[feature.point]]\nname = "P1"\nx = "0"\ny = 0\n[[feature.point]]\nname = "P2"\nx = "1"\ny = "0"\n'
     broken = {
         "a line to a missing point": pts + '[[feature.line]]\nname = "L1"\nstart = "P1"\nend = "P9"\n',

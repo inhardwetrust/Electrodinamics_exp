@@ -32,7 +32,7 @@ sys.path.insert(0, ROOT)
 sys.stdout.reconfigure(encoding="utf-8")
 
 TMP = tempfile.mkdtemp()
-os.environ["MYINVENTOR_SETTINGS"] = os.path.join(TMP, "settings.json")     # never the user's settings
+os.environ["MYCAD_SETTINGS"] = os.path.join(TMP, "settings.json")     # never the user's settings
 
 import numpy as np                                                    # noqa: E402
 from vispy import app                                                 # noqa: E402
@@ -100,7 +100,7 @@ def check_model():
     except PartError as error:
         message = str(error)
     check("a used feature cannot be deleted", message is not None and "OnSketch" in message, message)
-    text = 'format = "myinventor-part"\nversion = 1\n[[feature]]\nname = "S"\ntype = "sketch"\nplane = "AB Plane"\n'
+    text = 'format = "mycad-part"\nversion = 1\n[[feature]]\nname = "S"\ntype = "sketch"\nplane = "AB Plane"\n'
     try:
         from_data(__import__("tomllib").loads(text))
         refused = None
