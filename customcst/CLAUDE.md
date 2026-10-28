@@ -71,7 +71,8 @@ Context for future Claude sessions. Read this first, then `ARCHITECTURE.md`.
   between them) and leave ≥ 0.5 s between drags. Otherwise only one move
   arrives and the result looks 10x too small.
 - Layout: Project dock on the left; the central QTabWidget holds
-  "3D View" (the VisPy canvas) and "Results" (ResultsPanel). After a run,
+  "3D View" (the VisPy canvas), "Results" (ResultsPanel) and "Far field"
+  (FarFieldPanel: polar cuts of the shown runs' far field). After a run,
   the window switches to Results. The status bar stays at the bottom.
 - Only OCP code goes in `geometry/step_io.py` (and `geometry/kicad_step.py`,
   the KiCad import, which needs booleans); everything above them is numpy.

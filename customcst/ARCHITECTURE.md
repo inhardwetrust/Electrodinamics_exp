@@ -58,9 +58,8 @@ Only level 0 knows about OpenCASCADE.
      on the thinner layer's face (`check_mesh`, the 4-layer stack).
 3. **Field monitors** (level 5): DFT fields at chosen frequencies on the
    display grid. Done: the far field (see "Far field").
-4. **Far field, the view**: polar cuts (E and H plane, co / cross
-   polarization) and a 3D pattern of a run in Results; today a run shows
-   D, G, realized G and the efficiency as text.
+4. **Far field, the 3D view**: the pattern as a surface over the model in
+   the 3D view (the polar cuts are done: the "Far field" tab).
 
 ## Key decisions
 
@@ -1035,6 +1034,16 @@ Checks: `checks/check_result_file.py` covers:
   the run's info warns to raise the padding.
 - Saved per excited port k as `ff<k>_<name>` arrays in the run file;
   `farfield.summary()` lines go to the run's info (Results > the run).
+- The "Far field" tab (`view/farfield_panel.py`, `view/polar_plot.py`):
+  the shown runs that carry a far field, as a polar cut (`farfield.cut()`,
+  no Qt): frequency, quantity (directivity / gain / realized gain, dBi),
+  polarization (total, E_theta, E_phi, Ludwig-3 x / y: co / cross of an
+  x-polarized patch), cut (phi = const: angle theta on the phi half, 360 -
+  theta on the phi + 180 half, 0 = +z at the top, clockwise; theta =
+  const: angle phi), range. Under it the cut's maximum, its -3 dB
+  beamwidth (`farfield.beamwidth()`, linear between samples), front / back
+  for the total pattern, and D, G, realized G, efficiency. An older shown
+  run is dimmed when it has the same frequency (within 1 MHz).
 - Accuracy: on a short dipole (λ/10) D is within 0.013 dB of the
   sinusoidal-current formula and the pattern within 0.04 dB (the
   transformation); a half-wave rod dipole comes ~0.1 dB above that formula

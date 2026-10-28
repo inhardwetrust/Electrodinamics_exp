@@ -14,7 +14,10 @@
 #   - directivity and the pattern at every theta 20..160 within 0.05 dB;
 #   - round in phi, nulls along the axis, no cross-polarization;
 #   - the pattern integrated over the sphere equals the box's Poynting flux
-#     (within 1 %).
+#     (within 1 %);
+#   - the cuts of the view: in the phi = 0 plane the -3 dB beamwidth of
+#     sin^2 is 90 degrees (within 1), the horizon is round (no beamwidth),
+#     and all of it is E_theta (Ludwig-3 x and y add up to the total).
 # Half-wave dipole (L = 47 mm): the real current of a rod on the grid is
 # not quite sinusoidal (D comes out ~0.1 dB above the formula's, the same
 # on a finer mesh), so it checks the whole run, looser:
@@ -47,7 +50,7 @@ from discretize.materials import discretize                              # noqa:
 from geometry.step_io import read_step, write_step                       # noqa: E402
 from mesh.rectilinear import build_grid                                  # noqa: E402
 from project.project_file import Project                                 # noqa: E402
-from solver.farfield import intensity, summary                           # noqa: E402
+from solver.farfield import beamwidth, cut, intensity, summary          # noqa: E402
 from solver.result_file import read_result, write_result                 # noqa: E402
 from solver.simulation import simulate                                   # noqa: E402
 
@@ -158,6 +161,27 @@ def short_dipole(ff, length):
         check(f"{label} pattern at theta 20..160 within 0.05 dB", np.abs(shape).max() < 0.05,
               f"worst {np.abs(shape).max():.3f} dB")
         common(ff, u, k, label)
+        cuts(ff, k, label)
+
+
+def cuts(ff, k, label):
+    angles, values = cut(ff, k, "phi", 0.0)
+    peak, width = beamwidth(angles, values)
+    check(f"{label} phi = 0 cut: -3 dB beamwidth 90 degrees", width is not None and abs(width - 90.0) < 1.0,
+          f"{width:.2f} at {peak:g}" if width else "none")
+    check(f"{label} phi = 0 cut: its maximum is the directivity",
+          abs(values.max() - cut(ff, k, "theta", 90.0)[1].max()) < 0.01)
+    _, horizon = cut(ff, k, "theta", 90.0)
+    check(f"{label} theta = 90 cut: round, no beamwidth", beamwidth(*cut(ff, k, "theta", 90.0))[1] is None,
+          f"{horizon.max() - horizon.min():.3f} dB")
+    total = cut(ff, k, "phi", 30.0, component="total")[1]
+    theta = cut(ff, k, "phi", 30.0, component="theta")[1]
+    x = 10 ** (cut(ff, k, "phi", 30.0, component="ludwig3_x")[1] / 10)
+    y = 10 ** (cut(ff, k, "phi", 30.0, component="ludwig3_y")[1] / 10)
+    inner = total > total.max() - 20
+    check(f"{label} components: E_theta is the total, Ludwig-3 x + y = total",
+          np.abs(total - theta)[inner].max() < 0.01
+          and np.abs(10 * np.log10(x + y) - total)[inner].max() < 0.01)
 
 
 def half_wave_dipole(ff, length):

@@ -34,6 +34,7 @@ from project.materials import BUILTIN, CUSTOM, MATERIAL_PARAMS
 from project.object_types import OBJECT_TYPES
 from project.project_file import UP_AXES, Z0PATH_PARAMS, Project, ProjectError
 from project.settings import SECTIONS
+from view.farfield_panel import FarFieldPanel
 from view.geometry_view import GeometryView
 from view.profile_window import ProfileWindow
 from view.remote_panel import RemotePanel, RemoteRunner
@@ -572,6 +573,8 @@ class MainWindow(QMainWindow):
         self.results.shifts_changed.connect(self._show_reference_planes)
         self.results.tdr_requested.connect(self._tdr)
         self.tabs.addTab(self.results, "Results")
+        self.farfield_panel = FarFieldPanel()
+        self.tabs.addTab(self.farfield_panel, "Far field")
 
     def _picked(self, picks):
         """Status bar: the picked points A and B, and the distance between them."""
@@ -2350,6 +2353,7 @@ class MainWindow(QMainWindow):
         """Results tab and the Results list after a change of the runs or of their ticks."""
         shown = [r for r in self.runs if (r.path or id(r)) in self.shown]
         self.results.set_results(shown)
+        self.farfield_panel.set_results(shown)
         if not self.runs:
             self.results.set_message("no results yet: ▶ Simulate")
         elif not shown:

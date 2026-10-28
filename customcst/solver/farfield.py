@@ -272,6 +272,96 @@ def sphere_power(u, theta, phi):
     return np.trapezoid(ring, theta, axis=1) if hasattr(np, "trapezoid") else np.trapz(ring, theta, axis=1)
 
 
+# Pattern cuts for the view. A quantity is U normalized to a power:
+#   directivity 4 pi U / p_sphere, gain 4 pi U / p_acc, realized 4 pi U / p_inc
+# (dBi). A component picks the polarization of U:
+#   total     |E_theta|^2 + |E_phi|^2
+#   theta     |E_theta|^2,  phi  |E_phi|^2
+#   ludwig3_x |E_theta cos phi - E_phi sin phi|^2  (Ludwig's 3rd definition:
+#   ludwig3_y |E_theta sin phi + E_phi cos phi|^2   x / y polarization near +z)
+# For a patch radiating along +z with its E along x, ludwig3_x is the
+# co-polarization and ludwig3_y the cross-polarization.
+# A cut is a full circle of angles in degrees:
+#   phi = phi0 plane: angle = theta on the phi0 half, 360 - theta on the
+#   phi0 + 180 half (0 = +z at the top of a polar plot, clockwise);
+#   theta = theta0 cone (90: the horizon): angle = phi.
+
+QUANTITIES = {"directivity": "p_sphere", "gain": "p_acc", "realized": "p_inc"}
+COMPONENTS = ("total", "theta", "phi", "ludwig3_x", "ludwig3_y")
+FLOOR_DBI = -100.0
+
+
+def component_intensity(ff, k, component="total"):
+    """U (n_theta, n_phi) of one polarization at frequency index k."""
+    e_t = ff["e_theta"][k].astype(np.complex128)
+    e_p = ff["e_phi"][k].astype(np.complex128)
+    phi = np.radians(ff["phi"])[None, :]
+    if component == "total":
+        power = np.abs(e_t) ** 2 + np.abs(e_p) ** 2
+    elif component == "theta":
+        power = np.abs(e_t) ** 2
+    elif component == "phi":
+        power = np.abs(e_p) ** 2
+    elif component == "ludwig3_x":
+        power = np.abs(e_t * np.cos(phi) - e_p * np.sin(phi)) ** 2
+    elif component == "ludwig3_y":
+        power = np.abs(e_t * np.sin(phi) + e_p * np.cos(phi)) ** 2
+    else:
+        raise ValueError(f"unknown component {component!r}")
+    return power / (2.0 * ETA0)
+
+
+def in_dbi(ff, k, u, quantity="directivity"):
+    """U as dBi of a quantity (directivity, gain, realized)."""
+    power = float(ff[QUANTITIES[quantity]][k])
+    ratio = 4.0 * math.pi * np.asarray(u, dtype=np.float64) / power if power > 0 else np.zeros_like(u)
+    return np.maximum(10.0 * np.log10(np.maximum(ratio, 1e-300)), FLOOR_DBI)
+
+
+def cut(ff, k, plane, at, quantity="directivity", component="total"):
+    """
+    (angles in degrees, dBi) of a cut (see above): plane "phi" at `at`
+    degrees (the nearest phi of the grid and the one opposite), or "theta"
+    at `at` degrees (the nearest theta).
+    """
+    db = in_dbi(ff, k, component_intensity(ff, k, component), quantity)
+    theta, phi = np.asarray(ff["theta"], float), np.asarray(ff["phi"], float)
+    if plane == "theta":
+        i = int(np.argmin(np.abs(theta - at)))
+        return phi.copy(), db[i].copy()
+    j0 = int(np.argmin(np.abs(((phi - at + 180.0) % 360.0) - 180.0)))
+    j1 = int(np.argmin(np.abs(((phi - phi[j0]) % 360.0) - 180.0)))     # phi[j0] + 180
+    angles = np.concatenate([theta, 360.0 - theta[::-1][1:-1]])
+    values = np.concatenate([db[:, j0], db[::-1, j1][1:-1]])
+    return angles, values
+
+
+def beamwidth(angles, values, level=3.0):
+    """
+    (peak angle, width in degrees) of the lobe around the cut's maximum at
+    `level` dB below it, on the closed circle (linear between samples);
+    width None when it never falls that far (a round pattern).
+    """
+    n = len(values)
+    peak = int(np.argmax(values))
+    floor = values[peak] - level
+    step = np.diff(np.concatenate([angles, [angles[0] + 360.0]]))
+
+    def walk(direction):
+        distance, i = 0.0, peak
+        for _ in range(n):
+            j = (i + direction) % n
+            gap = step[i] if direction > 0 else step[j]
+            if values[j] < floor:
+                return distance + gap * (values[i] - floor) / (values[i] - values[j])
+            distance += gap
+            i = j
+        return None
+
+    right, left = walk(1), walk(-1)
+    return float(angles[peak]), (None if right is None or left is None else right + left)
+
+
 def figures(ff):
     """
     Per frequency: directivity, gain and realized gain (dBi, at the

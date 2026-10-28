@@ -148,8 +148,12 @@ the switch pin's reflection at the path's end shrinks from run to run.
   - every run is saved, can be compared with the others, and is marked
     outdated when the model changes;
   - far field of an antenna (Simulation > Monitors > Far field: the
-    frequencies): directivity, gain, realized gain and radiation
-    efficiency per frequency (the pattern plots are next).
+    frequencies): the "Far field" tab draws polar cuts (vertical planes
+    phi = const or cones theta = const) of the directivity, gain or
+    realized gain in dBi, total or one polarization (E_theta, E_phi,
+    Ludwig-3 x / y: co / cross), with the beamwidth, front / back and the
+    radiation efficiency. Example: `models/patch_5g8` (a 5.8 GHz patch on
+    FR4: D 7.0 dBi, G 5.4 dBi, efficiency 69 %).
 - **TDR** of the shown runs: low pass (step as Z, impulse) with a causal
   continuation to DC, or band pass; on a Z0 profile's axis, with the
   profile as a TDR would see it.
