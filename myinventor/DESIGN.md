@@ -47,6 +47,34 @@ Principles that sidestep them:
   fuse, common, pattern, simple fillets and chamfers. Each one gets a
   check: volume, bounds, the faces, a STEP round trip.
 
+## Document (decided)
+
+- **Recipe and result are separate.** The document (`model/part.py`) holds
+  only parameters, the origin's visibility and the features; the rebuild
+  (`model/rebuild.py`) makes values, OCP shapes and bodies from scratch on
+  every change. Nothing computed is saved.
+- **Features form a flat list in history order**, each referring by name
+  to datums and to features above it. The browser's nesting (a sketch
+  under the extrusion that used it) is derived from the references, not
+  stored. "Build up to feature N" (Inventor's End of Part) comes free.
+- **A name is the id.** Renaming rewrites every formula or reference.
+  Parameters have their own namespace; datums and features share one.
+- **References by meaning**: a datum or feature name, a sketch entity
+  (`Sketch1/Line3`), or a face the producing feature names itself
+  (`{feature = "Extrusion1", face = "end"}`; OCP's MakePrism gives
+  FirstShape / LastShape / Generated(edge)).
+- **Every numeric field is a formula** of the parameters (mm, deg; trig in
+  degrees). Parameters evaluate in dependency order; errors name the
+  parameter. Formulas are walked as an `ast`, never `eval`ed.
+- **A feature type** is a `Feature` subclass registered with
+  `@feature_type`: `TYPE`, `FIELDS` (validation, later the property panel),
+  `build(ctx)`. A failing feature is marked; the ones that use it fail too,
+  the others still build.
+- **File**: TOML, `name.part.toml` (format and version header,
+  `[origin]`, `[[parameter]]`, `[[feature]]`); strict reading, atomic
+  writing checked by reading back. Undo: snapshots of the plain data.
+- Bodies get explicit names: customcst assigns materials by body name.
+
 ## Where to look
 
 - **build123d / CadQuery**: Python APIs over the same OCP. Study how they

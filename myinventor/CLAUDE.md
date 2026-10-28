@@ -36,6 +36,28 @@ Compatibility with Inventor or any other CAD is not a goal.
   (OpenCASCADE 7.x bound as `OCP`). The geometry kernel is OpenCASCADE,
   the same one FreeCAD, CadQuery and build123d use.
 
+## Layout and running
+
+- Run with `../.venv/Scripts/python.exe main.py [name.part.toml] [--screenshot out.png]`.
+  Checks (run all after a change): `checks/check_document.py` (model, no
+  window), `checks/check_view.py`, `checks/check_window_files.py`.
+- `model/`: the document, numpy + stdlib only (no OCP, no Qt); see
+  DESIGN.md "Document". `expressions.py` (safe formulas), `features.py`
+  (Feature base + registry), `part.py`, `part_file.py` (TOML),
+  `document.py` (file, modified, snapshot undo), `rebuild.py`.
+  Browser keys are `("datum" | "body", name)`.
+- Window dialogs go through `MainWindow.ask_*` / `show_error`: checks
+  replace them, never let a modal dialog open in a check.
+- `geometry/`: the only OCP code (`tessellate.py`: shape -> `Body`, with
+  the CAD face index of each triangle). `view/`: numpy + VisPy + Qt
+  (`geometry_view.py` and `picking.py` are trimmed copies of customcst's).
+  Imports are package-relative to this folder; `main.py` puts it on
+  sys.path.
+- Settings: `app_settings.py`, `%APPDATA%\myinventor\settings.json`, or
+  `MYINVENTOR_SETTINGS` (tests must set it).
+- QTest.mouseMove carries no pressed button in Qt 6: a synthetic drag
+  sends `QMouseEvent`s itself (`checks/check_view.py`).
+
 ## Reuse from customcst (read the code, copy what fits)
 
 | What | Where |
