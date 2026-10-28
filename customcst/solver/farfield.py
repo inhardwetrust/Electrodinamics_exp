@@ -336,6 +336,30 @@ def cut(ff, k, plane, at, quantity="directivity", component="total"):
     return angles, values
 
 
+def surface(ff, k, quantity="directivity", component="total", span=40.0):
+    """
+    The 3D pattern as a closed surface around the origin: (points (N, 3),
+    faces (M, 3), dBi (N,)). A point lies along its direction (theta, phi)
+    at radius 0..1: 1 at the maximum, 0 at `span` dB below it or less (the
+    usual dB-scaled 3D pattern). The phi seam is closed; the poles are rows
+    of one point each, repeated.
+    """
+    db = in_dbi(ff, k, component_intensity(ff, k, component), quantity)
+    theta, phi = np.radians(ff["theta"]), np.radians(ff["phi"])
+    radius = np.clip((db - (db.max() - span)) / span, 0.0, 1.0)
+    st, ct = np.sin(theta)[:, None], np.cos(theta)[:, None]
+    points = np.stack([radius * st * np.cos(phi)[None, :], radius * st * np.sin(phi)[None, :],
+                       radius * ct * np.ones_like(phi)[None, :]], axis=-1).reshape(-1, 3)
+    n_t, n_p = len(theta), len(phi)
+    i, j = np.meshgrid(np.arange(n_t - 1), np.arange(n_p), indexing="ij")
+    a = i * n_p + j
+    b = i * n_p + (j + 1) % n_p
+    c, d = a + n_p, b + n_p
+    # counterclockwise seen from outside: the outer side is the front face
+    faces = np.concatenate([np.stack([a, d, b], -1).reshape(-1, 3), np.stack([a, c, d], -1).reshape(-1, 3)])
+    return points, faces.astype(np.uint32), db.reshape(-1)
+
+
 def beamwidth(angles, values, level=3.0):
     """
     (peak angle, width in degrees) of the lobe around the cut's maximum at

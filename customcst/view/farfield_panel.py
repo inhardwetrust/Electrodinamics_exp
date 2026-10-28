@@ -14,13 +14,19 @@
 # Under the plot: the cut's maximum, its -3 dB beamwidth and front-to-back
 # (theta 0 against 180), and D, G, realized G and efficiency at the
 # frequency (farfield.figures()).
+#
+# Show in 3D: the primary run's pattern with the same frequency, quantity,
+# polarization and range as a colored surface in the 3D view
+# (farfield.surface(): radius in dB from max - range to max; colors blue ->
+# red over the same range), emitted as pattern_changed.
 
-from PySide6.QtCore import Qt
+import numpy as np
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QComboBox, QHBoxLayout, QLabel, QSpinBox, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QHBoxLayout, QLabel, QSpinBox, QVBoxLayout, QWidget,
 )
 
-from solver.farfield import FLOOR_DBI, beamwidth, cut, figures
+from solver.farfield import FLOOR_DBI, beamwidth, cut, figures, surface
 from view.polar_plot import PolarPlot
 
 QUANTITY_LABELS = {"directivity": "Directivity", "gain": "Gain", "realized": "Realized gain"}
@@ -29,9 +35,23 @@ COMPONENT_LABELS = {"total": "Total", "theta": "E θ", "phi": "E φ",
 PLANES = {"phi": "φ = const (vertical plane)", "theta": "θ = const (cone around z)"}
 SPANS = (20, 30, 40, 50, 60)
 SAME_FREQUENCY = 1e6        # Hz: an older run's frequency counts as the same within this
+# The 3D pattern's colors from the bottom of the range to the maximum (like CST's).
+COLOR_STOPS = np.array([[0.0, 0.05, 0.15, 0.65], [0.25, 0.0, 0.55, 1.0], [0.5, 0.0, 0.85, 0.35],
+                        [0.75, 1.0, 0.85, 0.0], [1.0, 0.9, 0.1, 0.05]])
+PATTERN_ALPHA = 0.8
+
+
+def pattern_colors(fraction):
+    """RGBA (N, 4) for values 0..1 of the range (blue -> cyan -> green -> yellow -> red)."""
+    t = np.clip(np.asarray(fraction, dtype=float), 0.0, 1.0)
+    rgb = np.stack([np.interp(t, COLOR_STOPS[:, 0], COLOR_STOPS[:, c]) for c in (1, 2, 3)], axis=-1)
+    return np.concatenate([rgb, np.full((len(t), 1), PATTERN_ALPHA)], axis=1)
 
 
 class FarFieldPanel(QWidget):
+    # (points (N, 3) on the unit scale, faces, RGBA colors) or None
+    pattern_changed = Signal(object)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.runs = []                  # shown runs with a far field, oldest first
@@ -57,6 +77,10 @@ class FarFieldPanel(QWidget):
         for value in SPANS:
             self.span.addItem(f"{value} dB", value)
         self.span.setCurrentIndex(SPANS.index(40))
+        self.show_3d = QCheckBox("Show in 3D")
+        self.show_3d.setToolTip("The pattern as a colored surface around the model in the 3D View tab "
+                                "(this frequency, quantity, polarization and range)")
+        self.show_3d.toggled.connect(self._redraw)
 
         for widget in (self.frequency, self.port, self.quantity, self.component, self.span):
             widget.currentIndexChanged.connect(self._redraw)
@@ -66,7 +90,7 @@ class FarFieldPanel(QWidget):
         controls = QHBoxLayout()
         for label, widget in (("Frequency", self.frequency), ("Port", self.port), ("", self.quantity),
                               ("", self.component), ("Cut", self.plane), ("at", self.angle),
-                              ("Range", self.span)):
+                              ("Range", self.span), ("", self.show_3d)):
             if label:
                 controls.addWidget(QLabel(label))
             controls.addWidget(widget)
@@ -141,6 +165,7 @@ class FarFieldPanel(QWidget):
         if run is None or frequency is None:
             self.plot.clear()
             self.info.setText("")
+            self.pattern_changed.emit(None)
             return
         plane, at = self.plane.currentData(), float(self.angle.value())
         quantity, component = self.quantity.currentData(), self.component.currentData()
@@ -188,4 +213,16 @@ class FarFieldPanel(QWidget):
                          "more padding for a reliable pattern</span>")
         if skipped:
             lines.append(f"not at {frequency / 1e9:g} GHz: {', '.join(skipped)}")
+        self._emit_pattern(ff, k, quantity, component, lines)
         self.info.setText("<br>".join(lines))
+
+    def _emit_pattern(self, ff, k, quantity, component, lines):
+        if not self.show_3d.isChecked():
+            self.pattern_changed.emit(None)
+            return
+        span = float(self.span.currentData())
+        points, faces, db = surface(ff, k, quantity, component, span)
+        top = float(db.max())
+        self.pattern_changed.emit((points, faces, pattern_colors((db - (top - span)) / span)))
+        lines.append(f"3D View: blue {top - span:.1f} → red {top:.1f} dBi, the radius in dB over the same "
+                     f"range")

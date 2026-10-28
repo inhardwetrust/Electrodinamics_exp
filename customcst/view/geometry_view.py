@@ -502,6 +502,14 @@ class GeometryView:
         self._path_section = None       # (center mm, across unit) of the profile's section, None: the start
         self.on_path_changed = None     # callback((n, 2) points m)
 
+        # The 3D radiation pattern (Far field tab > Show in 3D): a colored,
+        # see-through surface around the model; drawn after the bodies.
+        self.pattern = scene.visuals.Mesh(parent=self.view.scene, shading=None)
+        # back faces culled: one see-through shell, without speckles where its far side shows through
+        self.pattern.set_gl_state("translucent", depth_test=True, cull_face=True)
+        self.pattern.order = 15
+        self.pattern.visible = False
+
         self._init_headlight()
         self._init_click()
 
@@ -1006,6 +1014,17 @@ class GeometryView:
                                       color=REFERENCE_EDGE, width=2.0, parent=self.reference_root)
             for visual in (fill, edge):
                 visual.set_gl_state("translucent", depth_test=False, cull_face=False)
+        self.canvas.update()
+
+    def set_pattern(self, points=None, faces=None, colors=None):
+        """The 3D pattern: points (N, 3) in meters, faces (M, 3), RGBA colors (N, 4); None hides it."""
+        if points is None:
+            self.pattern.visible = False
+        else:
+            self.pattern.set_data(vertices=(np.asarray(points) / SCENE_UNIT).astype(np.float32),
+                                  faces=np.asarray(faces, np.uint32),
+                                  vertex_colors=np.asarray(colors, np.float32))
+            self.pattern.visible = True
         self.canvas.update()
 
     def set_show_reference_planes(self, on):

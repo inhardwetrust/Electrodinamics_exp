@@ -574,7 +574,18 @@ class MainWindow(QMainWindow):
         self.results.tdr_requested.connect(self._tdr)
         self.tabs.addTab(self.results, "Results")
         self.farfield_panel = FarFieldPanel()
+        self.farfield_panel.pattern_changed.connect(self._show_pattern)
         self.tabs.addTab(self.farfield_panel, "Far field")
+
+    def _show_pattern(self, pattern):
+        """Far field > Show in 3D: the pattern around the model's center, 0.8 of its size across."""
+        if pattern is None or self.geometry is None:
+            self.view.set_pattern(None)
+            return
+        points, faces, colors = pattern
+        lo, hi = (np.asarray(b) for b in self.geometry.bounds)
+        radius = 0.8 * float(np.max(hi - lo))
+        self.view.set_pattern(0.5 * (lo + hi) + radius * points, faces, colors)
 
     def _picked(self, picks):
         """Status bar: the picked points A and B, and the distance between them."""

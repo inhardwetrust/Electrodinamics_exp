@@ -58,8 +58,9 @@ Only level 0 knows about OpenCASCADE.
      on the thinner layer's face (`check_mesh`, the 4-layer stack).
 3. **Field monitors** (level 5): DFT fields at chosen frequencies on the
    display grid. Done: the far field (see "Far field").
-4. **Far field, the 3D view**: the pattern as a surface over the model in
-   the 3D view (the polar cuts are done: the "Far field" tab).
+4. **Far field, more views** (the polar cuts and the 3D surface are done):
+   a rectangular plot of a cut, the pattern over frequency, a table / CSV
+   export.
 
 ## Key decisions
 
@@ -1044,6 +1045,15 @@ Checks: `checks/check_result_file.py` covers:
   beamwidth (`farfield.beamwidth()`, linear between samples), front / back
   for the total pattern, and D, G, realized G, efficiency. An older shown
   run is dimmed when it has the same frequency (within 1 MHz).
+- Show in 3D (the same tab): `farfield.surface()` makes a closed surface,
+  the radius along each direction 0..1 over the range in dB below the
+  maximum, faces wound outward (counterclockwise seen from outside); the
+  window places it at the model's center, 0.8 of its size in radius, as
+  `GeometryView.pattern`: vertex colors blue -> red over the same range
+  (`farfield_panel.pattern_colors`), alpha 0.8, back faces culled so the
+  shell does not speckle where its far side shows through. Not
+  depth_mask=False: with depth writes off glClear does not clear the depth
+  buffer, and every later frame came out empty.
 - Accuracy: on a short dipole (λ/10) D is within 0.013 dB of the
   sinusoidal-current formula and the pattern within 0.04 dB (the
   transformation); a half-wave rod dipole comes ~0.1 dB above that formula

@@ -17,7 +17,9 @@
 #     (within 1 %);
 #   - the cuts of the view: in the phi = 0 plane the -3 dB beamwidth of
 #     sin^2 is 90 degrees (within 1), the horizon is round (no beamwidth),
-#     and all of it is E_theta (Ludwig-3 x and y add up to the total).
+#     and all of it is E_theta (Ludwig-3 x and y add up to the total);
+#   - the 3D surface: closed, its radius 1 along the maximum, wound outward
+#     (positive volume: the outer side is the front face, the one drawn).
 # Half-wave dipole (L = 47 mm): the real current of a rod on the grid is
 # not quite sinusoidal (D comes out ~0.1 dB above the formula's, the same
 # on a finer mesh), so it checks the whole run, looser:
@@ -50,7 +52,7 @@ from discretize.materials import discretize                              # noqa:
 from geometry.step_io import read_step, write_step                       # noqa: E402
 from mesh.rectilinear import build_grid                                  # noqa: E402
 from project.project_file import Project                                 # noqa: E402
-from solver.farfield import beamwidth, cut, intensity, summary          # noqa: E402
+from solver.farfield import beamwidth, cut, intensity, summary, surface  # noqa: E402
 from solver.result_file import read_result, write_result                 # noqa: E402
 from solver.simulation import simulate                                   # noqa: E402
 
@@ -162,6 +164,7 @@ def short_dipole(ff, length):
               f"worst {np.abs(shape).max():.3f} dB")
         common(ff, u, k, label)
         cuts(ff, k, label)
+        shell(ff, k, label)
 
 
 def cuts(ff, k, label):
@@ -182,6 +185,20 @@ def cuts(ff, k, label):
     check(f"{label} components: E_theta is the total, Ludwig-3 x + y = total",
           np.abs(total - theta)[inner].max() < 0.01
           and np.abs(10 * np.log10(x + y) - total)[inner].max() < 0.01)
+
+
+def shell(ff, k, label):
+    points, faces, db = surface(ff, k)
+    a, b, c = (points[faces[:, n]] for n in range(3))
+    volume = float(np.sum(np.einsum("ij,ij->i", a, np.cross(b, c)))) / 6.0
+    edges = np.sort(np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]]), axis=1)
+    n_phi = len(ff["phi"])
+    pole = (edges // n_phi == 0).all(axis=1) | (edges // n_phi == len(ff["theta"]) - 1).all(axis=1)
+    _, counts = np.unique(edges[~pole], axis=0, return_counts=True)     # a pole row is one point, repeated
+    peak = int(np.argmax(db))
+    check(f"{label} 3D surface: closed, radius 1 at the maximum, wound outward",
+          np.all(counts == 2) and abs(np.linalg.norm(points[peak]) - 1.0) < 1e-9 and volume > 0,
+          f"volume {volume:.3f}")
 
 
 def half_wave_dipole(ff, length):
