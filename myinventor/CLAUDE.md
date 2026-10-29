@@ -53,7 +53,8 @@ Compatibility with Inventor or any other CAD is not a goal.
   `checks/check_extrude_ops.py`, `checks/check_sketch_on_face.py`,
   `checks/check_feature_status.py`, `checks/check_body_color.py`,
   `checks/check_step_export.py` (it reads the STEP with customcst's own
-  reader, in a subprocess: both projects have a `geometry` package).
+  reader, in a subprocess: both projects have a `geometry` package),
+  `checks/check_sketch_polyline.py`.
 - A check that imports helpers from another check runs that module's top
   too, which points `MYCAD_SETTINGS` to its own temp file (still never the
   user's): read the path with `app_settings.settings_path()`.

@@ -55,7 +55,7 @@ class ExtrudeResult:
         roles = ["end"] + ([] if self.operation == "cut" else ["start"])
         for region in self.regions:
             for loop in [region.outer] + region.holes:
-                roles += [f"side.{edge[3]}" for edge in loop.edges if edge[0] == "line"]
+                roles += [f"side.{edge[3]}" for edge in loop.edges if edge[0] == "line" and len(edge) > 3]
         return roles
 
     def face_frame(self, role):
@@ -75,7 +75,7 @@ class ExtrudeResult:
             for region in self.regions:
                 for loop in [region.outer] + region.holes:
                     for edge in loop.edges:
-                        if edge[0] == "line" and edge[3] == name:
+                        if edge[0] == "line" and len(edge) > 3 and edge[3] == name:
                             return self._side_frame(region, edge[1], edge[2], added)
         raise ValueError(f"no face {role!r}")
 

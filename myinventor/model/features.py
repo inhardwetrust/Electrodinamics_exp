@@ -55,6 +55,18 @@ class FeatureError(ValueError):
     pass
 
 
+class PartialBuild(ValueError):
+    """
+    A feature failed, but has an output to show anyway (a sketch with one
+    polyline it could not outline): the rebuild keeps `output` and marks the
+    feature failed, so features using it fail too.
+    """
+
+    def __init__(self, message, output):
+        super().__init__(message)
+        self.output = output
+
+
 class Feature:
     TYPE = ""
     FIELDS = ()

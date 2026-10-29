@@ -14,6 +14,7 @@
 from dataclasses import dataclass, field
 
 from model.expressions import ExpressionError, evaluate, evaluate_parameters, names
+from model.features import PartialBuild
 
 
 @dataclass
@@ -75,6 +76,9 @@ def rebuild(part):
             continue
         try:
             result.outputs[feature.name] = feature.build(ctx)
+        except PartialBuild as error:       # failed, but still shown (a sketch with a broken polyline)
+            result.outputs[feature.name] = error.output
+            result.feature_errors[feature.name] = str(error)
         except Exception as error:          # a feature's failure must not stop the rebuild
             result.feature_errors[feature.name] = str(error) or type(error).__name__
     # The bodies as the whole history left them, tessellated once.

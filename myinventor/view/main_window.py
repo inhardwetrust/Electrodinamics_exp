@@ -54,7 +54,11 @@
 #   of the next line; Esc ends the chain, a second Esc the tool); every line
 #   is one undo step; Sketch > Point puts explicit points (a dot in a
 #   gapped cross, as Inventor draws them); Sketch > Circle: the center, then
-#   the radius; Sketch > Construction: new lines and circles are construction
+#   the radius; Sketch > Polyline draws a wide polyline's center line (its
+#   outline follows; widths, ends and the inner points' bends (normal /
+#   round / chamfer, a radius) in the properties under the info; a double
+#   click on its center line puts a point there);
+#   Sketch > Construction: new lines and circles are construction
 #   ones (dashed), or, with lines or circles selected, shows and sets theirs
 #   (on only if all are; a click sets them all);
 # - several sketch entities can be selected (Shift + click, a box: see
@@ -93,7 +97,7 @@ import numpy as np
 from PySide6.QtCore import QEvent, QRect, Qt
 from PySide6.QtGui import QAction, QBrush, QColor, QGuiApplication, QIcon, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
-    QCheckBox, QColorDialog, QDockWidget, QFileDialog, QLabel, QMainWindow, QMenu, QMessageBox, QTabWidget,
+    QCheckBox, QColorDialog, QComboBox, QDockWidget, QFileDialog, QFormLayout, QLineEdit, QLabel, QMainWindow, QMenu, QMessageBox, QTabWidget,
     QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -108,10 +112,12 @@ from model.part_file import EXTENSION, PartFileError
 from model.rebuild import rebuild
 from model.extrude import Extrude
 from model.profiles import find_regions
-from model.sketch import Sketch
+from model.expressions import evaluate
+from model.sketch import Sketch, SketchPolyline
+from model.traces import BENDS
 from view.extrude_panel import ExtrudePanel
 from view.sketch_tools import (
-    ALIGN_PX, CURVE_SNAP_PX, SNAP_PX, CircleTool, PasteTool, PointTool, PolylineTool, align, curve_snap,
+    ALIGN_PX, CURVE_SNAP_PX, SNAP_PX, CircleTool, LineTool, PasteTool, PointTool, TraceTool, align, curve_snap,
     fmt_mm, radius_snap,
 )
 from view.geometry_view import DEFAULT_COLORS, GeometryView
@@ -127,6 +133,8 @@ HINT = ("Middle drag: rotate · Ctrl + middle drag: pan · wheel: zoom · "
 MEASURE_HINT = "Measure: click: point A, Shift + click: point B, Esc: clear the points"
 LINE_HINT = ("Line: click points; click the first point to close, the last one to stop · "
              "Esc: end the chain, Esc again: leave Line")
+TRACE_HINT = ("Polyline: click its center line point by point (the width beside the button); click the last "
+              "point to stop · Esc: end it, Esc again: leave Polyline")
 POINT_HINT = "Point: click to put a point · Esc: leave Point"
 CIRCLE_HINT = "Circle: click the center, then a point on the circle · Esc: drop the center, again: leave Circle"
 PASTE_HINT = "Paste: click where the copy goes (it hangs on the cursor by its middle) · Esc: cancel"
@@ -202,6 +210,7 @@ class MainWindow(QMainWindow):
         self.editing = None         # name of the sketch in sketch mode, or None
         self.construction_mode = False  # new lines and circles are construction ones
         self.clipboard = None       # copied sketch geometry (see copy_selection), or None
+        self._trace = None          # the polyline the Polyline tool is drawing
         self.extrude_panel = None   # the Extrude command's panel while it runs
         self._extruding = None      # the extrusion being edited by it, or None (a new one)
         self._rolled_back = False   # the view shows the bodies from before the edited extrusion
@@ -213,6 +222,7 @@ class MainWindow(QMainWindow):
         self.view.on_escape = self._escape
         self.view.on_delete = self.delete_selected
         self.view.on_drag = self._drag_entity
+        self.view.on_insert = self._insert_point
         self._dragged = None        # while dragging: {"circle": name or None, "radius": r0 or None,
         #                              "points": {name: (x0, y0) mm, None where a formula}}
         self.setCentralWidget(self.view.canvas.native)
@@ -310,7 +320,15 @@ class MainWindow(QMainWindow):
                                           tip="Circles: click the center, then a point on the circle; "
                                               "Esc drops the center, again leaves the tool")
         group.add_action(self.circle_action)
-        self.tool_actions = (self.line_action, self.point_action, self.circle_action)
+        self.trace_action = self._action("Polyline", self._set_trace_tool, checkable=True,
+                                         tip="A wide polyline: click its center line point by point; each new "
+                                             "point gets the width beside it, then its own (Properties)")
+        group.add_action(self.trace_action)
+        group.add_widget(QLabel(" Width "))
+        self.trace_width = group.add_widget(QLineEdit("1"))
+        self.trace_width.setFixedWidth(60)
+        self.trace_width.setToolTip("The width (mm, a number or a formula of the parameters) of new polylines")
+        self.tool_actions = (self.line_action, self.point_action, self.circle_action, self.trace_action)
         group = sketch.add_group("Format")
         self.construction_action = self._action(
             "Construction", self._construction_toggled, checkable=True,
@@ -358,10 +376,16 @@ class MainWindow(QMainWindow):
         self.info.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self.info.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
+        # Editable properties of the selection (a polyline's widths and ends now).
+        self.props = QWidget()
+        self.props_form = QFormLayout(self.props)
+        self.props_form.setContentsMargins(0, 0, 0, 0)
+
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.addWidget(self.tree, 3)
         layout.addWidget(self.info, 1)
+        layout.addWidget(self.props)
 
         self.parameters = ParametersPanel()
         self.parameters.edited.connect(self._parameter_edited)
@@ -770,7 +794,7 @@ class MainWindow(QMainWindow):
             self.view.look_at(frame.normal, frame.v)
 
     def _set_line_tool(self, on):
-        self._set_tool(on, self.line_action, lambda: PolylineTool(
+        self._set_tool(on, self.line_action, lambda: LineTool(
             self.view, self.editing, self._edited_result, self._add_line,
             on_exit=lambda: self.line_action.setChecked(False)))
 
@@ -778,6 +802,35 @@ class MainWindow(QMainWindow):
         self._set_tool(on, self.point_action, lambda: PointTool(
             self.view, self.editing, self._edited_result, self._add_point,
             on_exit=lambda: self.point_action.setChecked(False)))
+
+    def _set_trace_tool(self, on):
+        self._trace = None
+        self._set_tool(on, self.trace_action, lambda: TraceTool(
+            self.view, self.editing, self._edited_result, self._add_trace,
+            on_exit=lambda: self.trace_action.setChecked(False)))
+
+    def _add_trace(self, start, end):
+        """
+        The Polyline tool's callback (anchors, as for Line): the first pair
+        makes a polyline with the width of the Width field; a pair that goes
+        on from the polyline's last point extends it. One undo step each.
+        """
+        sketch = self.part.feature(self.editing)
+
+        def point(anchor):
+            if anchor[0] == "point":
+                return anchor[1]
+            x, y = anchor[1]
+            return sketch.add_point(fmt_mm(x), fmt_mm(y))
+
+        a, b = point(start), point(end)
+        current = next((w for w in sketch.polylines if w.name == self._trace), None)
+        if current is not None and current.points[-1] == a:
+            sketch.extend_polyline(current.name, b)
+        else:
+            self._trace = sketch.add_polyline(a, b, self.trace_width.text().strip() or "1")
+        self._commit()
+        return a, b
 
     def _set_circle_tool(self, on):
         self._set_tool(on, self.circle_action, lambda: CircleTool(
@@ -874,15 +927,23 @@ class MainWindow(QMainWindow):
         points = [p for n in names for p in sketch.points_of(n)]
         lines = [sketch.line(n) for n in names if kinds[n] == "line"]
         circles = [sketch.circle(n) for n in names if kinds[n] == "circle"]
+        # A polyline goes whole (a selected center segment takes its polyline along).
+        owners = [n.rpartition(".")[0] if kinds[n] == "segment" else n for n in names
+                  if kinds[n] in ("polyline", "segment")]
+        polylines = [sketch.polyline(n) for n in dict.fromkeys(owners)]
+        points += [p for w in polylines for p in w.points]
         clip = {
             "points": {p: {"xy": built.points[p].copy(), "explicit": sketch.point(p).explicit}
                        for p in dict.fromkeys(points)},
             "lines": [(e.start, e.end, e.construction) for e in lines],
             "circles": [(c.center, built.radii[c.name], c.radius, c.construction) for c in circles],
+            "polylines": [(list(w.points), list(w.widths), w.width, w.start, w.end, list(w.bends), list(w.radii))
+                          for w in polylines],
         }
         # The anchor: the middle of the copy's extent (circles included).
         extent = [p["xy"] for p in clip["points"].values()]
         extent += [built.points[c.center] + sign * built.radii[c.name] for c in circles for sign in (-1, 1)]
+        extent += [xy for w in polylines if w.name in built.outlines for xy in built.outlines[w.name][1]]
         extent = np.array(extent)
         clip["anchor"] = 0.5 * (extent.min(axis=0) + extent.max(axis=0))
         self.clipboard = clip
@@ -924,6 +985,11 @@ class MainWindow(QMainWindow):
         new += [sketch.add_line(names[a], names[b], construction=c) for a, b, c in clip["lines"]]
         new += [sketch.add_circle(names[center], formula, construction=c)
                 for center, _, formula, c in clip["circles"]]
+        for points, widths, width, start, end, bends, radii in clip.get("polylines", []):
+            name = sketch.free_name("W")
+            sketch.polylines.append(SketchPolyline(name, [names[p] for p in points], list(widths), width, start, end,
+                                                   list(bends), list(radii)))
+            new.append(name)
         self._commit()
         self.view.select_keys([("entity", self.editing, n) for n in new])
         self._on_view_select(self.view.selected)
@@ -1469,6 +1535,7 @@ class MainWindow(QMainWindow):
             self._hover_row.setBackground(0, HOVER_ROW)
 
     def _show_info(self, key):
+        self._fill_props(key)
         if key is None:
             self.info.setText("")
         elif key[0] == "face":
@@ -1497,6 +1564,113 @@ class MainWindow(QMainWindow):
             body = next(b for b in self.result.bodies if b.name == key[1])
             self.info.setText(self._body_info(body))
 
+    # =====================================================
+    # Properties (under the info)
+    # =====================================================
+
+    def _fill_props(self, key):
+        """
+        Editable fields of the selection: a polyline (or one of its center
+        segments): its default width, its start and end; a point on
+        polylines: its width on each. Each change is one undo step.
+        """
+        while self.props_form.rowCount():
+            self.props_form.removeRow(0)
+        if key is None or key[0] != "entity" or len(self.view.selection) != 1:
+            return
+        sketch_name, name = key[1], key[2]
+        sketch = self.part.feature(sketch_name)
+        try:
+            kind = sketch.kind_of(name)
+        except KeyError:
+            return
+        if kind in ("polyline", "segment"):
+            w = sketch.polyline(name.rpartition(".")[0] if kind == "segment" else name)
+            self.props_form.addRow(QLabel(f"<b>{w.name}</b>"))
+            self.props_form.addRow("Width (new points):", self._formula_field(
+                w.width, lambda text, w=w.name: self._set_polyline(sketch_name, w, width=text)))
+            for label, end in (("Start:", "start"), ("End:", "end")):
+                combo = QComboBox()
+                combo.addItems(["flat", "round"])
+                combo.setCurrentText(getattr(w, end))
+                combo.currentTextChanged.connect(
+                    lambda text, w=w.name, end=end: self._set_polyline(sketch_name, w, **{end: text}))
+                self.props_form.addRow(label, combo)
+        elif kind == "point":
+            for w, i in sketch.polyline_widths(name):
+                self.props_form.addRow(f"Width on {w.name}:", self._formula_field(
+                    w.widths[i], lambda text, w=w.name, i=i: self._set_polyline(sketch_name, w, at=(i, text))))
+                if 0 < i < len(w.points) - 1:   # an inner point: its bend
+                    combo = QComboBox()
+                    combo.addItems(list(BENDS))
+                    combo.setCurrentText(w.bends[i])
+                    combo.setToolTip("normal: a sharp corner; round / chamfer: the circle of the radius around "
+                                     "the point cuts the outer corner, with an arc or a straight line")
+                    combo.currentTextChanged.connect(
+                        lambda text, w=w.name, i=i: self._set_polyline(sketch_name, w, bend=(i, text)))
+                    self.props_form.addRow(f"Bend on {w.name}:", combo)
+                    radius = self._formula_field(
+                        w.radii[i], lambda text, w=w.name, i=i: self._set_polyline(sketch_name, w, radius=(i, text)),
+                        empty=True)
+                    radius.setPlaceholderText("half the width")
+                    self.props_form.addRow(f"Radius on {w.name}:", radius)
+
+    def _formula_field(self, text, apply, empty=False):
+        """A formula field applying on Enter / leaving it, when changed (empty allowed only if `empty`)."""
+        field = QLineEdit(text)
+        field.setToolTip("mm: a number or a formula of the parameters (Enter applies)")
+        field.editingFinished.connect(
+            lambda: field.text().strip() != text and (empty or field.text().strip()) and apply(field.text().strip()))
+        return field
+
+    def _set_polyline(self, sketch_name, name, width=None, start=None, end=None, at=None, bend=None, radius=None):
+        polyline = self.part.feature(sketch_name).polyline(name)
+        if width is not None:
+            polyline.width = width or "1"
+        if start is not None:
+            polyline.start = start
+        if end is not None:
+            polyline.end = end
+        if at is not None:
+            polyline.widths[at[0]] = at[1] or polyline.width
+        if bend is not None:
+            polyline.bends[bend[0]] = bend[1]
+        if radius is not None:
+            polyline.radii[radius[0]] = radius[1]
+        self._commit()
+
+    def _insert_point(self, key, xy):
+        """
+        A double click on a polyline's center segment: a point put there
+        (on the segment), its width as the line between its neighbours
+        has it (their formula if they share one); one undo step, selected.
+        """
+        _, sketch_name, name = key
+        sketch = self.part.feature(sketch_name)
+        try:
+            if sketch.kind_of(name) != "segment":
+                return
+        except KeyError:
+            return
+        owner, _, index = name.rpartition(".")
+        w, k = sketch.polyline(owner), int(index)
+        built = self.result.outputs[sketch_name]
+        a, b = built.points[w.points[k - 1]], built.points[w.points[k]]
+        t = float(np.clip(np.dot(xy - a, b - a) / max(float(np.dot(b - a, b - a)), 1e-18), 0.0, 1.0))
+        if t <= 1e-6 or t >= 1 - 1e-6:
+            return                              # on a point already
+        at = a + t * (b - a)
+        if w.widths[k - 1] == w.widths[k]:
+            width = w.widths[k]
+        else:
+            w0, w1 = (evaluate(text, self.result.values) for text in (w.widths[k - 1], w.widths[k]))
+            width = fmt_mm(w0 + t * (w1 - w0))
+        point = sketch.add_point(fmt_mm(at[0]), fmt_mm(at[1]))
+        sketch.insert_into_polyline(owner, k, point, width)
+        self._commit()
+        self.view.select_keys([("entity", sketch_name, point)])
+        self._on_view_select(self.view.selected)
+
     def _entity_info(self, sketch_name, name):
         sketch = self.part.feature(sketch_name)
         points = self.result.outputs[sketch_name].points
@@ -1509,6 +1683,13 @@ class MainWindow(QMainWindow):
             p = sketch.point(name)
             kind = "sketch point" if p.explicit else "point"
             return f"<b>{name}</b> ({kind} of {sketch_name})<br>x = {p.x}, y = {p.y} mm<br>{where(name)}"
+        if sketch.kind_of(name) in ("polyline", "segment"):
+            owner = name.rpartition(".")[0] if sketch.kind_of(name) == "segment" else name
+            w = sketch.polyline(owner)
+            what = f"segment {name.rpartition('.')[2]} of polyline {owner}" if owner != name else "polyline"
+            return (f"<b>{name}</b> ({what} of {sketch_name})<br>{len(w.points)} points: {', '.join(w.points)}"
+                    f"<br>widths {', '.join(w.widths)} mm<br>ends: {w.start} / {w.end}"
+                    "<br>Delete on a segment splits it, on a point joins it")
         if sketch.kind_of(name) == "circle":
             circle = sketch.circle(name)
             radius = self.result.outputs[sketch_name].radii[name]
@@ -1582,7 +1763,8 @@ class MainWindow(QMainWindow):
         hint = MEASURE_HINT if self.view.measure else PICK_PLANE_HINT if self.picking_plane else HINT
         if self.editing is not None and not self.view.measure:
             tool = self.view.tool
-            hints = {PolylineTool: LINE_HINT, PointTool: POINT_HINT, CircleTool: CIRCLE_HINT, PasteTool: PASTE_HINT}
+            hints = {LineTool: LINE_HINT, PointTool: POINT_HINT, CircleTool: CIRCLE_HINT, PasteTool: PASTE_HINT,
+                     TraceTool: TRACE_HINT}
             hint = f"{self.editing}: " + (hints[type(tool)] if tool is not None
                                           else "Finish Sketch to leave it · " + HINT)
         self.statusBar().showMessage("   ".join(parts) if parts else hint)

@@ -8,7 +8,8 @@
 # - Lines alone: the bounded faces of the planar graph they form (dangling
 #   lines pruned first). A rectangle is one face; with a diagonal, two
 #   triangles. Each face's boundary is a loop of lines.
-# - A circle (not construction) is a loop on its own.
+# - A circle (not construction) is a loop on its own, and so is a wide
+#   polyline's outline (model/traces.py: its edges are lines and arcs).
 # - Regions: a loop minus the loops directly inside it (holes). A circle in
 #   a rectangle gives two regions: the rectangle with a round hole, and the
 #   disc (as Inventor does).
@@ -32,7 +33,8 @@ CIRCLE_SAMPLES = 96
 class Loop:
     names: tuple            # sorted entity names (the key)
     polygon: np.ndarray     # (N, 2) mm, counter-clockwise, not closed
-    edges: list             # [("line", (2,) mm, (2,) mm, line name)] in order, or [("circle", center (2,), radius)]
+    edges: list             # in order: ("line", (2,) mm, (2,) mm[, line name]), ("arc", a, middle, b),
+    #                         or [("circle", center (2,), radius)]
 
     @property
     def area(self):
@@ -61,7 +63,7 @@ class Region:
 
 def find_regions(result):
     """The regions of a SketchResult, largest first."""
-    loops = _line_loops(result) + _circle_loops(result)
+    loops = _line_loops(result) + _circle_loops(result) + _polyline_loops(result)
     regions = []
     for loop in loops:
         inside = [other for other in loops if other is not loop and other.area < loop.area
@@ -78,6 +80,17 @@ def _sample(loop):
     """A point well inside a loop's boundary region: its centroid if inside, else a vertex."""
     c = loop.polygon.mean(axis=0)
     return c if loop.contains(c) else loop.polygon[0]
+
+
+def _polyline_loops(result):
+    """Each wide polyline's outline is a loop on its own (model/traces.py), named by the polyline."""
+    loops = []
+    for polyline in getattr(result, "polylines", []):
+        if polyline.name not in result.outlines:
+            continue                        # it failed: no outline, no profile
+        edges, polygon = result.outlines[polyline.name]
+        loops.append(Loop((polyline.name,), polygon, list(edges)))
+    return loops
 
 
 def _circle_loops(result):

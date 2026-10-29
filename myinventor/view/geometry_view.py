@@ -455,11 +455,24 @@ class _SketchVisual:
         self.name = name
         self.line_names = [line.name for line in result.lines]
         self.circle_names = [c.name for c in result.circles]
-        # Lines, then each circle as CIRCLE_SEGMENTS pieces; seg_owner: the entity of each segment.
+        polylines = getattr(result, "polylines", [])
+        self.polyline_names = [w.name for w in polylines]
+        # Lines, then each circle as CIRCLE_SEGMENTS pieces, then each wide polyline's outline (owned by
+        # the polyline) and its center segments (owned by "W1.1", "W1.2"...); seg_owner: each segment's.
         blocks = [result.segments_mm()] + [result.circle_segments_mm(n) for n in self.circle_names]
-        self.segments = np.concatenate(blocks) if blocks else np.zeros((0, 2, 3))     # (K, 2, 3) mm
         self.seg_owner = self.line_names + [n for n in self.circle_names for _ in range(CIRCLE_SEGMENTS)]
-        self.construction = {e.name for e in result.lines + result.circles if e.construction}
+        centers = []
+        for w in polylines:
+            ring = result.outline_segments_mm(w.name)
+            blocks.append(ring)
+            self.seg_owner += [w.name] * len(ring)
+            blocks.append(result.center_segments_mm(w.name))
+            centers += [f"{w.name}.{k}" for k in range(1, len(w.points))]
+            self.seg_owner += centers[-(len(w.points) - 1):]
+        self.segments = np.concatenate(blocks) if blocks else np.zeros((0, 2, 3))     # (K, 2, 3) mm
+        # Dashed: construction lines and circles, and the polylines' center lines.
+        self.construction = {e.name for e in result.lines + result.circles if e.construction} | set(centers)
+        self.entity_names = set(self.seg_owner) | set(result.points) | set(self.polyline_names)
         self.point_names = list(result.points)
         self.point_pos = np.array([result.world_mm(n) for n in self.point_names]).reshape(-1, 3)
         self.explicit = [n in result.explicit for n in self.point_names]
@@ -687,6 +700,7 @@ class GeometryView:
         self.tool = None                # a drawing tool (view/sketch_tools.py) or None
         self.on_delete = None           # callback(): the Delete key
         self.on_drag = None             # callback(key, (2,) mm moved or None, "start" | "move" | "end" | "cancel")
+        self.on_insert = None           # callback(key, (2,) sketch mm): a double click on a sketch entity
         self._drag = None               # a left drag on a sketch entity: {"keys", "start" (2,) mm, "started"}
         self.drag_start = None          # (2,) sketch mm where the current drag began
         self._box = None                # a box being drawn: {"start" (2,) px, "add": Shift}
@@ -1072,6 +1086,13 @@ class GeometryView:
     def _double_click(self, event):
         if self.measure and event.button == 1 and any(self.picks) and self.pick_at(event.pos) is None:
             self.set_picks([None, None])
+            return
+        # In sketch mode, a double click on a polyline's center segment puts a point there.
+        if event.button == 1 and self.editing_sketch is not None and self.tool is None and self.on_insert:
+            key = self.datum_at(event.pos)
+            xy = self.sketch_xy(event.pos)
+            if key is not None and key[0] == "entity" and xy is not None:
+                self.on_insert(key, xy)
 
     def set_tool(self, tool):
         """A drawing tool takes the mouse (None: hover and select again)."""
@@ -1287,7 +1308,7 @@ class GeometryView:
                 return key[1] in self._sketch_points
             if key[0] == "entity":
                 visual = self._sketch_geometry.get(key[1])
-                return visual is not None and key[2] in visual.line_names + visual.circle_names + visual.point_names
+                return visual is not None and key[2] in visual.entity_names
             return True
 
         if self.hovered is not None and not alive(self.hovered):

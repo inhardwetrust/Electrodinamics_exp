@@ -19,7 +19,8 @@
 # A position is an anchor: ("point", name) of an existing point or
 # ("xy", (x, y) mm) of a new one.
 #
-# PolylineTool (Sketch > Line), as Inventor's Line:
+# LineTool (Sketch > Line), as Inventor's Line (TraceTool, Sketch > Polyline, draws the
+# same way the center line of a wide polyline):
 #   - every click puts a point; from the second one on, each click adds the
 #     line from the last point (one undo step each);
 #   - the preview: the line from the last point to the marker;
@@ -270,7 +271,7 @@ class PointTool(SketchTool):
         self.move(pos)
 
 
-class PolylineTool(SketchTool):
+class LineTool(SketchTool):
     name = "Line"
 
     def __init__(self, view, sketch, sketch_result, add_line, on_exit):
@@ -465,6 +466,8 @@ class PasteTool(SketchTool):
         for center, radius, _, _ in self.clip["circles"]:
             ring = points[center] + radius * np.stack([np.cos(t), np.sin(t)], axis=1)
             segments += [[p, q] for p, q in zip(ring[:-1], ring[1:])]
+        for names, *_ in self.clip.get("polylines", []):           # their center lines
+            segments += [[points[p], points[q]] for p, q in zip(names[:-1], names[1:])]
         return np.array(segments).reshape(-1, 2, 2)
 
     def move(self, pos):
@@ -487,3 +490,13 @@ class PasteTool(SketchTool):
             return
         self.paste(hit[1] - self.clip["anchor"])
         self.on_exit()
+
+
+class TraceTool(LineTool):
+    """
+    Sketch > Polyline: drawn like Line, a click per point, but the chain is
+    the center line of one wide polyline (add_line(a, b), the window: the
+    first click pair makes the polyline, each next one extends it).
+    """
+
+    name = "Polyline"

@@ -5,7 +5,7 @@
 #
 # - region_face: a sketch region (model/profiles.py) as a planar face in 3D:
 #   its outer loop's wire (lines as straight edges, a circle as an exact
-#   circle), minus its holes;
+#   circle, an arc through three points exactly), minus its holes;
 # - extrude: the faces swept along the sketch's normal by a distance
 #   (negative: the other way), several regions fused into one solid;
 # - boolean: join (fuse), cut or intersect (common) of two shapes, for the
@@ -22,6 +22,7 @@ from OCP.BRepCheck import BRepCheck_Analyzer
 from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
 from OCP.BRepGProp import BRepGProp
 from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+from OCP.GC import GC_MakeArcOfCircle
 from OCP.GProp import GProp_GProps
 from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
 from OCP.TopAbs import TopAbs_SOLID
@@ -44,6 +45,9 @@ def _wire(frame, loop):
     for edge in loop.edges:
         if edge[0] == "line":
             builder.Add(BRepBuilderAPI_MakeEdge(_world(frame, edge[1]), _world(frame, edge[2])).Edge())
+        elif edge[0] == "arc":                  # through three points: exact
+            arc = GC_MakeArcOfCircle(_world(frame, edge[1]), _world(frame, edge[2]), _world(frame, edge[3])).Value()
+            builder.Add(BRepBuilderAPI_MakeEdge(arc).Edge())
         else:
             _, center, radius = edge
             axis = gp_Ax2(_world(frame, center), gp_Dir(*map(float, frame.normal)), gp_Dir(*map(float, frame.u)))
