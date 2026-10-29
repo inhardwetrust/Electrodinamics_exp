@@ -65,7 +65,7 @@ from model.part_file import PartFileError, dumps, from_data           # noqa: E4
 from model.profiles import _area                                      # noqa: E402
 from model.rebuild import rebuild                                     # noqa: E402
 from model.sketch import Sketch                                       # noqa: E402
-from model.traces import outline                                      # noqa: E402
+from model.traces import TraceError, _arc, outline                    # noqa: E402
 from view.main_window import MainWindow                               # noqa: E402
 
 FAILED = []
@@ -102,18 +102,45 @@ def check_outline():
     turn, widths = [[0, 0], [10, 0], [10, 5]], [2, 2, 2]
 
     def bent(kind, radius=None, points=turn):
-        return _area(outline(points, widths, bends=["normal", kind, "normal"], radii=[None, radius, None])[1])
-    check("bend round, radius = half the width: the corner's square becomes a quarter disc (30 - 1 + pi / 4)",
-          math.isclose(bent("round"), 29 + math.pi / 4, rel_tol=1e-3), f"{bent('round')}")
-    check("bend chamfer, the same radius: half the square off (29.5)", math.isclose(bent("chamfer"), 29.5,
-                                                                                    rel_tol=1e-12))
+        """The exact area: the polygon's lines plus each arc's circular segment."""
+        edges = outline(points, widths, bends=["normal", kind, "normal"], radii=[None, radius, None])[0]
+        total = 0.0
+        for e in edges:
+            a, b = e[1], e[-1]
+            total += 0.5 * (a[0] * b[1] - a[1] * b[0])
+            if e[0] == "arc":
+                _, r, t0, t1 = _arc(e[1], e[2], e[3])
+                total += 0.5 * r * r * ((t1 - t0) - math.sin(t1 - t0))
+        return abs(total)
+    # A 90 degree turn, width 2: sharp, 30.
+    check("arc, R = 2 (the default, the width): the band along the center line, both sides concentric "
+          "(30 - 4R + pi R)", math.isclose(bent("arc"), 30 - 8 + 2 * math.pi, rel_tol=1e-12), f"{bent('arc')}")
+    check("arc, R = 3", math.isclose(bent("arc", 3), 30 - 12 + 3 * math.pi, rel_tol=1e-12))
+    check("arc, R = w/2: the inner arc shrinks to a point (30 - 4 + pi)",
+          math.isclose(bent("arc", 1), 26 + math.pi, rel_tol=1e-12))
+    check("arc, R < w/2: the inner corner sharp, the outer arc R + w/2",
+          math.isclose(bent("arc", 0.5), 30 - 1.5 ** 2 * (1 - math.pi / 4), rel_tol=1e-12))
+    check("chamfer, setback 2 (the default): constant width along the cut center line (2 (15 - 4 + 2 sqrt 2))",
+          math.isclose(bent("chamfer"), 2 * (11 + 2 * math.sqrt(2)), rel_tol=1e-12), f"{bent('chamfer')}")
+    leg = 2 + 0.3 - math.sqrt(2)
+    check("chamfer, setback 0.3: the inner side too narrow stays sharp, the outer cut",
+          math.isclose(bent("chamfer", 0.3), 30 - leg * leg / 2, rel_tol=1e-12))
+    check("miter, the default radius (half the width): half the outer square off (29.5)",
+          math.isclose(bent("miter"), 29.5, rel_tol=1e-12))
     cut = 1 - math.sqrt(1.2 ** 2 - 1)
-    check("chamfer, radius 1.2: a smaller triangle off", math.isclose(bent("chamfer", 1.2), 30 - cut * cut / 2,
-                                                                      rel_tol=1e-12))
-    check("a radius past the corner: sharp (30); below half the width: as half the width",
-          math.isclose(bent("round", 2.0), 30.0, rel_tol=1e-12) and math.isclose(bent("round", 0.5), bent("round")))
-    check("the other way round (a right turn): the same", math.isclose(
-        bent("round", None, [[0, 0], [10, 0], [10, -5]]), bent("round"), rel_tol=1e-12))
+    check("miter, radius 1.2: a smaller triangle off", math.isclose(bent("miter", 1.2), 30 - cut * cut / 2,
+                                                                    rel_tol=1e-12))
+    check("miter: a radius past the corner leaves it sharp (30); below half the width counts as half",
+          math.isclose(bent("miter", 2.0), 30.0, rel_tol=1e-12) and math.isclose(bent("miter", 0.5), 29.5))
+    right = [[0, 0], [10, 0], [10, -5]]
+    check("the other way round (a right turn): the same for every bend",
+          all(math.isclose(bent(k, None, right), bent(k), rel_tol=1e-12) for k in ("arc", "chamfer", "miter")))
+    for kind, radius in (("arc", 6), ("chamfer", 6)):
+        try:
+            bent(kind, radius)
+            check(f"{kind} {radius}: past the neighbouring point refused", False)
+        except TraceError as error:
+            check(f"{kind} {radius}: past the neighbouring point refused", "reaches past" in str(error), str(error))
 
 
 def sketch_part():
@@ -180,13 +207,16 @@ def check_model():
     part, s = sketch_part()
     w = s.polyline("W1")
     check("bends and radii are not written while all are normal", "bends" not in dumps(part))
-    w.bends[1], w.radii[1] = "round", "2"
+    w.bends[1], w.radii[1] = "arc", "2"
     text = dumps(part)
     check("set: a TOML round trip with bends and radii", from_data(tomllib.loads(text)).to_dict() == part.to_dict()
-          and 'bends = ["normal", "round", "normal", "normal"]' in text)
+          and 'bends = ["normal", "arc", "normal", "normal"]' in text)
+    legacy = from_data(tomllib.loads(text.replace('"arc"', '"round"')))
+    check("the first files' 'round' (outer corner only) reads as miter",
+          legacy.feature("S").polyline("W1").bends[1] == "miter")
     s.insert_into_polyline("W1", 2, s.add_point("10", "2"), "w")
     check("a point put in: the lists stay aligned", w.points[2] == "P5" and len(w.widths) == len(w.bends)
-          == len(w.radii) == 5 and w.bends[1] == "round" and w.bends[2] == "normal")
+          == len(w.radii) == 5 and w.bends[1] == "arc" and w.bends[2] == "normal")
     s.delete("P2")
     check("a point deleted: its bend and radius go with it", w.bends == ["normal"] * 4 and w.radii == [""] * 4)
 
@@ -195,10 +225,11 @@ def check_model():
         t = part.add_feature(Sketch("S", plane="XY Plane"))
         q = [t.add_point(*a) for a in (("0", "0"), ("10", "0"), xy)]
         t.extend_polyline(t.add_polyline(q[0], q[1], "1"), q[2])
-        t.polyline("W1").bends[1] = "round"
-        r = rebuild(part)
-        check(f"a round bend at radius = half width builds ({xy})", "S" not in r.feature_errors,
-              f"{r.feature_errors}")
+        for kind in ("miter", "chamfer"):
+            t.polyline("W1").bends[1] = kind
+            r = rebuild(part)
+            check(f"a {kind} bend at its default builds ({xy})", "S" not in r.feature_errors,
+                  f"{r.feature_errors}")
     part, s = sketch_part()
     s.polyline("W1").widths[1] = "-1"
     r = rebuild(part)
@@ -214,11 +245,11 @@ def check_model():
           and len(out.circle_segments_mm("C1", 16)) > 0, f"{out.radii}")
 
     part, s = sketch_part()
-    s.polyline("W1").bends[1:3] = ["round", "round"]
+    s.polyline("W1").bends[1:3] = ["arc", "arc"]
     part.add_feature(Extrude("E", profiles=[("W1",)], sketch="S", distance="1", body="Bent"))
     v = kernel.volume(rebuild(part).shapes["Bent"])
-    check("extruded with round bends: exact (25 - 2 (1/4 - pi/16))", math.isclose(
-        v, 25 - 2 * (0.25 - math.pi / 16), rel_tol=1e-9), f"{v}")
+    check("extruded with arc bends (R = w = 1, a left and a right turn): exact (25 - 2 * 2R + 2 * pi R w/2)",
+          math.isclose(v, 21 + math.pi, rel_tol=1e-9), f"{v}")
 
     part, s = sketch_part()
     s.polyline("W1").start = s.polyline("W1").end = "round"
@@ -273,10 +304,10 @@ def check_window():
     click(native, pixel(view, frame, (12, 0)))               # the middle point
     middle = view.selected[2] if view.selected else None
     rows = props(window)
-    check("an inner point selected: its width, bend and radius on W1 in the properties", middle is not None
-          and rows.get("Width on W1:") is not None and rows["Width on W1:"].text() == "2"
+    check("an inner point selected: its width and bend on W1 in the properties (normal: no bend number)",
+          middle is not None and rows.get("Width on W1:") is not None and rows["Width on W1:"].text() == "2"
           and rows.get("Bend on W1:") is not None and rows["Bend on W1:"].currentText() == "normal"
-          and rows.get("Radius on W1:") is not None and rows["Radius on W1:"].text() == "", f"{middle} {list(rows)}")
+          and len(rows) == 2, f"{middle} {list(rows)}")
     steps = len(window.doc._undo)
     rows["Width on W1:"].setText("4")
     rows["Width on W1:"].editingFinished.emit()
@@ -285,33 +316,49 @@ def check_window():
     check("set to 4: the outline widens there, one undo step", sketch().polyline("W1").widths[1] == "4"
           and after > before + 1 and len(window.doc._undo) == steps + 1, f"{before:.2f} -> {after:.2f}")
 
-    # --- the bend at the middle point (a left turn: its outer corner on the right, at (14, -2))
+    # --- the bend at the middle point (width 4 there; a left turn, (0,0) -> (12,0) -> (12,6))
+    def outline_now():
+        edges, polygon = window.result.outputs["Sketch1"].outlines["W1"]
+        return edges, _area(polygon)
+
     click(native, pixel(view, frame, (12, 0)))
-    props(window)["Bend on W1:"].setCurrentText("round")
+    props(window)["Bend on W1:"].setCurrentText("arc")
     settle()
-    rounded = _area(window.result.outputs["Sketch1"].outlines["W1"][1])
-    check("bend round (radius: half the width): the outer corner rounded off",
-          sketch().polyline("W1").bends[1] == "round" and rounded < after - 0.5, f"{after:.3f} -> {rounded:.3f}")
+    edges, arc_default = outline_now()
     click(native, pixel(view, frame, (12, 0)))
-    radius = props(window)["Radius on W1:"]
-    radius.setText("2.5")
-    radius.editingFinished.emit()
+    rows = props(window)
+    # The widths taper here (2 -> 4 -> 2): the exact areas are checked above (check_outline).
+    check("bend arc: both sides become arcs; its radius row, empty (the width)",
+          sketch().polyline("W1").bends[1] == "arc" and sum(e[0] == "arc" for e in edges) == 2
+          and "Arc radius on W1:" in rows
+          and rows["Arc radius on W1:"].text() == "" and "width" in rows["Arc radius on W1:"].placeholderText(),
+          f"{[e[0] for e in edges]} {after:.3f} -> {arc_default:.3f} {list(rows)}")
+    rows["Arc radius on W1:"].setText("2")
+    rows["Arc radius on W1:"].editingFinished.emit()
     settle()
-    bigger = _area(window.result.outputs["Sketch1"].outlines["W1"][1])
-    check("  a bigger radius cuts less", sketch().polyline("W1").radii[1] == "2.5" and rounded < bigger < after,
-          f"{rounded:.3f} < {bigger:.3f} < {after:.3f}")
+    _, arc_small = outline_now()
+    check("  arc radius 2: kept, the outline follows", sketch().polyline("W1").radii[1] == "2"
+          and not math.isclose(arc_small, arc_default, rel_tol=1e-6), f"{arc_default:.3f} -> {arc_small:.3f}")
     click(native, pixel(view, frame, (12, 0)))
     props(window)["Bend on W1:"].setCurrentText("chamfer")
     settle()
-    edges = window.result.outputs["Sketch1"].outlines["W1"][0]
-    check("  chamfer: the cut is a straight edge (no arc but the ends')", sketch().polyline("W1").bends[1] == "chamfer"
-          and all(e[0] == "line" for e in edges), f"{[e[0] for e in edges]}")
+    edges, chamfered = outline_now()
     click(native, pixel(view, frame, (12, 0)))
-    props(window)["Bend on W1:"].setCurrentText("normal")
-    radius = props(window)["Radius on W1:"]
-    radius.setText("")
-    radius.editingFinished.emit()
+    rows = props(window)
+    check("  chamfer: straight cuts only, the radius back to its default; a Setback row",
+          sketch().polyline("W1").bends[1] == "chamfer" and sketch().polyline("W1").radii[1] == ""
+          and all(e[0] == "line" for e in edges) and chamfered < after - 1 and "Setback on W1:" in rows,
+          f"{[e[0] for e in edges]} {list(rows)}")
+    props(window)["Bend on W1:"].setCurrentText("miter")
     settle()
+    edges, mitered = outline_now()
+    click(native, pixel(view, frame, (12, 0)))
+    check("  miter: the outer corner cut, straight; a Miter radius row",
+          mitered < after - 1 and all(e[0] == "line" for e in edges) and "Miter radius on W1:" in props(window),
+          f"{after:.3f} -> {mitered:.3f}")
+    props(window)["Bend on W1:"].setCurrentText("normal")
+    settle()
+    check("  normal again: the sharp corner back", math.isclose(outline_now()[1], after, rel_tol=1e-12))
 
     # --- a double click on the center line puts a point there
     count = len(sketch().polyline("W1").points)

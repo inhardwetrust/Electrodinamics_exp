@@ -31,9 +31,11 @@
 #   width = "w"               # the width a new point gets (its text, then its own)
 #   start = "flat"            # "flat" | "round" (a half circle of the end's width)
 #   end = "round"
-#   bends = ["normal", "round", "normal"]   # optional, per point (the ends' unused):
-#                             # "normal" | "round" | "chamfer" (model/traces.py)
-#   radii = ["", "2", ""]     # optional, per point: the bend's radius ("": half the width)
+#   bends = ["normal", "arc", "normal"]     # optional, per point (the ends' unused):
+#                             # "normal" | "arc" | "chamfer" | "miter" (model/traces.py)
+#   radii = ["", "2", ""]     # optional, per point: the bend's number ("": its default):
+#                             # arc: the center line's radius, chamfer: the setback,
+#                             # miter: the cutting circle's radius
 #
 #   [[feature.circle]]
 #   name = "C1"
@@ -116,7 +118,7 @@ class SketchPolyline:
     start: str = "flat"     # "flat" | "round"
     end: str = "flat"
     bends: list = None      # per point: "normal" | "round" | "chamfer"; None: all normal
-    radii: list = None      # per point: a formula (mm), "" for half the width; None: all ""
+    radii: list = None      # per point: a formula (mm), "" for the bend's default; None: all ""
 
     def __post_init__(self):
         n = len(self.points)
@@ -559,7 +561,9 @@ def _polyline(owner, i, row):
         raise FeatureError(f"{owner}: {where}: bends must be a list of {', '.join(BENDS)}")
     if radii is not None and (not isinstance(radii, list) or not all(
             isinstance(t, (str, int, float)) and not isinstance(t, bool) for t in radii)):
-        raise FeatureError(f"{owner}: {where}: radii must be a list of formulas (\"\": half the width)")
+        raise FeatureError(f"{owner}: {where}: radii must be a list of formulas (\"\": the bend's default)")
+    if bends is not None:
+        bends = ["miter" if b == "round" else b for b in bends]     # the first files' outer-corner bend
     return SketchPolyline(_text(owner, where, row, "name"), list(points),
                           [t if isinstance(t, str) else repr(t) for t in widths],
                           _text(owner, where, row, "width", True) if "width" in row else "1",

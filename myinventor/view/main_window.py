@@ -115,6 +115,13 @@ from model.profiles import find_regions
 from model.expressions import evaluate
 from model.sketch import Sketch, SketchPolyline
 from model.traces import BENDS
+
+# A bend's one number in the properties: (its label, the default shown when empty).
+BEND_PARAMETER = {
+    "arc": ("Arc radius", "the width (center line)"),
+    "chamfer": ("Setback", "the width (along the center line)"),
+    "miter": ("Miter radius", "half the width (a full bevel)"),
+}
 from view.extrude_panel import ExtrudePanel
 from view.sketch_tools import (
     ALIGN_PX, CURVE_SNAP_PX, SNAP_PX, CircleTool, LineTool, PasteTool, PointTool, TraceTool, align, curve_snap,
@@ -1604,16 +1611,21 @@ class MainWindow(QMainWindow):
                     combo = QComboBox()
                     combo.addItems(list(BENDS))
                     combo.setCurrentText(w.bends[i])
-                    combo.setToolTip("normal: a sharp corner; round / chamfer: the circle of the radius around "
-                                     "the point cuts the outer corner, with an arc or a straight line")
+                    combo.setToolTip("normal: a sharp corner\n"
+                                     "arc: the center line turns along an arc, both sides concentric, the width stays\n"
+                                     "chamfer: the center line is cut straight, both sides cut, the width stays\n"
+                                     "miter: only the outer corner is cut (the circle of the radius around the point)")
                     combo.currentTextChanged.connect(
                         lambda text, w=w.name, i=i: self._set_polyline(sketch_name, w, bend=(i, text)))
                     self.props_form.addRow(f"Bend on {w.name}:", combo)
-                    radius = self._formula_field(
-                        w.radii[i], lambda text, w=w.name, i=i: self._set_polyline(sketch_name, w, radius=(i, text)),
-                        empty=True)
-                    radius.setPlaceholderText("half the width")
-                    self.props_form.addRow(f"Radius on {w.name}:", radius)
+                    if w.bends[i] in BEND_PARAMETER:
+                        label, default = BEND_PARAMETER[w.bends[i]]
+                        radius = self._formula_field(
+                            w.radii[i],
+                            lambda text, w=w.name, i=i: self._set_polyline(sketch_name, w, radius=(i, text)),
+                            empty=True)
+                        radius.setPlaceholderText(default)
+                        self.props_form.addRow(f"{label} on {w.name}:", radius)
 
     def _formula_field(self, text, apply, empty=False):
         """A formula field applying on Enter / leaving it, when changed (empty allowed only if `empty`)."""
@@ -1635,6 +1647,7 @@ class MainWindow(QMainWindow):
             polyline.widths[at[0]] = at[1] or polyline.width
         if bend is not None:
             polyline.bends[bend[0]] = bend[1]
+            polyline.radii[bend[0]] = ""        # its meaning changes with the bend: back to the default
         if radius is not None:
             polyline.radii[radius[0]] = radius[1]
         self._commit()
