@@ -495,6 +495,7 @@ class _SketchVisual:
         self.dash_segments = {}     # construction entity -> (K, 2, 3) mm, as last drawn (for the checks)
         self._dash_colors = {}
         self.lines.visible = len(self.segments) > 0
+        self.on_top = False         # drawn over the bodies (while it is the sketch edited)
         self.shown_colors = {}      # key -> color last drawn (for the checks)
 
     def remove(self):
@@ -509,6 +510,13 @@ class _SketchVisual:
         def color(key):
             return HOVER_COLOR if key == hovered else SELECTED_COLOR if key in selected else None
 
+        # The sketch being edited is drawn over the bodies (as Inventor does): one on a face
+        # lies under what it extruded from that face (copper on a substrate) and would hide.
+        if editing != self.on_top:
+            self.on_top = editing
+            for visual in (self.lines, self.dashes):
+                visual.set_gl_state("translucent", depth_test=not editing)
+            self.lines.order = self.dashes.order = 9 if editing else 6
         self.shown_colors = {}
         self._dash_colors = {}
         solid = [i for i, n in enumerate(self.seg_owner) if n not in self.construction]
@@ -1136,7 +1144,8 @@ class GeometryView:
             return None
         transform = self._transform()
         behind = np.inf
-        if self._picker is not None and not self.xray:
+        if self._picker is not None and not self.xray and self.editing_sketch is None:
+            # (The sketch being edited is drawn over the bodies, so no body hides it.)
             behind = self._picker.ray_hit(transform, pos, self._visible_bodies())
         hit = pick_datum(transform, pos, rows, behind)
         return hit[0] if hit is not None else None

@@ -13,7 +13,11 @@
 #   - New with changes: Cancel keeps the part, Discard drops it;
 #   - Open: the part comes back; a broken file is refused with a message,
 #     the current part stays and the file is untouched;
-#   - a file changed on disk is not overwritten without asking.
+#   - a file changed on disk is not overwritten without asking;
+#   - the open file changed on disk (an AI writing it): reloaded as one undo
+#     step when nothing is unsaved; a half-written file is kept out until it
+#     reads; unsaved edits are not lost (reported once); a sketch being
+#     edited makes it wait.
 #
 #   python checks/check_window_files.py
 
@@ -69,6 +73,65 @@ def edit(window, name, column, text):
     """As a user would: the cell's text changes, the panel reports it after the editor closes."""
     cell(window, name, column).setText(text)
     settle()
+
+
+STAMP = [10 ** 18]
+
+
+def write_from_outside(path, change):
+    """As another program (an AI) would: the file rewritten, its stamp a new one."""
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(change(text))
+    STAMP[0] += 10 ** 9
+    os.utime(path, ns=(STAMP[0], STAMP[0]))
+
+
+def check_reload(window, path):
+    """The open file changed on disk: reloaded when nothing is unsaved (poll_disk)."""
+    check("the file is polled for changes", window.disk_timer.isActive()
+          and window.disk_timer.interval() <= 1000)
+    window.disk_timer.stop()                # driven by hand below
+    before = window.part.parameter("length").formula
+    message = window.statusBar().currentMessage
+    write_from_outside(path, lambda t: t.replace(f'formula = "{before}"', 'formula = "20"'))
+    window.poll_disk()
+    settle()
+    check("changed on disk, nothing unsaved: reloaded, rebuilt, not modified, said so",
+          window.part.parameter("length").formula == "20" and window.result.values.get("length") == 20
+          and not window.doc.modified and "reloaded" in message(), message())
+    window.undo()
+    check("  Undo goes back to what was open (then the part is modified)",
+          window.part.parameter("length").formula == before and window.doc.modified)
+    window.redo()
+
+    write_from_outside(path, lambda t: t.replace('formula = "20"', 'formula = "21'))     # half written
+    window.poll_disk()
+    check("a file that does not read (half written): kept as it was, said so",
+          window.part.parameter("length").formula == "20" and "does not read" in message(), message())
+    write_from_outside(path, lambda t: t.replace('formula = "21', 'formula = "21"'))
+    window.poll_disk()
+    check("  once complete: reloaded", window.part.parameter("length").formula == "21")
+
+    edit(window, "length", FORMULA, "30")
+    write_from_outside(path, lambda t: t.replace('formula = "21"', 'formula = "22"'))
+    window.poll_disk()
+    check("unsaved edits: not reloaded, said so; the edit stays",
+          window.part.parameter("length").formula == "30" and "not reloaded" in message(), message())
+    window.poll_disk()
+    check("  said once (the same change is not reported again)", window.part.parameter("length").formula == "30")
+    window.doc.save()                       # the user's edit saved (overwrites the outside change)
+
+    window.editing = "a sketch being edited"     # only the flag poll_disk looks at
+    write_from_outside(path, lambda t: t.replace('formula = "30"', 'formula = "23"'))
+    window.poll_disk()
+    waited = window.part.parameter("length").formula == "30"
+    window.editing = None
+    window.poll_disk()
+    check("while a sketch is edited it waits, reloads after", waited
+          and window.part.parameter("length").formula == "23")
+    window.disk_timer.start()
 
 
 def main():
@@ -175,6 +238,8 @@ def main():
     check("changed on disk: No keeps the file", not window.save() and load(path).to_dict() == back.to_dict())
     answers["overwrite"] = True
     check("  Yes overwrites it", window.save() and load(path).parameter("length").formula == "13")
+
+    check_reload(window, path)
 
     answers["save_changes"] = "discard"
     window.close()

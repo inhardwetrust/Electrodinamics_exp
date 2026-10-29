@@ -10,7 +10,8 @@
 #   (negative: the other way), several regions fused into one solid;
 # - boolean: join (fuse), cut or intersect (common) of two shapes, for the
 #   features that change a body;
-# - volume, solids: exact properties for the checks and the window.
+# - volume, bounds, solids: exact properties for the checks, the window and
+#   the report (cli.py).
 #
 # OCP 8 naming: static methods end in _s; booleans are pairwise (no
 # TopTools_ListOfShape binding).
@@ -18,6 +19,8 @@
 import numpy as np
 
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
+from OCP.BRepBndLib import BRepBndLib
+from OCP.Bnd import Bnd_Box
 from OCP.BRepCheck import BRepCheck_Analyzer
 from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
 from OCP.BRepGProp import BRepGProp
@@ -119,6 +122,14 @@ def volume(shape):
     props = GProp_GProps()
     BRepGProp.VolumeProperties_s(shape, props)
     return props.Mass()
+
+
+def bounds(shape):
+    """Exact (2, 3) min / max corners (mm). Bnd_Box.Get() is broken in OCP 8: CornerMin / CornerMax."""
+    box = Bnd_Box()
+    BRepBndLib.AddOptimal_s(shape, box, False, False)
+    lo, hi = box.CornerMin(), box.CornerMax()
+    return np.array([[lo.X(), lo.Y(), lo.Z()], [hi.X(), hi.Y(), hi.Z()]])
 
 
 def solid_count(shape):

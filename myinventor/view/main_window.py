@@ -16,7 +16,9 @@
 # next to the part file, overwriting it without a question (for customcst).
 # Leaving a modified part (New, Open, close) asks to save it; a file changed on disk by
 # another program since it was opened is not overwritten without asking. A
-# file that fails to read is not opened (and so never overwritten).
+# file that fails to read is not opened (and so never overwritten). The open
+# file changed on disk (by an AI writing it, .claude/skills/mycad) is reloaded
+# as one undo step when nothing of the user's is unsaved (poll_disk).
 #
 # The browser, as in Inventor:
 #   <part name>       the file's name, or Part1
@@ -94,17 +96,17 @@ import os
 
 import numpy as np
 
-from PySide6.QtCore import QEvent, QRect, Qt
+from PySide6.QtCore import QEvent, QRect, Qt, QTimer
 from PySide6.QtGui import QAction, QBrush, QColor, QGuiApplication, QIcon, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
-    QCheckBox, QColorDialog, QComboBox, QDockWidget, QFileDialog, QFormLayout, QLineEdit, QLabel, QMainWindow, QMenu, QMessageBox, QTabWidget,
+    QCheckBox, QColorDialog, QComboBox, QDockWidget, QFileDialog, QFormLayout, QLineEdit, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton, QTabWidget,
     QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from app_settings import AppSettings
 from geometry.body import Geometry
 from geometry.kernel import extrude as extrude_shape, region_face
-from geometry.step_io import write_step
+from geometry.step_io import export_part
 from geometry.tessellate import body_from_shape
 from model.document import Document
 from model.part import Part, PartError, color_rgb
@@ -133,6 +135,7 @@ from view.ribbon import Ribbon
 from view.view_buttons import ViewButtons
 
 MM = 1e-3
+DISK_POLL_MS = 700                              # how often the open file is checked for changes on disk
 DEFAULT_BODY_COLOR = DEFAULT_COLORS["solid"]
 HOVER_ROW = QColor(60, 200, 90, 70)          # the row of the datum hovered in 3D
 HINT = ("Middle drag: rotate · Ctrl + middle drag: pan · wheel: zoom · "
@@ -242,6 +245,13 @@ class MainWindow(QMainWindow):
             self.open_file(path)
         if self.app_settings.error:
             self.statusBar().showMessage(f"settings not read: {self.app_settings.error}", 10000)
+        # Another program (an AI writing the part, see .claude/skills/mycad) may change the
+        # open file: polled, since a file replaced atomically escapes QFileSystemWatcher.
+        self._disk_seen = None      # the file stamp already reported and not reloaded
+        self.disk_timer = QTimer(self)
+        self.disk_timer.setInterval(DISK_POLL_MS)
+        self.disk_timer.timeout.connect(self.poll_disk)
+        self.disk_timer.start()
 
     # =====================================================
     # Layout
@@ -474,6 +484,36 @@ class MainWindow(QMainWindow):
         self.undo_action.setEnabled(self.doc.can_undo)
         self.redo_action.setEnabled(self.doc.can_redo)
 
+    def poll_disk(self):
+        """
+        The open file changed on disk: reloaded (one undo step) when nothing
+        of the user's is unsaved and no sketch or extrusion is being edited
+        (then it waits for that to end). With unsaved edits it is only
+        reported (Save asks before overwriting it); a file that does not read
+        is reported and the part stays as it is.
+        """
+        if not self.doc.changed_on_disk():
+            return
+        stamp = self.doc.disk_stamp()
+        if stamp is None or stamp == self._disk_seen:
+            return
+        if self.editing is not None or self.extrude_panel is not None or self._dragged is not None:
+            return                              # again when that is done
+        self._disk_seen = stamp
+        if self.doc.modified:
+            self.statusBar().showMessage(f"{self.doc.name} changed on disk: not reloaded, you have unsaved "
+                                         "edits (Save asks before overwriting it)", 15000)
+            return
+        try:
+            self.doc.reload()
+        except PartFileError as error:
+            self.statusBar().showMessage(f"{self.doc.name} changed on disk but does not read, kept as it was: "
+                                         f"{error}", 15000)
+            return
+        self._refresh()
+        if not self.result.feature_errors:
+            self.statusBar().showMessage(f"{self.doc.name} reloaded: changed on disk (Undo goes back)", 10000)
+
     def undo(self):
         if self.doc.undo():
             self._refresh()
@@ -612,13 +652,7 @@ class MainWindow(QMainWindow):
         a STEP file (overwritten). Returns a note on what was left out (failed
         features), or "". ValueError if there is no body.
         """
-        shapes = self.result.shapes
-        if not shapes:
-            raise ValueError("the part has no body yet")
-        write_step(path, [(name, shape, color_rgb(self.part.body_color(name)) if self.part.body_color(name)
-                           else None) for name, shape in shapes.items()])
-        failed = list(self.result.feature_errors)
-        return f"without the failed {', '.join(failed)}" if failed else ""
+        return export_part(path, self.part, self.result)
 
     def _set_step_on_save(self, on):
         self.app_settings.step_on_save = bool(on)
@@ -1114,7 +1148,8 @@ class MainWindow(QMainWindow):
         if dragged["circle"] is not None and dragged["radius"] is None:
             fixed.append(f"{dragged['circle']}.radius")
         if fixed:
-            self.statusBar().showMessage(f"{', '.join(fixed)}: a formula, it stays", 5000)
+            self.statusBar().showMessage(f"{', '.join(fixed)}: set by a formula, it stays "
+                                         "(change the formula or its parameter)", 8000)
 
     def delete_selected(self):
         """The Delete key: the selected sketch entities, or the selected feature."""
@@ -1530,6 +1565,7 @@ class MainWindow(QMainWindow):
         if len(selection) > 1:
             names = ", ".join(k[-1] for k in selection)
             self.info.setText(f"<b>{len(selection)} selected</b><br>{names}")
+            self._fill_props(key)               # what applies to all of them (Deparametrize)
         else:
             self._show_info(key)
 
@@ -1583,6 +1619,7 @@ class MainWindow(QMainWindow):
         """
         while self.props_form.rowCount():
             self.props_form.removeRow(0)
+        self._add_deparametrize(key)
         if key is None or key[0] != "entity" or len(self.view.selection) != 1:
             return
         sketch_name, name = key[1], key[2]
@@ -1626,6 +1663,56 @@ class MainWindow(QMainWindow):
                             empty=True)
                         radius.setPlaceholderText(default)
                         self.props_form.addRow(f"{label} on {w.name}:", radius)
+
+    def _deparametrize_target(self, key):
+        """(sketch name, entity names or None for the whole sketch) the selection stands for, or None."""
+        if key is None:
+            return None
+        if key[0] == "entity":
+            names = [k[2] for k in self.view.selection if k[0] == "entity" and k[1] == key[1]]
+            return key[1], names
+        if key[0] == "feature":
+            try:
+                feature = self.part.feature(key[1])
+            except KeyError:
+                return None
+            return (key[1], None) if feature.TYPE == "sketch" else None
+        return None
+
+    def _add_deparametrize(self, key):
+        """A Deparametrize button when the selection has values set by formulas."""
+        target = self._deparametrize_target(key)
+        if target is None:
+            return
+        sketch_name, names = target
+        try:
+            slots = self.part.feature(sketch_name).formula_slots(names)
+        except KeyError:
+            return
+        if not slots:
+            return
+        button = QPushButton(f"Deparametrize ({len(slots)})")
+        what = "the whole sketch" if names is None else "the selection"
+        labels = [label for label, _, _ in slots]
+        button.setToolTip(f"Replace the formulas of {what} by their values now: the geometry stays, it no "
+                          "longer follows the parameters, and it can be dragged.\n"
+                          + ", ".join(labels[:12]) + (f" and {len(labels) - 12} more" if len(labels) > 12 else ""))
+        button.clicked.connect(lambda: self.deparametrize(sketch_name, names))
+        self.props_form.addRow(button)
+
+    def deparametrize(self, sketch_name, names=None):
+        """The formulas of these entities of a sketch (all if None) become numbers; one undo step."""
+        sketch = self.part.feature(sketch_name)
+        done, failed = sketch.deparametrize(self.result.values, names)
+        if not done:
+            if failed:
+                self.statusBar().showMessage(f"not deparametrized: {next(iter(failed.items()))}", 8000)
+            return
+        self._commit()
+        note = f"; {len(failed)} formula(s) with an error left as they are" if failed else ""
+        self.statusBar().showMessage(f"deparametrized {len(done)} value(s) of {sketch_name}: now plain numbers, "
+                                     f"draggable (Undo goes back){note}", 8000)
+        self._show_info(self.view.selected)
 
     def _formula_field(self, text, apply, empty=False):
         """A formula field applying on Enter / leaving it, when changed (empty allowed only if `empty`)."""

@@ -236,9 +236,71 @@ def check_window():
     window.close()
 
 
+def check_covered_sketch():
+    """
+    A sketch under what was extruded from it (examples/patch_antenna: the
+    patch and feed sketched on the substrate's top, the copper 0.035 above
+    them): while edited it is drawn over the bodies and its curves hover and
+    select; a point set by formulas does not move when dragged, and says why.
+    """
+    import shutil
+
+    from check_sketch_drag import drag
+
+    path = os.path.join(TMP, "patch_antenna.part.toml")
+    shutil.copy(os.path.join(ROOT, "examples", "patch_antenna.part.toml"), path)
+    window = MainWindow(path)
+    window.ask_save_changes = lambda: "discard"
+    errors = []
+    window.show_error = errors.append
+    window.resize(1200, 800)
+    window.show()
+    shield(window)
+    settle(300)
+    view, native = window.view, window.view.canvas.native
+    window.edit_sketch("TopSketch")
+    settle(100)
+    frame = window.result.outputs["TopSketch"].frame
+
+    def at(xy):
+        world = frame.to_world(np.array([xy], float) * MM) / MM
+        return _project(view._transform(), world)[0][0]
+
+    visual = view._sketch_geometry["TopSketch"]
+    check("the edited sketch on the substrate's top is drawn over the copper", visual.on_top
+          and not view._sketch_geometry["SubstrateSketch"].on_top if "SubstrateSketch" in view._sketch_geometry
+          else visual.on_top)
+    hover(native, at((8, 0)))                                # the patch's right edge, L2, under the copper
+    settle()
+    check("  its line under the copper hovers", view.hovered == ("entity", "TopSketch", "L2"), f"{view.hovered}")
+    click(native, at((8, 0)))
+    check("  and selects", view.selected == ("entity", "TopSketch", "L2"), f"{view.selected}")
+    hover(native, at((10, -14)))                             # the feed's center line
+    settle()
+    check("  the feed polyline too", view.hovered is not None and view.hovered[2].startswith("Feed"),
+          f"{view.hovered}")
+    before = window.part.feature("TopSketch").point("P2")
+    x0, y0 = before.x, before.y
+    drag(native, at((8, -6)), at((10, -4)))                  # P2 = (patch_w/2, -patch_l/2)
+    settle()
+    moved = window.part.feature("TopSketch").point("P2")
+    message = window.statusBar().currentMessage()
+    check("a point set by formulas does not move when dragged, and says why",
+          (moved.x, moved.y) == (x0, y0) and "set by a formula" in message, message)
+    window.finish_sketch()
+    settle()
+    shown = view._sketch_geometry.get("TopSketch")
+    check("  leaving the sketch: drawn with the bodies again", shown is None or not shown.on_top,
+          f"editing {view.editing_sketch}, shown {shown is not None}, "
+          f"on top {None if shown is None else shown.on_top}, same visual {shown is visual}")
+    check("no error dialogs (the covered sketch)", not errors, f"{errors}")
+    window.close()
+
+
 def main():
     check_model()
     check_window()
+    check_covered_sketch()
     check("no errors in VisPy callbacks", not VISPY_ERRORS, f"{VISPY_ERRORS[:3]}")
     print("FAILED: " + ", ".join(FAILED) if FAILED else "all checks passed")
     return 1 if FAILED else 0

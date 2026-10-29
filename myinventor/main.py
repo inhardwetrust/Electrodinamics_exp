@@ -4,17 +4,43 @@
 #                                             or a new part if there is none
 #   python main.py path/to/name.part.toml  -> that part
 #   python main.py --screenshot out.png    (render, save, quit)
+#   python main.py name.part.toml --report [--json] [--export-step out.step]
+#                                          -> no window: cli.py
 
 import os
 import sys
-
-from vispy import app
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 
 def main(argv):
+    if "--report" in argv or "--export-step" in argv:
+        return headless(argv)
+    from vispy import app
+
+    return windowed(argv, app)
+
+
+def headless(argv):
+    step = None
+    if "--export-step" in argv:
+        i = argv.index("--export-step")
+        if i + 1 >= len(argv):
+            print("--export-step needs a file name")
+            return 2
+        step = argv[i + 1]
+        argv = argv[:i] + argv[i + 2:]
+    args = [a for a in argv if not a.startswith("--")]
+    if len(args) != 1:
+        print("usage: main.py name.part.toml --report [--json] [--export-step out.step]")
+        return 2
+    import cli
+
+    return cli.run(args[0], "--report" in argv, "--json" in argv, step)
+
+
+def windowed(argv, app):
     screenshot = None
     if "--screenshot" in argv:
         i = argv.index("--screenshot")

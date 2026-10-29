@@ -56,6 +56,7 @@
 # plane's in-plane axes, so the sketch's x runs along u, its y along v, and
 # u x v is the normal (the side the sketch is seen from).
 
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -316,6 +317,72 @@ class Sketch(Feature):
     def polyline(self, name):
         return next(w for w in self.polylines if w.name == name)
 
+    # ---- Deparametrize: formulas -> plain numbers (the geometry stays, it becomes draggable) ----
+
+    def formula_slots(self, names=None):
+        """
+        [(label, get, set)] of every value of these entities (all if None)
+        that is a formula, not a plain number: a point's x / y, a circle's
+        radius (and its center), a polyline's points, widths and bend radii,
+        a line's end points. label: "P1.x", "C1.radius", "W1.width[P2]"...
+        """
+        if names is None:
+            names = [p.name for p in self.points] + [c.name for c in self.circles] \
+                + [w.name for w in self.polylines]
+        points, slots, seen = [], [], set()
+
+        def add(label, get, put):
+            if label not in seen and not _is_number(get()):
+                seen.add(label)
+                slots.append((label, get, put))
+
+        for name in names:
+            kind = self.kind_of(name)
+            if kind == "point":
+                points.append(name)
+            elif kind == "line":
+                line = self.line(name)
+                points += [line.start, line.end]
+            elif kind == "circle":
+                circle = self.circle(name)
+                points.append(circle.center)
+                add(f"{circle.name}.radius", lambda c=circle: c.radius, lambda v, c=circle: setattr(c, "radius", v))
+            else:                       # a polyline or one of its segments: the whole polyline
+                w = self.polyline(name.rpartition(".")[0] if kind == "segment" else name)
+                points += list(w.points)
+                add(f"{w.name}.width", lambda w=w: w.width, lambda v, w=w: setattr(w, "width", v))
+                for i, p in enumerate(w.points):
+                    add(f"{w.name}.width[{p}]", lambda w=w, i=i: w.widths[i],
+                        lambda v, w=w, i=i: w.widths.__setitem__(i, v))
+                    if w.radii[i]:
+                        add(f"{w.name}.radius[{p}]", lambda w=w, i=i: w.radii[i],
+                            lambda v, w=w, i=i: w.radii.__setitem__(i, v))
+        for name in points:
+            point = self.point(name)
+            add(f"{name}.x", lambda p=point: p.x, lambda v, p=point: setattr(p, "x", v))
+            add(f"{name}.y", lambda p=point: p.y, lambda v, p=point: setattr(p, "y", v))
+        return slots
+
+    def deparametrize(self, values, names=None):
+        """
+        Every formula of these entities (all if None) replaced by its value
+        now (values: the parameters' values), 12 significant digits: the
+        geometry stays where it is and no longer follows the parameters.
+        Returns (labels done, {label: why not} for formulas that fail).
+        """
+        from model.expressions import ExpressionError, evaluate
+
+        done, failed = [], {}
+        for label, get, put in self.formula_slots(names):
+            try:
+                value = evaluate(get(), values)
+            except ExpressionError as error:
+                failed[label] = str(error)
+                continue
+            put(_plain(value))
+            done.append(label)
+        return done, failed
+
     def add_polyline(self, start, end, width):
         """A new polyline from point `start` to point `end`, both with the width `width` (a formula)."""
         if start == end:
@@ -538,6 +605,20 @@ def _line(owner, i, row):
     _keys(owner, where, row, ("name", "start", "end", "construction"))
     return SketchLine(_text(owner, where, row, "name"), _text(owner, where, row, "start"),
                       _text(owner, where, row, "end"), _flag(owner, where, row, "construction"))
+
+
+def _is_number(text):
+    """A plain number ("12", "-0.5", "1e-3"), not a formula."""
+    try:
+        return math.isfinite(float(text))
+    except ValueError:
+        return False
+
+
+def _plain(value):
+    """A value as the text of a plain number: 12 significant digits, no "-0"."""
+    text = f"{value + 0.0:.12g}"
+    return "0" if text in ("-0", "0") else text
 
 
 def _bends(polyline):

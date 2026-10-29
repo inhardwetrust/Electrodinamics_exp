@@ -1,0 +1,187 @@
+format = "mycad-part"
+version = 1
+
+[[parameter]]
+name = "sub_w"
+formula = "40"
+comment = "substrate width (x)"
+
+[[parameter]]
+name = "sub_l"
+formula = "40"
+comment = "substrate length (y)"
+
+[[parameter]]
+name = "h"
+formula = "1.6"
+comment = "substrate thickness"
+
+[[parameter]]
+name = "t"
+formula = "0.035"
+comment = "copper thickness"
+
+[[parameter]]
+name = "patch_w"
+formula = "16"
+
+[[parameter]]
+name = "patch_l"
+formula = "12"
+
+[[parameter]]
+name = "feed_w"
+formula = "3"
+comment = "50 ohm line width"
+
+[[parameter]]
+name = "feed_y"
+formula = "-14"
+comment = "where the feed turns toward the edge"
+
+[[parameter]]
+name = "bend_r"
+formula = "2 * feed_w"
+
+# --- the substrate: a rectangle on XY, extruded up by h
+[[feature]]
+name = "SubstrateSketch"
+type = "sketch"
+plane = "XY Plane"
+
+[[feature.point]]
+name = "P1"
+x = "-sub_w/2"
+y = "-sub_l/2"
+
+[[feature.point]]
+name = "P2"
+x = "sub_w/2"
+y = "-sub_l/2"
+
+[[feature.point]]
+name = "P3"
+x = "sub_w/2"
+y = "sub_l/2"
+
+[[feature.point]]
+name = "P4"
+x = "-sub_w/2"
+y = "sub_l/2"
+
+[[feature.line]]
+name = "L1"
+start = "P1"
+end = "P2"
+
+[[feature.line]]
+name = "L2"
+start = "P2"
+end = "P3"
+
+[[feature.line]]
+name = "L3"
+start = "P3"
+end = "P4"
+
+[[feature.line]]
+name = "L4"
+start = "P4"
+end = "P1"
+
+[[feature]]
+name = "SubstrateExt"
+type = "extrude"
+sketch = "SubstrateSketch"
+profiles = [["L1", "L2", "L3", "L4"]]
+distance = "h"
+operation = "new"
+body = "Substrate"
+
+# --- the copper on the substrate's top face: the patch and its feed
+[[feature]]
+name = "TopSketch"
+type = "sketch"
+plane = "SubstrateExt:end"
+
+[[feature.point]]
+name = "P1"
+x = "-patch_w/2"
+y = "-patch_l/2"
+
+[[feature.point]]
+name = "P2"
+x = "patch_w/2"
+y = "-patch_l/2"
+
+[[feature.point]]
+name = "P3"
+x = "patch_w/2"
+y = "patch_l/2"
+
+[[feature.point]]
+name = "P4"
+x = "-patch_w/2"
+y = "patch_l/2"
+
+[[feature.line]]
+name = "L1"
+start = "P1"
+end = "P2"
+
+[[feature.line]]
+name = "L2"
+start = "P2"
+end = "P3"
+
+[[feature.line]]
+name = "L3"
+start = "P3"
+end = "P4"
+
+[[feature.line]]
+name = "L4"
+start = "P4"
+end = "P1"
+
+[[feature.point]]
+name = "F1"
+x = "0"
+y = "-patch_l/2"
+
+[[feature.point]]
+name = "F2"
+x = "0"
+y = "feed_y"
+
+[[feature.point]]
+name = "F3"
+x = "sub_w/2"
+y = "feed_y"
+
+[[feature.polyline]]
+name = "Feed"
+points = ["F1", "F2", "F3"]
+widths = ["feed_w", "feed_w", "feed_w"]
+width = "feed_w"
+start = "flat"
+end = "flat"
+bends = ["normal", "arc", "normal"]
+radii = ["", "bend_r", ""]
+
+[[feature]]
+name = "CopperExt"
+type = "extrude"
+sketch = "TopSketch"
+profiles = [["L1", "L2", "L3", "L4"], ["Feed"]]
+distance = "t"
+operation = "new"
+body = "Copper"
+
+[[body]]
+name = "Copper"
+color = "#d4a017"
+
+[[body]]
+name = "Substrate"
+color = "#2e7d32"

@@ -56,6 +56,22 @@ def _solids(shape):
     return out
 
 
+def export_part(path, part, result):
+    """
+    The bodies as the rebuild left them (model/rebuild.py), with their names
+    and colors, to a STEP file (overwritten). Returns a note on what was left
+    out (failed features), or "". ValueError if there is no body.
+    """
+    from model.part import color_rgb
+
+    if not result.shapes:
+        raise ValueError("the part has no body yet")
+    write_step(path, [(name, shape, color_rgb(part.body_color(name)) if part.body_color(name) else None)
+                      for name, shape in result.shapes.items()])
+    failed = list(result.feature_errors)
+    return f"without the failed {', '.join(failed)}" if failed else ""
+
+
 def write_step(path, bodies):
     """
     bodies: [(name, OCP shape in mm, (r, g, b) in 0..1 or None)].

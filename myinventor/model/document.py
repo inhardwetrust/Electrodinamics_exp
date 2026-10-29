@@ -10,7 +10,8 @@
 #
 # modified: the current snapshot differs from the one last saved or opened.
 # changed_on_disk: the file's modification time is not the one we read or
-# wrote (another program edited it): the window asks before overwriting.
+# wrote (another program edited it): the window asks before overwriting, and
+# reloads it (reload: one undo step) when nothing of the user's is unsaved.
 
 import os
 
@@ -98,6 +99,23 @@ class Document:
 
     def changed_on_disk(self):
         return self.path is not None and _mtime(self.path) != self._mtime
+
+    def disk_stamp(self):
+        """The file's modification time now (None: no file)."""
+        return _mtime(self.path)
+
+    def reload(self):
+        """
+        The file as another program (an AI writing the part) left it, as one
+        undo step: undo goes back to what was open. Saved, not modified.
+        PartFileError if it does not read; then nothing changes.
+        """
+        stamp = _mtime(self.path)
+        part = load(self.path)
+        self.part = part
+        self.commit()
+        self._saved = self._state
+        self._mtime = stamp
 
 
 def _mtime(path):

@@ -54,7 +54,15 @@ Compatibility with Inventor or any other CAD is not a goal.
   `checks/check_feature_status.py`, `checks/check_body_color.py`,
   `checks/check_step_export.py` (it reads the STEP with customcst's own
   reader, in a subprocess: both projects have a `geometry` package),
-  `checks/check_sketch_polyline.py`.
+  `checks/check_sketch_polyline.py`, `checks/check_cli.py`,
+  `checks/check_deparametrize.py`.
+- Without the window: `main.py name.part.toml --report [--json]
+  [--export-step out.step]` (`cli.py`: rebuild, report, STEP; no Qt).
+  The skill `.claude/skills/mycad/SKILL.md` teaches an AI to draw by
+  writing part files and checking them this way; its example is
+  `examples/patch_antenna.part.toml` (check_cli.py checks both, including
+  the skill's table of sketch-plane axes). The window reloads its open file
+  when another program changes it (`MainWindow.poll_disk`).
 - A check that imports helpers from another check runs that module's top
   too, which points `MYCAD_SETTINGS` to its own temp file (still never the
   user's): read the path with `app_settings.settings_path()`.
@@ -164,6 +172,10 @@ Compatibility with Inventor or any other CAD is not a goal.
   toward the viewer (~2e-4 of the model size), or it stripes (z-fighting).
 - Translucent bodies look hollow: keep the fill opaque and make only
   overlays translucent.
+- A sketch on a face lies under what was extruded from it (copper 35 µm
+  above): the sketch being edited is drawn without depth test and its
+  picking ignores the bodies (`_SketchVisual.on_top`, `datum_at`), or it
+  can be neither seen nor picked.
 - Click versus drag: a press and release within 4 px is a click (it
   picks), anything longer rotates or pans.
 - In perspective, a screen fraction along an edge is not its 3D fraction:
