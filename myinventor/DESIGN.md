@@ -78,6 +78,9 @@ Principles that sidestep them:
   feature makes one (New solid) or changes a named one above it (Join,
   Cut, Intersect); a failed feature leaves it as it was. Editing a feature
   rolls the view back to the bodies just before it (as Inventor does).
+- **Body properties** live with the body's name, not in the features that
+  make it (`Part.bodies`, `[[body]]` in the file): the color now, the
+  customcst material later. A Cut or Join keeps them.
 - **Sketches on faces** (done for extrusions): `plane = "Extrusion1:end"`
   (or `start`, `side.L3`). The plane is computed from the feature's own
   values (its sketch frame, distance, profile line), not looked up among

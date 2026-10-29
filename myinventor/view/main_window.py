@@ -20,7 +20,9 @@
 #     Origin          YZ / XZ / XY Plane, X / Y / Z Axis, Center Point (hidden at first)
 #     Sketch1 ...     the features in history order (red: failed, the reason as tooltip);
 #                     a sketch an extrusion used sits under it (and is hidden in 3D)
-#     Solid Bodies    (only when the rebuild made bodies)
+#     Solid Bodies    (only when the rebuild made bodies); open a body for
+#                     its properties: Color (a swatch; click: Qt's color dialog,
+#                     right click: Default color), saved with the part
 # - a row's checkbox shows or hides its datum (saved with the part) or body;
 # - hovering a row pre-highlights its datum or sketch in 3D (green, a hidden
 #   datum or a sketch an extrusion used too, as long as the mouse is there;
@@ -86,9 +88,9 @@ import os
 import numpy as np
 
 from PySide6.QtCore import QEvent, QRect, Qt
-from PySide6.QtGui import QAction, QBrush, QColor, QGuiApplication, QKeySequence
+from PySide6.QtGui import QAction, QBrush, QColor, QGuiApplication, QIcon, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
-    QCheckBox, QDockWidget, QFileDialog, QLabel, QMainWindow, QMenu, QMessageBox, QTabWidget,
+    QCheckBox, QColorDialog, QDockWidget, QFileDialog, QLabel, QMainWindow, QMenu, QMessageBox, QTabWidget,
     QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -97,7 +99,7 @@ from geometry.body import Geometry
 from geometry.kernel import extrude as extrude_shape, region_face
 from geometry.tessellate import body_from_shape
 from model.document import Document
-from model.part import Part, PartError
+from model.part import Part, PartError, color_rgb
 from model.part_file import EXTENSION, PartFileError
 from model.rebuild import rebuild
 from model.extrude import Extrude
@@ -108,12 +110,13 @@ from view.sketch_tools import (
     ALIGN_PX, CURVE_SNAP_PX, SNAP_PX, CircleTool, PasteTool, PointTool, PolylineTool, align, curve_snap,
     fmt_mm, radius_snap,
 )
-from view.geometry_view import GeometryView
+from view.geometry_view import DEFAULT_COLORS, GeometryView
 from view.parameters_panel import COMMENT, FORMULA, NAME, ParametersPanel
 from view.ribbon import Ribbon
 from view.view_buttons import ViewButtons
 
 MM = 1e-3
+DEFAULT_BODY_COLOR = DEFAULT_COLORS["solid"]
 HOVER_ROW = QColor(60, 200, 90, 70)          # the row of the datum hovered in 3D
 HINT = ("Middle drag: rotate · Ctrl + middle drag: pan · wheel: zoom · "
         "click: select, Esc: clear")
@@ -151,6 +154,13 @@ def _number(text):
     except ValueError:
         return None
     return value if math.isfinite(value) else None
+
+
+def _swatch(rgb, size=14):
+    """A small square of a color (0..1 RGB), for a property row's icon."""
+    pixmap = QPixmap(size, size)
+    pixmap.fill(QColor.fromRgbF(*rgb))
+    return QIcon(pixmap)
 
 
 def _group_item(parent, text):
@@ -324,6 +334,7 @@ class MainWindow(QMainWindow):
         self.tree.currentItemChanged.connect(lambda item, _: self._item_selected(item))
         self.tree.itemEntered.connect(lambda item, _: self._row_hovered(item))
         self.tree.itemDoubleClicked.connect(lambda item, _: self._row_double_clicked(item))
+        self.tree.itemClicked.connect(lambda item, _: self._row_clicked(item))
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._show_context_menu)
         self.tree.viewport().installEventFilter(self)     # Leave: hover off
@@ -1159,6 +1170,9 @@ class MainWindow(QMainWindow):
         if key is None:
             return []
         kind, name = key
+        if kind == "body_color":
+            return [("Pick a color...", lambda: self.pick_body_color(name)),
+                    ("Default color", lambda: self.set_body_color(name, None))]
         if kind == "datum" and self.part.datum(name).kind == "plane":
             return [("New Sketch", lambda: self.new_sketch(name))]
         if kind == "feature" and self.part.feature(name).TYPE == "sketch":
@@ -1177,6 +1191,31 @@ class MainWindow(QMainWindow):
         for text, slot in actions:
             menu.addAction(text).triggered.connect(lambda _=False, f=slot: f())
         menu.exec(self.tree.viewport().mapToGlobal(pos))
+
+    def _row_clicked(self, item):
+        key = self._key_of(item)
+        if key is not None and key[0] == "body_color":
+            self.pick_body_color(key[1])
+
+    def ask_color(self, initial, title):
+        """A color from Qt's color dialog (palette and picker), or None if cancelled."""
+        color = QColorDialog.getColor(initial, self, title)
+        return color if color.isValid() else None
+
+    def pick_body_color(self, name):
+        """The body's Color row was clicked: pick a color for it."""
+        current = self.part.body_color(name)
+        body = next((b for b in self.result.bodies if b.name == name), None)
+        rgb = color_rgb(current) if current else (body.color if body is not None and body.color else
+                                                    DEFAULT_BODY_COLOR)
+        color = self.ask_color(QColor.fromRgbF(*rgb), f"Color of {name}")
+        if color is not None:
+            self.set_body_color(name, color.name())
+
+    def set_body_color(self, name, color):
+        """'#rrggbb' or None (the default); one undo step."""
+        self.part.set_body_color(name, color)
+        self._commit()
 
     def _row_double_clicked(self, item):
         key = self._key_of(item)
@@ -1278,8 +1317,18 @@ class MainWindow(QMainWindow):
             root.insertChild(0, group)          # first, as in Inventor
             for body in bodies:
                 key = ("body", body.name)
-                self._rows[key] = _checkable(group, body.name, key, "Tick: shown in 3D. Select: selected.",
-                                             self.view._visible.get(body.name, True))
+                row = _checkable(group, body.name, key, "Tick: shown in 3D. Select: selected. "
+                                 "Open it for its properties.", self.view._visible.get(body.name, True))
+                self._rows[key] = row
+                # Its properties, one row each (the color now; a material later).
+                color = self.part.body_color(body.name)
+                prop = QTreeWidgetItem(["Color" if color else "Color (default)"])
+                prop.setData(0, Qt.UserRole, ("body_color", body.name))
+                prop.setIcon(0, _swatch(color_rgb(color) if color else (body.color or DEFAULT_BODY_COLOR)))
+                prop.setToolTip(0, f"{color or 'the default color'}: click to pick another "
+                                   "(right click: Default color)")
+                row.addChild(prop)
+                self._rows[("body_color", body.name)] = prop
         root.setExpanded(True)
         for i in range(root.childCount()):
             root.child(i).setExpanded(True)

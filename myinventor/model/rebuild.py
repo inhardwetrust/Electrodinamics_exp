@@ -58,6 +58,11 @@ class BuildContext:
         return kernel
 
 
+def _color(text):
+    from model.part import color_rgb
+    return None if text is None else color_rgb(text)
+
+
 def rebuild(part):
     result = Result()
     result.values, result.errors = evaluate_parameters([(p.name, p.formula) for p in part.parameters])
@@ -73,6 +78,7 @@ def rebuild(part):
         except Exception as error:          # a feature's failure must not stop the rebuild
             result.feature_errors[feature.name] = str(error) or type(error).__name__
     # The bodies as the whole history left them, tessellated once.
-    result.bodies = [ctx.kernel.body(name, shape) for name, shape in ctx.shapes.items()] if ctx.shapes else []
+    result.bodies = [ctx.kernel.body(name, shape, _color(part.body_color(name)))
+                     for name, shape in ctx.shapes.items()] if ctx.shapes else []
     result.shapes = dict(ctx.shapes)
     return result

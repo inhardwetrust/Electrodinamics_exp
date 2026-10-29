@@ -6,6 +6,12 @@
 #                only their visibility is the user's
 #   features     [Feature] in history order (model/features.py); a feature
 #                refers to datums and to features above it by name
+#   bodies       {body name: {property: value}}: what belongs to a body itself,
+#                not to the features making it (its color now; later its
+#                material for customcst). [[body]] in the file:
+#                    [[body]]
+#                    name = "Solid1"
+#                    color = "#c87533"
 # The bodies come from the rebuild (model/rebuild.py), not from here.
 #
 # Names: parameters have their own namespace (formulas see only them);
@@ -15,6 +21,7 @@
 # to_dict / from_dict: the plain data of the part file (model/part_file.py);
 # from_dict validates everything and raises PartError naming the place.
 
+import re
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -24,6 +31,13 @@ from model.features import FEATURE_TYPES, FeatureError
 from model import extrude, sketch  # noqa: F401  (register the feature types)
 
 DATUM_KINDS = ("plane", "axis", "point")
+COLOR = re.compile(r"#[0-9a-fA-F]{6}\Z")
+BODY_PROPERTIES = ("color",)
+
+
+def color_rgb(text):
+    """'#rrggbb' -> (r, g, b) in 0..1."""
+    return tuple(int(text[i:i + 2], 16) / 255.0 for i in (1, 3, 5))
 
 
 class PartError(ValueError):
@@ -89,6 +103,7 @@ class Part:
     parameters: list = field(default_factory=list)      # [Parameter]
     origin: list = field(default_factory=origin_datums)
     features: list = field(default_factory=list)        # [Feature]
+    bodies: dict = field(default_factory=dict)          # body name -> {"color": "#rrggbb"}
 
     # =====================================================
     # Lookup
@@ -121,7 +136,7 @@ class Part:
     # =====================================================
 
     def free_body_name(self, stem="Solid"):
-        """Solid1, Solid2...: a body name no extrusion uses yet (as Inventor names bodies)."""
+        """Solid1, Solid2...: a body name no feature makes yet (as Inventor names bodies)."""
         taken = {f["body"] for f in self.features if "body" in f.values}
         n = 1
         while f"{stem}{n}" in taken:
@@ -224,12 +239,37 @@ class Part:
                                  for p in self.parameters]
         if self.features:
             data["feature"] = [f.to_dict() for f in self.features]
+        rows = [{"name": name, **props} for name, props in self.bodies.items() if props]
+        if rows:
+            data["body"] = rows
         return data
+
+    # =====================================================
+    # Body properties
+    # =====================================================
+
+    def body_color(self, name):
+        """'#rrggbb', or None (the default)."""
+        return self.bodies.get(name, {}).get("color")
+
+    def set_body_color(self, name, color):
+        """color: '#rrggbb', or None for the default."""
+        props = dict(self.bodies.get(name, {}))
+        if color is None:
+            props.pop("color", None)
+        else:
+            if not isinstance(color, str) or not COLOR.match(color):
+                raise PartError(f"{color!r} is not a color (#rrggbb)")
+            props["color"] = color.lower()
+        if props:
+            self.bodies[name] = props
+        else:
+            self.bodies.pop(name, None)
 
     @classmethod
     def from_dict(cls, data):
         """A validated part from plain data; PartError names what is wrong and where."""
-        _keys(data, "the file", allowed={"origin", "parameter", "feature"})
+        _keys(data, "the file", allowed={"origin", "parameter", "feature", "body"})
         part = cls()
 
         origin = data.get("origin", {})
@@ -287,6 +327,22 @@ class Part:
                 if ref not in part.object_names():
                     raise PartError(f"{where}: {ref!r} is not a datum or a feature above it")
             part.features.append(feature)
+
+        rows = data.get("body", [])
+        if not isinstance(rows, list):
+            raise PartError("body must be an array of tables ([[body]])")
+        for i, row in enumerate(rows, 1):
+            where = f"body {i}"
+            _keys(row, where, allowed={"name", *BODY_PROPERTIES}, required={"name"})
+            name = row["name"]
+            if not isinstance(name, str) or not name.strip():
+                raise PartError(f"{where}: name must be a non-empty string")
+            if name in part.bodies:
+                raise PartError(f"{where}: {name!r} is listed twice")
+            try:
+                part.set_body_color(name, row.get("color"))
+            except PartError as error:
+                raise PartError(f"{where} ({name}): {error}") from None
         return part
 
 
