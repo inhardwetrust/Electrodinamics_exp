@@ -9,7 +9,8 @@
 #      once at the end.
 #      A feature fails alone: its error is recorded and the features that
 #      refer to it fail too ("uses X, which failed"); the others still build.
-# Nothing here is saved; the window shows the Result.
+# Nothing here is saved; the window shows the Result. While a sketch is
+# edited the window rebuilds only up to it (upto): no bodies tessellated.
 
 from dataclasses import dataclass, field
 
@@ -25,6 +26,7 @@ class Result:
     outputs: dict = field(default_factory=dict)         # feature -> what its build returned
     bodies: list = field(default_factory=list)          # Body, named, for the view and STEP
     shapes: dict = field(default_factory=dict)          # body name -> OCP shape (mm): exact, for STEP
+    upto: str = None                                    # built only up to this feature (no bodies), or None
 
 
 @dataclass
@@ -64,8 +66,9 @@ def _color(text):
     return None if text is None else color_rgb(text)
 
 
-def rebuild(part):
-    result = Result()
+def rebuild(part, upto=None):
+    """The part's Result; upto: only the features up to that one (inclusive), the bodies not tessellated."""
+    result = Result(upto=upto)
     result.values, result.errors = evaluate_parameters([(p.name, p.formula) for p in part.parameters])
     ctx = BuildContext(part, result.values, result.outputs, parameter_errors=result.errors)
 
@@ -81,6 +84,9 @@ def rebuild(part):
             result.feature_errors[feature.name] = str(error)
         except Exception as error:          # a feature's failure must not stop the rebuild
             result.feature_errors[feature.name] = str(error) or type(error).__name__
+        if feature.name == upto:
+            result.shapes = dict(ctx.shapes)
+            return result
     # The bodies as the whole history left them, tessellated once.
     result.bodies = [ctx.kernel.body(name, shape, _color(part.body_color(name)))
                      for name, shape in ctx.shapes.items()] if ctx.shapes else []

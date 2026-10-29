@@ -439,6 +439,8 @@ def check_window_tree(window, settle):
           window.part.feature("S").gen_curve(c).visible and texts == ["Hide", "Convert to Spline", "Copy as Spline"]
           and not window.result.feature_errors, f"{texts}")
     v = kernel.volume(window.result.shapes["B"])
+    check("  the spline tolerance: 50 um by default", window.spline_tolerance == "50")
+    window.spline_tolerance = "1"
     steps = len(window.doc._undo)
     w = window.curve_to_spline("S", c, keep=True)
     settle()
@@ -450,6 +452,22 @@ def check_window_tree(window, settle):
           and row is not None and row.checkState(0) == Qt.Unchecked and view_selected(window) == ("entity", "S", w)
           and not window.result.feature_errors and math.isclose(kernel.volume(window.result.shapes["B"]), v,
                                                                 abs_tol=2.5e-3), f"{window.result.feature_errors}")
+    window.view.select_keys([("entity", "S", w)])
+    window.delete_selected()
+    settle()
+    window.tree.setCurrentItem(window._rows[("feature", "S")])     # a used sketch shows while selected
+    settle()
+    visual = window.view._sketch_geometry["S"]
+    out = window.result.outputs["S"]
+    check("  the spline deleted: its ends stay (the lines use them); the hidden curve's ends are not drawn",
+          {f"{c}.start", f"{c}.end"} == out.hidden and not {f"{c}.start", f"{c}.end"} & set(visual.point_names)
+          and len(window.part.feature("S").points) == 3, f"{out.hidden} {visual.point_names}")
+    window.view.select_keys([("entity", "S", f"{c}.start")])
+    steps = len(window.doc._undo)
+    window.delete_selected()
+    check("  Delete on a curve's end: nothing deleted, the status bar says why", len(window.doc._undo) == steps
+          and "the end of a curve" in window.statusBar().currentMessage(), window.statusBar().currentMessage())
+    window.undo()
     window.undo()
     settle()
     w = window.curve_to_spline("S", c, keep=False)

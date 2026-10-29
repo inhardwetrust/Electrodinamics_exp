@@ -228,11 +228,12 @@ class MainWindow(QMainWindow):
         self._rows = {}             # key -> tree row
         self._hover_row = None
         self.editing = None         # name of the sketch in sketch mode, or None
+        self._frozen = None         # the full Result when the sketch was opened (its bodies stay shown meanwhile)
         self.construction_mode = False  # new lines and circles are construction ones
         self.clipboard = None       # copied sketch geometry (see copy_selection), or None
         self._trace = None          # the polyline the Polyline tool is drawing
         self._spline = None         # the spline the Spline tool is drawing
-        self.spline_tolerance = "1"     # µm: how far a spline made from a curve may be off it
+        self.spline_tolerance = "50"    # µm: how far a spline made from a curve may be off it
         self.extrude_panel = None   # the Extrude command's panel while it runs
         self._extruding = None      # the extrusion being edited by it, or None (a new one)
         self._rolled_back = False   # the view shows the bodies from before the edited extrusion
@@ -473,12 +474,34 @@ class MainWindow(QMainWindow):
         are red in the browser, the reason in their tooltip).
         """
         before = set(self.result.feature_errors) if self.result is not None else set()
-        self.show_result(rebuild(self.part), reset_view)
+        self.show_result(self._build(), reset_view)
         broken = [n for n in self.result.feature_errors if n not in before]
         if broken:
             first = broken[0]
             more = f" (and {len(broken) - 1} more)" if len(broken) > 1 else ""
             self.statusBar().showMessage(f"{first} failed: {self.result.feature_errors[first]}{more}", 10000)
+
+    def _build(self):
+        """
+        The part rebuilt: all of it, or while a sketch is edited only its
+        history up to that sketch; the later features' results and the bodies
+        stay as they were when the sketch was opened (Finish Sketch rebuilds
+        the rest: 3D does not follow every edit of a sketch).
+        """
+        names = [f.name for f in self.part.features]
+        if self.editing is None or self._frozen is None or self.editing not in names:
+            return rebuild(self.part)
+        result = rebuild(self.part, upto=self.editing)
+        later = set(names[names.index(self.editing) + 1:])
+        frozen = self._frozen
+        result.outputs.update({n: out for n, out in frozen.outputs.items() if n in later})
+        result.feature_errors.update({n: e for n, e in frozen.feature_errors.items() if n in later})
+        result.bodies, result.shapes = frozen.bodies, frozen.shapes
+        return result
+
+    def full_result(self):
+        """The Result of the whole part (rebuilt if a sketch being edited holds 3D back): for STEP."""
+        return self.result if self.result.upto is None else rebuild(self.part)
 
     def show_result(self, result, reset_view=False):
         self.result = result
@@ -486,12 +509,16 @@ class MainWindow(QMainWindow):
         self._show_sketches(force=True)
         if self.editing is not None and self.editing in result.outputs:
             self.view.set_sketch(result.outputs[self.editing].frame, self.editing)
-        self.view.set_geometry(Geometry(result.bodies), reset=reset_view)
+        if result.upto is None or reset_view:   # while a sketch is edited, the bodies stay as they were
+            self.view.set_geometry(Geometry(result.bodies), reset=reset_view)
         self._fill_tree()
         self.parameters.show_parameters(self.part.parameters, result.values, result.errors)
         if self.editing is not None:
             if self.editing not in result.outputs:     # undone, deleted, or it fails now
                 self.finish_sketch(refresh=False)
+                if result.upto is not None:
+                    self.show_result(rebuild(self.part), reset_view)   # the whole part again
+                    return
         self._update_title()
         self._on_pick(self.view.picks)
         self._sync_construction()
@@ -677,7 +704,7 @@ class MainWindow(QMainWindow):
         a STEP file (overwritten). Returns a note on what was left out (failed
         features), or "". ValueError if there is no body.
         """
-        return export_part(path, self.part, self.result)
+        return export_part(path, self.part, self.full_result())
 
     def _set_step_on_save(self, on):
         self.app_settings.step_on_save = bool(on)
@@ -827,6 +854,7 @@ class MainWindow(QMainWindow):
         for action in self.tool_actions:
             action.setChecked(False)
         self.editing = name
+        self._frozen = self.result if self.result.upto is None else rebuild(self.part)
         self.view.select(None)
         self._show_sketches(force=True)         # a sketch an extrusion used shows while edited
         self.view.set_sketch(built.frame, name)
@@ -841,9 +869,11 @@ class MainWindow(QMainWindow):
     def finish_sketch(self, refresh=True):
         if self.editing is None:
             return
+        name = self.editing
         for action in self.tool_actions:
             action.setChecked(False)
         self.editing = None
+        self._frozen = None
         self.view.set_sketch(None)
         self._show_sketches(force=True)
         self.ribbon.set_tab_enabled("Sketch", False)
@@ -851,8 +881,21 @@ class MainWindow(QMainWindow):
         self.start_sketch_action.setEnabled(True)
         self._sync_construction()
         if refresh:
-            self._fill_tree()
-            self._on_pick(self.view.picks)
+            if self.result.upto is not None:
+                self._refresh()                 # 3D catches up with the sketch now
+            else:
+                self._fill_tree()
+                self._on_pick(self.view.picks)
+            failed = self._failed_users(name) if name in self.result.outputs else []
+            if failed:                          # its extrusion broke: the sketch stays selected, in sight
+                key = ("feature", name)
+                self.view.select(key)
+                self._on_view_select(key)
+                self._show_sketches()
+                self.statusBar().showMessage(
+                    f"{failed[0]} failed: {self.result.feature_errors[failed[0]]} — {name} stays shown: "
+                    f"edit {failed[0]} (double click) to pick its profiles again, or close the sketch's outline",
+                    15000)
 
     def _look_at_sketch(self):
         frame = self.view.sketch_frame
@@ -1214,7 +1257,7 @@ class MainWindow(QMainWindow):
                         point.x = fmt_mm(x0 + offset[0])
                     if y0 is not None:
                         point.y = fmt_mm(y0 + offset[1])
-            self.show_result(rebuild(self.part))
+            self.show_result(self._build())
             self.view.set_guides(before.frame, guides)
             self.view.set_snap_marker(before.frame, spot)
             self._say_fixed()
@@ -1245,13 +1288,22 @@ class MainWindow(QMainWindow):
             return
         entities = [k for k in self.view.selection if k[0] == "entity"]
         if entities:
+            ends = []                           # a curve's end points: the curve sets them, they are not deleted
             for _, sketch_name, name in entities:
                 sketch = self.part.feature(sketch_name)
+                owner, _, end = name.rpartition(".")
+                if end in ("start", "end") and any(c.name == owner for c in sketch.curves):
+                    ends.append(name)
+                    continue
                 try:
                     sketch.kind_of(name)
                 except KeyError:
                     continue                    # an earlier delete took it already
                 sketch.delete(name)
+            if len(ends) == len(entities):
+                self.statusBar().showMessage(f"{', '.join(ends)}: the end of a curve, set by it: delete or hide "
+                                             "the curve instead", 8000)
+                return
             self.view.select(None)
             self._commit()
             self._show_info(None)
@@ -1265,18 +1317,25 @@ class MainWindow(QMainWindow):
     def _show_sketches(self, force=False):
         """
         The sketches drawn in 3D: those no extrusion used (hidden, as Inventor
-        does), the edited one, and a used one whose browser row is hovered or
-        selected (it shows green / blue meanwhile).
+        does), the edited one, a used one whose browser row is hovered or
+        selected (it shows green / blue meanwhile), and a used one whose user
+        failed (its body may be gone: the sketch is what is left to see).
         """
         used = self._consumed_sketches()
         outputs = self.result.outputs
         wanted = {self.editing} | {k[1] for k in (self.view.hovered, self.view.selected)
                                    if k is not None and k[0] in ("feature", "entity")}
+        wanted |= {name for name in used if self._failed_users(name)}
         shown = [(f.name, outputs[f.name]) for f in self.part.features
                  if f.TYPE == "sketch" and f.name in outputs and (f.name not in used or f.name in wanted)]
         # force: after a rebuild (their geometry changed); else only when the set of names changes
         if force or [name for name, _ in shown] != list(self.view._sketch_geometry):
             self.view.set_sketches(shown)
+
+    def _failed_users(self, name):
+        """The features using feature `name` that failed (an extrusion whose profile is gone)."""
+        errors = self.result.feature_errors if self.result is not None else {}
+        return [n for n in self.part.feature_users(name) if n in errors]
 
     def _consumed_sketches(self):
         """{sketch name: the first feature that uses it} (an extrusion)."""

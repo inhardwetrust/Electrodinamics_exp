@@ -189,6 +189,11 @@ class SketchResult:
     curves: list = field(default_factory=list)      # SketchCurve, the visible ones
     shapes: dict = field(default_factory=dict)      # curve or spline name -> model.curves.CurveShape (built)
     splines: list = field(default_factory=list)     # SketchSpline
+    hidden: set = field(default_factory=set)        # ends of hidden curves nothing uses: not drawn, not picked
+
+    def shown_points(self):
+        """{name: (2,) mm} of the points drawn, picked and snapped to (not the hidden curves' unused ends)."""
+        return {n: p for n, p in self.points.items() if n not in self.hidden}
 
     def world_mm(self, name):
         """A point's position in the scene (mm)."""
@@ -782,9 +787,13 @@ class Sketch(Feature):
                                            bend_radii)
             except TraceError as error:
                 broken.append(f"polyline {w.name}: {error}")    # no outline; its center line still shows
+        used = ({e for line in lines for e in (line.start, line.end)} | {c.center for c in circles}
+                | {p for w in polylines + splines for p in w.points})
+        hidden = {e for c in self.curves if not c.visible for e in end_points(c.name)} - used
         result = SketchResult(frame, points, lines, {p.name for p in self.points if p.explicit},
                               circles, radii, polylines, outlines, [c for c in self.curves if c.visible], shapes,
                               splines)
+        result.hidden = hidden
         if broken:
             raise PartialBuild("; ".join(broken), result)
         return result

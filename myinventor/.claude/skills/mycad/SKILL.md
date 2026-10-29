@@ -163,7 +163,7 @@ Geometry (each is a `[[feature.<kind>]]` table under the sketch):
   touch it. `visible = false` hides it (not drawn, not in profiles; its
   ends stay). The user turns one into a spline by hand (browser row or
   properties: Convert to Spline, or Copy as Spline, which hides the curve;
-  1 µm by default): lines on its ends and extrusion profiles move to the
+  50 µm by default): lines on its ends and extrusion profiles move to the
   spline. The report lists each curve with its ends' coordinates.
 - `spline`: an interpolating spline (cubic, smooth, through every point):
   `name`, `points` (two or more, each once; the first again at the end

@@ -189,7 +189,7 @@ class SketchTool:
         result = self.sketch_result()
         frame = result.frame
         transform = self.view._transform()
-        names = list(result.points)
+        names = list(result.shown_points())
         pending = self._pending()
         targets = [("point", n) for n in names] + [anchor for anchor, _ in pending] + [("xy", (0.0, 0.0))]
         xy = np.array([result.points[n] for n in names] + [p for _, p in pending] + [[0.0, 0.0]])
@@ -213,7 +213,7 @@ class SketchTool:
             self.curve = on_curve[1]
             return ("xy", (float(on_curve[0][0]), float(on_curve[0][1]))), on_curve[0], True
         local = np.round(local / ROUND_MM) * ROUND_MM
-        sources = dict(result.points)
+        sources = result.shown_points()
         sources.update({f"pending {i}": p for i, (_, p) in enumerate(pending)})
         local, self.guides = align(local, sources, ALIGN_PX * self.view._mm_per_px())
         return ("xy", (float(local[0]), float(local[1]))), local, False
@@ -417,7 +417,7 @@ class CircleTool(SketchTool):
         self.move(pos)
 
     def _points_but_center(self):
-        points = dict(self.sketch_result().points)
+        points = self.sketch_result().shown_points()
         if self.center is not None and self.center[0] == "point":
             points.pop(self.center[1], None)
         return points

@@ -147,7 +147,7 @@ and diameter, a spiral, a meander), and changes when they change.
   A generator has its own browser row under its sketch (tick: shown;
   select: its arguments). Convert to Spline replaces it by a spline
   through points on it with plain numbers, as few as keep the spline
-  within a tolerance of it (1 µm by default); Copy as Spline makes the
+  within a tolerance of it (50 µm by default); Copy as Spline makes the
   same spline and hides the curve (`visible = false`: not drawn, not in
   profiles). Either way lines on its ends and extrusion profiles move to
   the spline. Then draw over it by hand.

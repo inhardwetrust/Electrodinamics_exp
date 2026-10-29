@@ -55,7 +55,8 @@ Compatibility with Inventor or any other CAD is not a goal.
   `checks/check_step_export.py` (it reads the STEP with customcst's own
   reader, in a subprocess: both projects have a `geometry` package),
   `checks/check_sketch_polyline.py`, `checks/check_cli.py`,
-  `checks/check_deparametrize.py`, `checks/check_curves.py`.
+  `checks/check_deparametrize.py`, `checks/check_curves.py`,
+  `checks/check_sketch_mode_3d.py`.
 - Without the window: `main.py name.part.toml --report [--json]
   [--export-step out.step]` (`cli.py`: rebuild, report, STEP; no Qt).
   The skill `.claude/skills/mycad/SKILL.md` teaches an AI to draw by
@@ -79,6 +80,10 @@ Compatibility with Inventor or any other CAD is not a goal.
   canvas (`check_sketch_line.shield`); `sendEvent` still delivers.
 - Feature types live in their own modules (`model/sketch.py`) and are
   registered by importing them in `model/part.py`.
+- While a sketch is edited the window rebuilds only up to it
+  (`MainWindow._build`, `rebuild(part, upto=)`): later features and the
+  bodies stay as they were (drawn at alpha 0.8) until Finish Sketch. STEP
+  meanwhile goes through `full_result()`.
 - `model/`: the document, numpy + stdlib only (no OCP, no Qt); see
   DESIGN.md "Document". `expressions.py` (safe formulas), `features.py`
   (Feature base + registry), `part.py`, `part_file.py` (TOML),

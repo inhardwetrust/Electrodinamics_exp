@@ -124,6 +124,7 @@ SELECTED_EDGE_COLOR = (1.0, 0.85, 0.2, 1.0)
 BOX_COLOR = (0.45, 0.45, 0.5, 1.0)
 BACKGROUND = (0.13, 0.14, 0.17, 1.0)
 XRAY_ALPHA = 0.3
+SKETCH_MODE_ALPHA = 0.8     # the bodies while a sketch is edited: a little see-through
 PICK_COLORS = ((1.0, 0.85, 0.1, 1.0), (0.2, 0.9, 1.0, 1.0))   # points A, B; black rim
 PICK_LINE_COLOR = (1.0, 1.0, 1.0, 0.9)
 DATUM_COLOR = (0.95, 0.7, 0.25, 1.0)              # work features: amber
@@ -484,8 +485,9 @@ class _SketchVisual:
         self.construction = {e.name for e in result.lines + result.circles + curves + splines
                              if e.construction} | set(centers)
         # Hidden curves too (not drawn, so not picked): their browser rows select them.
-        self.entity_names = set(self.seg_owner) | set(result.points) | set(self.polyline_names) | set(result.shapes)
-        self.point_names = list(result.points)
+        shown = result.shown_points()
+        self.entity_names = set(self.seg_owner) | set(shown) | set(self.polyline_names) | set(result.shapes)
+        self.point_names = list(shown)
         self.point_pos = np.array([result.world_mm(n) for n in self.point_names]).reshape(-1, 3)
         self.explicit = [n in result.explicit for n in self.point_names]
         self.axes = (result.frame.u, result.frame.v)
@@ -650,7 +652,8 @@ class _BodyVisual:
         self.mesh.parent = None
         self.edges.parent = None
 
-    def set_style(self, visible, selected, xray, show_edges):
+    def set_style(self, visible, selected, xray, show_edges, faded=False):
+        """faded: a little see-through (SKETCH_MODE_ALPHA), still hiding what is behind it mostly."""
         self.mesh.visible = visible
         self.edges.visible = visible and (show_edges or selected)
 
@@ -658,10 +661,15 @@ class _BodyVisual:
         if selected:
             color = 0.5 * color + 0.5 * np.array([1.0, 0.9, 0.4])
 
-        self.mesh.color = (*color, XRAY_ALPHA if xray else 1.0)
+        self.mesh.color = (*color, XRAY_ALPHA if xray else SKETCH_MODE_ALPHA if faded else 1.0)
 
         if xray:
             self.mesh.set_gl_state("translucent", depth_test=False, cull_face=False)
+        elif faded:                         # back faces culled: no inner face shows (a copper foil's bottom
+            self.mesh.set_gl_state(         # on the board's top would stripe through its top)
+                "translucent", depth_test=True, cull_face=self.body.kind == "solid",
+                polygon_offset_fill=True, polygon_offset=(1.0, 1.0),
+            )
         else:
             self.mesh.set_gl_state(
                 "opaque", depth_test=True, cull_face=False,
@@ -1612,6 +1620,7 @@ class GeometryView:
                 selected=("body", name) in selected,
                 xray=self.xray,
                 show_edges=self.show_edges,
+                faded=self.editing_sketch is not None,
             )
         for name, visual in self._datums.items():
             key = ("datum", name)
