@@ -9,7 +9,8 @@
 #   {
 #     "version": 1,
 #     "recent_files": ["C:/.../antenna.toml", ...],   (newest first)
-#     "window": {"x": 100, "y": 80, "width": 1400, "height": 900, "maximized": true}
+#     "window": {"x": 100, "y": 80, "width": 1400, "height": 900, "maximized": true},
+#     "step_on_save": true      (File > STEP on Save: Save writes name.step too)
 #   }
 #
 # "window": the main window when it was last closed; x, y, width, height are
@@ -67,6 +68,7 @@ def _same_file(a, b):
 class AppSettings:
     recent_files: list = field(default_factory=list)    # newest first
     window: dict = None                                 # see the header; None = never saved
+    step_on_save: bool = False                          # Save writes the part's STEP next to it
     extra: dict = field(default_factory=dict)           # keys this version does not know
     error: str = ""                                     # why the file was not read, if so
 
@@ -88,13 +90,15 @@ class AppSettings:
                 raise ValueError("recent_files must be a list of paths")
         except (OSError, ValueError) as error:          # json.JSONDecodeError is a ValueError
             return cls(error=f"{path}: {error}")
-        extra = {k: v for k, v in data.items() if k not in ("version", "recent_files", "window")}
-        return cls(recent_files=recent[:MAX_RECENT], window=_window(data.get("window")), extra=extra)
+        extra = {k: v for k, v in data.items() if k not in ("version", "recent_files", "window", "step_on_save")}
+        return cls(recent_files=recent[:MAX_RECENT], window=_window(data.get("window")),
+                   step_on_save=data.get("step_on_save") is True, extra=extra)
 
     def save(self):
         """Writes atomically; returns an error text, or "" on success."""
         path = settings_path()
-        data = {**self.extra, "version": FORMAT_VERSION, "recent_files": self.recent_files}
+        data = {**self.extra, "version": FORMAT_VERSION, "recent_files": self.recent_files,
+                "step_on_save": self.step_on_save}
         if self.window is not None:
             data["window"] = self.window
         try:

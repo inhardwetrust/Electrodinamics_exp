@@ -10,8 +10,11 @@
 # rebuild (model/rebuild.py) -> show the result. Undo / redo replace
 # doc.part, so nothing here keeps a part object across an edit.
 #
-# Files: New, Open, Recent, Save, Save As (`name.part.toml`). Leaving a
-# modified part (New, Open, close) asks to save it; a file changed on disk by
+# Files: New, Open, Recent, Save (Ctrl+S), Save As (`name.part.toml`);
+# Export (Ctrl+E) writes the bodies to a STEP file (names, colors); with
+# STEP on Save checked (an app setting), every Save also writes name.step
+# next to the part file, overwriting it without a question (for customcst).
+# Leaving a modified part (New, Open, close) asks to save it; a file changed on disk by
 # another program since it was opened is not overwritten without asking. A
 # file that fails to read is not opened (and so never overwritten).
 #
@@ -97,6 +100,7 @@ from PySide6.QtWidgets import (
 from app_settings import AppSettings
 from geometry.body import Geometry
 from geometry.kernel import extrude as extrude_shape, region_face
+from geometry.step_io import write_step
 from geometry.tessellate import body_from_shape
 from model.document import Document
 from model.part import Part, PartError, color_rgb
@@ -131,6 +135,7 @@ FACE_TOLERANCE = 1e-6           # m and normal components: a body face lies on a
 ERROR_COLOR = QColor(200, 30, 30)
 EDITING_ROW = QColor(0, 120, 215, 45)        # the sketch being edited
 FILE_FILTER = f"myCad part (*{EXTENSION});;All files (*)"
+STEP_FILTER = "STEP (*.step *.stp)"
 
 
 def _fmt_mm(value):
@@ -258,6 +263,15 @@ class MainWindow(QMainWindow):
         group.add_action(self.save_action)
         group.add_action(self._action("Save As...", self.save_as, QKeySequence.SaveAs,
                                       "Save the part to another file"))
+        group = file.add_group("Export")
+        group.add_action(self._action("Export...", self.export_dialog, "Ctrl+E",
+                                      "Export the bodies to a STEP file (names and colors kept)"))
+        self.step_on_save_action = self._action(
+            "STEP on Save", self._set_step_on_save, checkable=True,
+            tip="Save also writes the bodies to name.step next to the part file (overwritten without asking): "
+                "customcst can re-read it at once")
+        self.step_on_save_action.setChecked(self.app_settings.step_on_save)
+        group.add_action(self.step_on_save_action)
 
         model = self.ribbon.add_tab("3D Model")
         group = model.add_group("Sketch")
@@ -522,8 +536,64 @@ class MainWindow(QMainWindow):
         self._remember(self.doc.path)
         self._fill_tree()                   # the part's name comes from the file
         self._update_title()
-        self.statusBar().showMessage(f"saved {self.doc.path}", 5000)
+        message = f"saved {self.doc.path}"
+        if self.app_settings.step_on_save:
+            step = self.step_path()
+            try:
+                skipped = self.export_step(step)
+                message += f" and {os.path.basename(step)}" + (f" ({skipped})" if skipped else "")
+            except (OSError, ValueError) as error:
+                message += f"; the STEP was not written: {error}"
+        self.statusBar().showMessage(message, 10000)
         return True
+
+    # =====================================================
+    # STEP export
+    # =====================================================
+
+    def step_path(self):
+        """name.part.toml -> name.step next to it (where STEP on Save writes)."""
+        return os.path.join(os.path.dirname(self.doc.path), self.doc.name + ".step")
+
+    def ask_export_path(self):
+        start = self.step_path() if self.doc.path else self.doc.name + ".step"
+        path, _ = QFileDialog.getSaveFileName(self, "Export STEP", start, STEP_FILTER)
+        if path and not path.lower().endswith((".step", ".stp")):
+            path += ".step"
+        return path or None
+
+    def export_dialog(self):
+        """File > Export: the bodies to a STEP file the dialog names."""
+        path = self.ask_export_path()
+        if not path:
+            return False
+        try:
+            skipped = self.export_step(path)
+        except (OSError, ValueError) as error:
+            self.show_error(f"Cannot export the STEP file:\n{error}")
+            return False
+        self.statusBar().showMessage(f"exported {path}" + (f" ({skipped})" if skipped else ""), 10000)
+        return True
+
+    def export_step(self, path):
+        """
+        The bodies as the rebuild left them, with their names and colors, to
+        a STEP file (overwritten). Returns a note on what was left out (failed
+        features), or "". ValueError if there is no body.
+        """
+        shapes = self.result.shapes
+        if not shapes:
+            raise ValueError("the part has no body yet")
+        write_step(path, [(name, shape, color_rgb(self.part.body_color(name)) if self.part.body_color(name)
+                           else None) for name, shape in shapes.items()])
+        failed = list(self.result.feature_errors)
+        return f"without the failed {', '.join(failed)}" if failed else ""
+
+    def _set_step_on_save(self, on):
+        self.app_settings.step_on_save = bool(on)
+        error = self.app_settings.save()
+        if error:
+            self.statusBar().showMessage(f"settings not saved: {error}", 10000)
 
     def _remember(self, path):
         self.app_settings.add_recent(path)
