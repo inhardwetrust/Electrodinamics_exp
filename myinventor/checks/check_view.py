@@ -238,7 +238,7 @@ def check_window():
     view.set_xray(True)
     check("  X-ray: the XY plane behind it", view.key_at(over) == ("datum", "XY Plane"), f"{view.key_at(over)}")
     view.set_xray(False)
-    body_rows = window.tree.topLevelItem(0).child(1)
+    body_rows = window.tree.topLevelItem(0).child(0)          # Solid Bodies come first, as in Inventor
     check("browser: Solid Bodies (1) > Cube",
           body_rows.text(0) == "Solid Bodies (1)" and body_rows.child(0).text(0) == "Cube")
 

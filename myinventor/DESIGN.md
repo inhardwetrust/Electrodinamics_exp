@@ -74,6 +74,13 @@ Principles that sidestep them:
   `[origin]`, `[[parameter]]`, `[[feature]]`); strict reading, atomic
   writing checked by reading back. Undo: snapshots of the plain data.
 - Bodies get explicit names: customcst assigns materials by body name.
+- **Profiles** (`model/profiles.py`): the closed regions of a sketch are
+  the bounded faces of the planar graph of its lines (points at one place
+  join), plus circles; a loop inside another is its hole. A feature names a
+  profile by the curves of its outer loop (`["L1", "L2", "L3", "L4"]`), so
+  moving points keeps it and breaking the loop fails the feature with that
+  name. Not yet: curves crossing without a shared point do not split
+  regions.
 
 ## Where to look
 

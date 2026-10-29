@@ -18,7 +18,8 @@
 # The browser, as in Inventor:
 #   <part name>       the file's name, or Part1
 #     Origin          YZ / XZ / XY Plane, X / Y / Z Axis, Center Point (hidden at first)
-#     Sketch1 ...     the features in history order (red: failed, the reason as tooltip)
+#     Sketch1 ...     the features in history order (red: failed, the reason as tooltip);
+#                     a sketch an extrusion used sits under it (and is hidden in 3D)
 #     Solid Bodies    (only when the rebuild made bodies)
 # - a row's checkbox shows or hides its datum (saved with the part) or body;
 # - hovering a row pre-highlights its datum or sketch in 3D (green, a hidden
@@ -58,6 +59,11 @@
 # - Delete deletes the selection: a sketch line (with its end points no
 #   other line uses) or point (with its lines), or a feature nothing uses.
 #
+# 3D Model > Extrude (view/extrude_panel.py): closed regions of the sketches
+# are picked in 3D (hover: green, click: take or drop, blue), the panel takes
+# the distance; Apply adds an Extrusion making a new body (Solid1, ...), one
+# undo step; Cancel or Esc leaves.
+#
 # A click in 3D selects; the Measure button switches to picking points A / B
 # (view/geometry_view.py), shown with the distance in the status bar.
 #
@@ -79,11 +85,16 @@ from PySide6.QtWidgets import (
 
 from app_settings import AppSettings
 from geometry.body import Geometry
+from geometry.kernel import region_face
+from geometry.tessellate import body_from_shape
 from model.document import Document
 from model.part import PartError
 from model.part_file import EXTENSION, PartFileError
 from model.rebuild import rebuild
+from model.extrude import Extrude
+from model.profiles import find_regions
 from model.sketch import Sketch
+from view.extrude_panel import ExtrudePanel
 from view.sketch_tools import (
     ALIGN_PX, CURVE_SNAP_PX, SNAP_PX, CircleTool, PasteTool, PointTool, PolylineTool, align, curve_snap,
     fmt_mm, radius_snap,
@@ -166,6 +177,7 @@ class MainWindow(QMainWindow):
         self.editing = None         # name of the sketch in sketch mode, or None
         self.construction_mode = False  # new lines and circles are construction ones
         self.clipboard = None       # copied sketch geometry (see copy_selection), or None
+        self.extrude_panel = None   # the Extrude command's panel while it runs
         self.picking_plane = False  # Start 2D Sketch waits for a plane
         self.view = GeometryView()
         self.view.on_pick = self._on_pick
@@ -231,6 +243,10 @@ class MainWindow(QMainWindow):
             "Start 2D Sketch", self.start_sketch, tip="A new sketch on the selected plane, or on the plane "
                                                        "you click next")
         group.add_action(self.start_sketch_action)
+        group = model.add_group("Create")
+        self.extrude_action = self._action("Extrude", self.start_extrude,
+                                           tip="Extrude closed regions of a sketch into a new body")
+        group.add_action(self.extrude_action)
         group = model.add_group("Inspect")
         self.measure_action = self._action("Measure", self._set_measure, checkable=True,
                                            tip="Measure: click picks point A, Shift + click point B")
@@ -354,8 +370,7 @@ class MainWindow(QMainWindow):
     def show_result(self, result, reset_view=False):
         self.result = result
         self.view.set_datums(self.part.origin)
-        self.view.set_sketches([(f.name, result.outputs[f.name]) for f in self.part.features
-                                if f.TYPE == "sketch" and f.name in result.outputs])
+        self._show_sketches()
         if self.editing is not None and self.editing in result.outputs:
             self.view.set_sketch(result.outputs[self.editing].frame, self.editing)
         self.view.set_geometry(Geometry(result.bodies), reset=reset_view)
@@ -547,7 +562,10 @@ class MainWindow(QMainWindow):
         return True
 
     def _escape(self):
-        """Esc in the 3D view: cancels picking a plane (True: used)."""
+        """Esc in the 3D view: cancels the Extrude command or picking a plane (True: used)."""
+        if self.extrude_panel is not None:
+            self.extrude_panel.reject()
+            return True
         if self.picking_plane:
             self._stop_picking_plane()
             return True
@@ -572,6 +590,7 @@ class MainWindow(QMainWindow):
             action.setChecked(False)
         self.editing = name
         self.view.select(None)
+        self._show_sketches()                   # a sketch an extrusion used shows while edited
         self.view.set_sketch(built.frame, name)
         self._look_at_sketch()
         self.ribbon.set_tab_enabled("Sketch", True)
@@ -588,6 +607,7 @@ class MainWindow(QMainWindow):
             action.setChecked(False)
         self.editing = None
         self.view.set_sketch(None)
+        self._show_sketches()
         self.ribbon.set_tab_enabled("Sketch", False)
         self.ribbon.show_tab("3D Model")
         self.start_sketch_action.setEnabled(True)
@@ -895,6 +915,98 @@ class MainWindow(QMainWindow):
         elif key[0] == "feature":
             self.delete_feature(key[1])
 
+    # =====================================================
+    # Extrude
+    # =====================================================
+
+    def _show_sketches(self):
+        """The sketches drawn in 3D: those no extrusion used (hidden, as Inventor does), and the edited one."""
+        used = self._consumed_sketches()
+        outputs = self.result.outputs
+        self.view.set_sketches([(f.name, outputs[f.name]) for f in self.part.features
+                                if f.TYPE == "sketch" and f.name in outputs
+                                and (f.name not in used or f.name == self.editing)])
+
+    def _consumed_sketches(self):
+        """{sketch name: the first feature that uses it} (an extrusion)."""
+        used = {}
+        for feature in self.part.features:
+            if feature.TYPE == "extrude":
+                used.setdefault(feature["sketch"], feature.name)
+        return used
+
+    def start_extrude(self):
+        """
+        3D Model > Extrude: the panel opens and the closed regions of the
+        (visible) sketches can be picked in 3D; Apply makes the extrusion.
+        """
+        if self.extrude_panel is not None:
+            self.extrude_panel.raise_()
+            return
+        self._stop_picking_plane()
+        self.finish_sketch()
+        used = self._consumed_sketches()
+        items = []
+        for feature in self.part.features:
+            built = self.result.outputs.get(feature.name)
+            if feature.TYPE != "sketch" or built is None or feature.name in used:
+                continue
+            for region in find_regions(built):
+                fill = body_from_shape("profile", region_face(built.frame, region))
+                items.append((("profile", feature.name, region.key), built.frame, region,
+                              fill.vertices / MM, fill.triangles))
+        if not items:
+            self.show_error("Extrude needs a closed region in a sketch (lines meeting at their ends, or a circle).")
+            return
+        self.view.select(None)
+        self._on_view_select(None)
+        self.view.set_profile_mode(items)
+        self.view.on_profiles = self._profiles_picked
+        panel = ExtrudePanel(self, self.result.values)
+        panel.applied.connect(self._apply_extrude)
+        panel.cancelled.connect(self._end_extrude)
+        self.extrude_panel = panel
+        if len(items) == 1:                     # the only profile: taken at once (as Inventor does)
+            self.view.set_profile_selection([items[0][0]])
+            self._profiles_picked(self.view.profile_selection)
+        panel.show()
+        self.extrude_action.setEnabled(False)
+        self.statusBar().showMessage("Extrude: click closed regions to take or drop them · Apply · Esc: cancel")
+
+    def _profiles_picked(self, keys):
+        """Profiles come from one sketch: a pick in another sketch starts over with it."""
+        if keys:
+            sketch = keys[-1][1]
+            if any(k[1] != sketch for k in keys):
+                self.view.set_profile_selection([keys[-1]])
+        if self.extrude_panel is not None:
+            self.extrude_panel.set_profile_count(len(self.view.profile_selection))
+
+    def _apply_extrude(self, distance):
+        keys = list(self.view.profile_selection)
+        self._end_extrude()
+        if not keys:
+            return
+        feature = Extrude(self.part.free_feature_name("Extrusion"), profiles=[k[2] for k in keys],
+                          sketch=keys[0][1], distance=distance, body=self.part.free_body_name())
+        self.part.add_feature(feature)
+        self._commit()
+        error = self.result.feature_errors.get(feature.name)
+        if error:
+            self.show_error(f"{feature.name} failed: {error}")
+
+    def _end_extrude(self):
+        """The command ends (Apply, Cancel, Esc, the panel closed)."""
+        panel, self.extrude_panel = self.extrude_panel, None
+        if panel is not None:
+            panel.applied.disconnect()
+            panel.cancelled.disconnect()
+            panel.close()
+        self.view.set_profile_mode(None)
+        self.view.on_profiles = None
+        self.extrude_action.setEnabled(True)
+        self._on_pick(self.view.picks)
+
     def delete_feature(self, name):
         try:
             self.part.delete_feature(name)
@@ -985,11 +1097,19 @@ class MainWindow(QMainWindow):
                                          "Tick: shown in 3D. Hover: highlighted. Select: selected.",
                                          datum.visible)
         errors = self.result.feature_errors if self.result is not None else {}
+        used = self._consumed_sketches()
         for feature in self.part.features:
             key = ("feature", feature.name)
-            item = QTreeWidgetItem([feature.name])
+            # A row may exist already: made for the sketch it took, which comes earlier in the history.
+            item = self._rows[key] if key in self._rows else QTreeWidgetItem()
+            item.setText(0, feature.name)
             item.setData(0, Qt.UserRole, key)
-            tip = f"{feature.TYPE} on {feature['plane']}" if feature.TYPE == "sketch" else feature.TYPE
+            if feature.TYPE == "sketch":
+                tip = f"sketch on {feature['plane']}"
+            elif feature.TYPE == "extrude":
+                tip = f"extrusion of {feature['sketch']} by {feature['distance']} mm into {feature['body']}"
+            else:
+                tip = feature.TYPE
             if feature.name in errors:
                 item.setForeground(0, QBrush(ERROR_COLOR))
                 tip = f"{tip}\nerror: {errors[feature.name]}"
@@ -1000,11 +1120,15 @@ class MainWindow(QMainWindow):
                 item.setFont(0, font)
                 tip += "\n(being edited)"
             item.setToolTip(0, tip)
-            root.addChild(item)
+            # A sketch an extrusion used sits under that extrusion (as in Inventor's browser).
+            consumer = used.get(feature.name)
+            parent = root if consumer is None else self._rows.setdefault(("feature", consumer), QTreeWidgetItem())
+            parent.addChild(item)
             self._rows[key] = item
         bodies = self.result.bodies if self.result is not None else []
         if bodies:
-            group = _group_item(root, f"Solid Bodies ({len(bodies)})")
+            group = _group_item(None, f"Solid Bodies ({len(bodies)})")
+            root.insertChild(0, group)          # first, as in Inventor
             for body in bodies:
                 key = ("body", body.name)
                 self._rows[key] = _checkable(group, body.name, key, "Tick: shown in 3D. Select: selected.",
@@ -1087,6 +1211,12 @@ class MainWindow(QMainWindow):
             lines = [f"<b>{feature.name}</b> ({feature.TYPE})"]
             if feature.TYPE == "sketch":
                 lines.append(f"on {feature['plane']}")
+            elif feature.TYPE == "extrude":
+                built = self.result.outputs.get(feature.name)
+                lines += [f"of {feature['sketch']}: {len(feature.profiles)} profile(s)",
+                          f"distance = {feature['distance']} mm", f"body {feature['body']}"]
+                if built is not None:
+                    lines.append(f"volume {built.body.volume / MM ** 3:.6g} mm³")
             error = self.result.feature_errors.get(feature.name)
             if error:
                 lines.append(f"<span style='color:#c81e1e'>error: {error}</span>")

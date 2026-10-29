@@ -67,6 +67,13 @@
 # then "end" on release or "cancel" on Esc. A press and release within
 # CLICK_PX stays a click.
 #
+# Profiles (set_profile_mode): while a feature command picks profiles
+# (Extrude), the closed regions of the sketches are shown as fills: hidden
+# until hovered (green), blue when selected; a click toggles one
+# (on_profiles(keys)); nothing else hovers or selects meanwhile. A region is
+# found under the cursor by the ray's hit on its sketch's plane (the nearest
+# such hit wins).
+#
 # Alignment hints (set_guides): dashed lines in the sketch's plane, from a
 # point to the one being placed or dragged that took its x or y.
 #
@@ -126,6 +133,8 @@ SKETCH_LINE_COLOR = (0.85, 0.88, 0.95, 1.0)       # its lines
 SKETCH_DOT_COLOR = (0.95, 0.95, 1.0, 1.0)         # its points, in sketch mode
 GUIDE_COLOR = (0.55, 0.85, 1.0, 0.9)              # alignment hints (dashed)
 GUIDE_DASH_PX, GUIDE_GAP_PX = 6.0, 4.0
+PROFILE_HOVER_COLOR = (0.25, 1.0, 0.35, 0.35)      # a profile under the cursor
+PROFILE_SELECTED_COLOR = (0.35, 0.65, 1.0, 0.45)  # a selected profile
 SNAP_MARKER_COLOR = (0.25, 1.0, 0.35, 1.0)        # where a drag snapped (green, as the tools' marker)
 BOX_COLOR_WINDOW = (0.45, 0.75, 1.0, 1.0)         # the selection box: solid, wholly inside
 BOX_COLOR_CROSSING = (0.45, 1.0, 0.6, 1.0)        # dashed: inside or crossing
@@ -712,6 +721,11 @@ class GeometryView:
         self.snap_marker.order = 30
         self.snap_marker.visible = False
         self.snap_spot = None           # (2,) sketch mm where a drag snapped (a radius through a point)
+        self._profiles = []             # in profile mode: [(key, frame, region, Mesh)]
+        self.profile_mode = False
+        self.profile_selection = []     # keys of the selected profiles
+        self.on_profiles = None         # callback(keys) after a click changed the selection
+        self.shown_profiles = {}        # key -> "hover" | "selected" | None, as drawn
 
         self._picker = None
         self.picks = [None, None]       # points A and B: Pick or None
@@ -803,6 +817,12 @@ class GeometryView:
         event.handled = True
 
     def _mouse_move(self, event):
+        if self.profile_mode and event.button is None and not event.is_dragging:
+            key = self.profile_at(event.pos)
+            if key != self.hovered:
+                self.hovered = key
+                self._style_profiles()
+            return
         if self._drag is not None and event.is_dragging and 1 in event.buttons:
             self._drag_move(event.pos)
             return
@@ -895,6 +915,15 @@ class GeometryView:
             return
         if np.linalg.norm(np.array(event.pos[:2], float) - press) >= CLICK_PX:
             return                      # a drag: rotated or panned
+        if self.profile_mode:
+            key = self.profile_at(event.pos)
+            if key is not None:
+                selection = list(self.profile_selection)
+                selection.remove(key) if key in selection else selection.append(key)
+                self.set_profile_selection(selection)
+                if self.on_profiles is not None:
+                    self.on_profiles(list(self.profile_selection))
+            return
         if self.tool is not None:
             if not modifiers:
                 self.tool.click(event.pos)
@@ -1224,9 +1253,15 @@ class GeometryView:
         self._restyle()
 
     def _update_bounds(self):
-        """What Reset view frames: the bodies and the datums."""
+        """
+        What Reset view frames: the bodies, the sketches and the shown datums
+        (hidden ones only while there is no body: an empty part still frames
+        its origin).
+        """
         points = [v.body.vertices / SCENE_UNIT for v in self._bodies.values() if len(v.body.vertices)]
-        for visual in list(self._datums.values()) + list(self._sketch_points.values()):
+        datums = [v for name, v in self._datums.items()
+                  if not points or self._datum_visible.get(name) or name in self._forced]
+        for visual in datums + list(self._sketch_points.values()):
             d = visual.datum
             center = d.origin / SCENE_UNIT
             reach = visual.half * (np.abs(d.u) + np.abs(d.v) + np.abs(d.direction) * (d.kind == "axis"))
@@ -1295,6 +1330,63 @@ class GeometryView:
         self.guide_lines.visible = bool(segments)
         self.canvas.update()
 
+    # =====================================================
+    # Profiles
+    # =====================================================
+
+    def set_profile_mode(self, items):
+        """
+        items: [(key, frame, region, vertices (N, 3) mm, triangles (M, 3))]:
+        the profiles to pick from, or None to leave profile mode.
+        """
+        for _, _, _, mesh in self._profiles:
+            mesh.parent = None
+        self._profiles = []
+        self.profile_mode = items is not None
+        self.profile_selection = []
+        self.hovered = None
+        for key, frame, region, vertices, triangles in items or []:
+            mesh = scene.visuals.Mesh(vertices=np.asarray(vertices, np.float32), faces=np.asarray(triangles),
+                                      color=PROFILE_HOVER_COLOR, parent=self.root)
+            # Translucent, pushed back behind the sketch's lines lying on it.
+            mesh.set_gl_state("translucent", depth_test=True, cull_face=False,
+                              polygon_offset_fill=True, polygon_offset=(1.0, 1.0))
+            mesh.order = 5
+            self._profiles.append((key, frame, region, mesh))
+        self._style_profiles()
+
+    def set_profile_selection(self, keys):
+        self.profile_selection = [k for k in keys if any(k == p[0] for p in self._profiles)]
+        self._style_profiles()
+
+    def profile_at(self, pos):
+        """The key of the profile under canvas pixel `pos` (the nearest one along the ray), or None."""
+        if not self._profiles:
+            return None
+        origin, direction = _ray(self._transform(), pos)
+        best = None
+        for key, frame, region, _ in self._profiles:
+            facing = float(np.dot(direction, frame.normal))
+            if abs(facing) < 1e-9:
+                continue
+            t = float(np.dot(frame.origin / SCENE_UNIT - origin, frame.normal)) / facing
+            if t <= 0 or (best is not None and t >= best[0]):
+                continue
+            xy = frame.to_sketch((origin + t * direction)[None] * SCENE_UNIT)[0] / SCENE_UNIT
+            if region.contains(xy):
+                best = (t, key)
+        return None if best is None else best[1]
+
+    def _style_profiles(self):
+        self.shown_profiles = {}        # key -> "hover" | "selected" | None (for the checks)
+        for key, _, _, mesh in self._profiles:
+            state = "hover" if key == self.hovered else "selected" if key in self.profile_selection else None
+            mesh.visible = state is not None
+            if state is not None:
+                mesh.color = PROFILE_HOVER_COLOR if state == "hover" else PROFILE_SELECTED_COLOR
+            self.shown_profiles[key] = state
+        self.canvas.update()
+
     def set_snap_marker(self, frame, xy):
         """A green dot where a drag snapped, in the sketch's plane (frame); xy None hides it."""
         self.snap_spot = None if frame is None or xy is None else np.asarray(xy, float)
@@ -1327,6 +1419,7 @@ class GeometryView:
 
     def set_datum_visible(self, name, visible):
         self._datum_visible[name] = bool(visible)
+        self._update_bounds()
         self._restyle()
 
     def set_hover(self, key):

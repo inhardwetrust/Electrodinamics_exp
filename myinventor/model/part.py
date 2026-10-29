@@ -21,7 +21,7 @@ import numpy as np
 
 from model.expressions import ExpressionError, name_error, names, rename
 from model.features import FEATURE_TYPES, FeatureError
-from model import sketch  # noqa: F401  (registers the feature types)
+from model import extrude, sketch  # noqa: F401  (register the feature types)
 
 DATUM_KINDS = ("plane", "axis", "point")
 
@@ -119,6 +119,14 @@ class Part:
     # =====================================================
     # Features
     # =====================================================
+
+    def free_body_name(self, stem="Solid"):
+        """Solid1, Solid2...: a body name no extrusion uses yet (as Inventor names bodies)."""
+        taken = {f["body"] for f in self.features if "body" in f.values}
+        n = 1
+        while f"{stem}{n}" in taken:
+            n += 1
+        return f"{stem}{n}"
 
     def free_feature_name(self, stem):
         """Sketch1, Sketch2...: the first one not taken (as Inventor names them)."""
