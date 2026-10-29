@@ -23,8 +23,11 @@
 #     Solid Bodies    (only when the rebuild made bodies)
 # - a row's checkbox shows or hides its datum (saved with the part) or body;
 # - hovering a row pre-highlights its datum or sketch in 3D (green, a hidden
-#   datum too), and hovering one in 3D marks its row (an empty sketch shows
-#   as its origin point);
+#   datum or a sketch an extrusion used too, as long as the mouse is there;
+#   selected: blue, as long as it is selected), and hovering one in 3D marks
+#   its row (an empty sketch shows as its origin point);
+# - a feature that cannot be built is red, the reason as its tooltip and in
+#   the info; an edit that breaks one says so in the status bar;
 # - selecting a row selects its datum or body in 3D and the other way
 #   round; the numbers of the selected item are shown under the tree.
 #
@@ -32,9 +35,12 @@
 # on a sketch (double click edits it too).
 #
 # Sketches, as in Inventor:
-# - New Sketch on a plane, or 3D Model > Start 2D Sketch: with a plane
-#   selected it starts there, else the origin planes are shown and a click on
-#   one (in 3D or in the browser) starts it; Esc cancels;
+# - New Sketch on a plane, or 3D Model > Start 2D Sketch: with a plane or a
+#   flat body face selected it starts there, else the origin planes are shown
+#   and a click on one, or on a flat face (in 3D or in the browser), starts
+#   it; Esc cancels. A face is named by meaning (face_reference:
+#   "Extrusion1:end", "Extrusion1:side.L3"), so the sketch follows its
+#   feature's sizes;
 # - sketch mode: the Sketch tab, the camera looking at the plane, the
 #   sketch's endless axes; Finish Sketch leaves it (Look At looks again). Undo past
 #   the sketch's creation, New and Open leave it too;
@@ -61,10 +67,11 @@
 #
 # 3D Model > Extrude (view/extrude_panel.py): closed regions of the sketches
 # are picked in 3D (hover: green, click: take or drop, blue), the panel takes
-# the distance; Apply adds an Extrusion making a new body (Solid1, ...), one
-# undo step; Cancel or Esc leaves. A see-through preview shows the body it
-# would make. Double click (or Edit Extrusion) on an extrusion opens the same
-# panel on it: its profiles taken, its body hidden meanwhile; Apply changes it.
+# the distance and the operation (New solid: Solid1, ...; Join / Cut /
+# Intersect a body); Apply adds the Extrusion, one undo step; Cancel or Esc
+# leaves. A see-through preview shows what it would add (amber) or cut (red).
+# Double click (or Edit Extrusion) on an extrusion opens the same panel on
+# it, the model rolled back to just before it; Apply changes it.
 #
 # A click in 3D selects; the Measure button switches to picking points A / B
 # (view/geometry_view.py), shown with the distance in the status bar.
@@ -90,7 +97,7 @@ from geometry.body import Geometry
 from geometry.kernel import extrude as extrude_shape, region_face
 from geometry.tessellate import body_from_shape
 from model.document import Document
-from model.part import PartError
+from model.part import Part, PartError
 from model.part_file import EXTENSION, PartFileError
 from model.rebuild import rebuild
 from model.extrude import Extrude
@@ -116,7 +123,8 @@ LINE_HINT = ("Line: click points; click the first point to close, the last one t
 POINT_HINT = "Point: click to put a point · Esc: leave Point"
 CIRCLE_HINT = "Circle: click the center, then a point on the circle · Esc: drop the center, again: leave Circle"
 PASTE_HINT = "Paste: click where the copy goes (it hangs on the cursor by its middle) · Esc: cancel"
-PICK_PLANE_HINT = "Start 2D Sketch: select a plane (in 3D or in the browser), Esc: cancel"
+PICK_PLANE_HINT = "Start 2D Sketch: select a plane or a flat face of a body (in 3D or in the browser), Esc: cancel"
+FACE_TOLERANCE = 1e-6           # m and normal components: a body face lies on a feature's face plane
 ERROR_COLOR = QColor(200, 30, 30)
 EDITING_ROW = QColor(0, 120, 215, 45)        # the sketch being edited
 FILE_FILTER = f"myCad part (*{EXTENSION});;All files (*)"
@@ -181,7 +189,7 @@ class MainWindow(QMainWindow):
         self.clipboard = None       # copied sketch geometry (see copy_selection), or None
         self.extrude_panel = None   # the Extrude command's panel while it runs
         self._extruding = None      # the extrusion being edited by it, or None (a new one)
-        self._hidden_body = None    # (body, visible before) hidden while its extrusion is edited
+        self._rolled_back = False   # the view shows the bodies from before the edited extrusion
         self.picking_plane = False  # Start 2D Sketch waits for a plane
         self.view = GeometryView()
         self.view.on_pick = self._on_pick
@@ -368,13 +376,23 @@ class MainWindow(QMainWindow):
         self._refresh(reset_view=True)
 
     def _refresh(self, reset_view=False):
-        """Rebuild doc.part and show everything again (after an edit, undo, open)."""
+        """
+        Rebuild doc.part and show everything again (after an edit, undo,
+        open). Features this rebuild broke are named in the status bar (they
+        are red in the browser, the reason in their tooltip).
+        """
+        before = set(self.result.feature_errors) if self.result is not None else set()
         self.show_result(rebuild(self.part), reset_view)
+        broken = [n for n in self.result.feature_errors if n not in before]
+        if broken:
+            first = broken[0]
+            more = f" (and {len(broken) - 1} more)" if len(broken) > 1 else ""
+            self.statusBar().showMessage(f"{first} failed: {self.result.feature_errors[first]}{more}", 10000)
 
     def show_result(self, result, reset_view=False):
         self.result = result
         self.view.set_datums(self.part.origin)
-        self._show_sketches()
+        self._show_sketches(force=True)
         if self.editing is not None and self.editing in result.outputs:
             self.view.set_sketch(result.outputs[self.editing].frame, self.editing)
         self.view.set_geometry(Geometry(result.bodies), reset=reset_view)
@@ -538,14 +556,23 @@ class MainWindow(QMainWindow):
     # =====================================================
 
     def start_sketch(self):
-        """3D Model > Start 2D Sketch: on the selected plane, or wait for a click on one."""
+        """
+        3D Model > Start 2D Sketch: on the selected plane or flat body face,
+        or wait for a click on one.
+        """
         selected = self.view.selected
         if selected is not None and selected[0] == "datum" and self.part.datum(selected[1]).kind == "plane":
             self.new_sketch(selected[1])
             return
+        if selected is not None and selected[0] == "face":
+            reference, why = self.face_reference(selected)
+            if reference is not None:
+                self.new_sketch(reference)
+                return
+            self.statusBar().showMessage(why, 8000)
         self.picking_plane = True
         planes = [d.name for d in self.part.origin if d.kind == "plane"]
-        self.view.set_pick_filter({"plane"}, forced=planes)
+        self.view.set_pick_filter({"plane", "face"}, forced=planes)
         self.start_sketch_action.setEnabled(False)
         self.statusBar().showMessage(PICK_PLANE_HINT)
 
@@ -557,13 +584,49 @@ class MainWindow(QMainWindow):
             self._on_pick(self.view.picks)
 
     def _plane_picked(self, key):
-        """While picking a plane: True if `key` was one (the sketch starts on it)."""
-        if not self.picking_plane or key is None or key[0] != "datum" \
-                or self.part.datum(key[1]).kind != "plane":
+        """While picking a plane: True if `key` was one, or a flat face of a feature (the sketch starts on it)."""
+        if not self.picking_plane or key is None:
+            return False
+        if key[0] == "face":
+            reference, why = self.face_reference(key)
+            if reference is None:
+                self.statusBar().showMessage(why, 8000)
+                return False
+            self._stop_picking_plane()
+            self.new_sketch(reference)
+            return True
+        if key[0] != "datum" or self.part.datum(key[1]).kind != "plane":
             return False
         self._stop_picking_plane()
         self.new_sketch(key[1])
         return True
+
+    def face_reference(self, key):
+        """
+        A body face (("face", body, CAD face index)) as a sketch plane by
+        meaning: "Extrusion1:end", "Extrusion2:side.L3"... the first feature
+        (in history order) whose named face lies on that face's plane with the
+        same outward normal. Returns (reference, None) or (None, why not).
+        """
+        triangles = self.view.face_triangles(key) * MM
+        if not len(triangles):
+            return None, "no such face"
+        normals = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
+        normals /= np.linalg.norm(normals, axis=1, keepdims=True)
+        normal = normals[0]
+        points = triangles.reshape(-1, 3)
+        if not np.allclose(normals, normal, atol=FACE_TOLERANCE) \
+                or np.abs((points - points[0]) @ normal).max() > FACE_TOLERANCE:
+            return None, "a sketch needs a flat face (this one is curved)"
+        for feature in self.part.features:
+            built = self.result.outputs.get(feature.name)
+            if not hasattr(built, "face_planes"):
+                continue
+            for role, (origin, outward) in built.face_planes().items():
+                if np.allclose(outward, normal, atol=FACE_TOLERANCE) \
+                        and abs(float(np.dot(points[0] - origin, outward))) < FACE_TOLERANCE:
+                    return f"{feature.name}:{role}", None
+        return None, "this face is not a cap or a wall of an extrusion (not supported yet)"
 
     def _escape(self):
         """Esc in the 3D view: cancels the Extrude command or picking a plane (True: used)."""
@@ -576,7 +639,7 @@ class MainWindow(QMainWindow):
         return False
 
     def new_sketch(self, plane):
-        """A new sketch on a plane (a datum's name), then sketch mode."""
+        """A new sketch on a plane (a datum's name, or a feature's face: "Extrusion1:end"), then sketch mode."""
         sketch = Sketch(self.part.free_feature_name("Sketch"), plane=plane)
         self.part.add_feature(sketch)
         self._commit()
@@ -594,7 +657,7 @@ class MainWindow(QMainWindow):
             action.setChecked(False)
         self.editing = name
         self.view.select(None)
-        self._show_sketches()                   # a sketch an extrusion used shows while edited
+        self._show_sketches(force=True)         # a sketch an extrusion used shows while edited
         self.view.set_sketch(built.frame, name)
         self._look_at_sketch()
         self.ribbon.set_tab_enabled("Sketch", True)
@@ -611,7 +674,7 @@ class MainWindow(QMainWindow):
             action.setChecked(False)
         self.editing = None
         self.view.set_sketch(None)
-        self._show_sketches()
+        self._show_sketches(force=True)
         self.ribbon.set_tab_enabled("Sketch", False)
         self.ribbon.show_tab("3D Model")
         self.start_sketch_action.setEnabled(True)
@@ -923,13 +986,21 @@ class MainWindow(QMainWindow):
     # Extrude
     # =====================================================
 
-    def _show_sketches(self):
-        """The sketches drawn in 3D: those no extrusion used (hidden, as Inventor does), and the edited one."""
+    def _show_sketches(self, force=False):
+        """
+        The sketches drawn in 3D: those no extrusion used (hidden, as Inventor
+        does), the edited one, and a used one whose browser row is hovered or
+        selected (it shows green / blue meanwhile).
+        """
         used = self._consumed_sketches()
         outputs = self.result.outputs
-        self.view.set_sketches([(f.name, outputs[f.name]) for f in self.part.features
-                                if f.TYPE == "sketch" and f.name in outputs
-                                and (f.name not in used or f.name == self.editing)])
+        wanted = {self.editing} | {k[1] for k in (self.view.hovered, self.view.selected)
+                                   if k is not None and k[0] == "feature"}
+        shown = [(f.name, outputs[f.name]) for f in self.part.features
+                 if f.TYPE == "sketch" and f.name in outputs and (f.name not in used or f.name in wanted)]
+        # force: after a rebuild (their geometry changed); else only when the set of names changes
+        if force or [name for name, _ in shown] != list(self.view._sketch_geometry):
+            self.view.set_sketches(shown)
 
     def _consumed_sketches(self):
         """{sketch name: the first feature that uses it} (an extrusion)."""
@@ -944,9 +1015,10 @@ class MainWindow(QMainWindow):
         3D Model > Extrude: the panel opens and the closed regions of the
         (visible) sketches can be picked in 3D; Apply makes the extrusion.
         edit: the name of an extrusion to change instead (double click, Edit
-        Extrusion): the panel opens with its distance, its profiles taken,
-        regions of its own sketch only; its body hides meanwhile.
-        While the command runs, a preview shows the body it would make.
+        Extrusion): the panel opens with its values, its profiles taken,
+        regions of its own sketch only; the model rolls back to just before
+        it meanwhile (as Inventor does), so a cut shows the body uncut.
+        While the command runs, a preview shows what it would add or take.
         """
         if self.extrude_panel is not None:
             self.extrude_panel.raise_()
@@ -976,21 +1048,24 @@ class MainWindow(QMainWindow):
         self.view.set_profile_mode(items)
         self.view.on_profiles = self._profiles_picked
         self._extruding = edit
-        self._hidden_body = None
         if feature is not None:
-            body = feature["body"]
-            if body in self.view._bodies:       # the old body hides; the preview stands for it
-                self._hidden_body = (body, self.view._visible.get(body, True))
-                self.view.set_visible(body, False)
-            panel = ExtrudePanel(self, self.result.values, distance=feature["distance"], title=f"Edit {edit}")
+            # Roll back: the bodies as they were just before this feature.
+            rolled = Part.from_dict(self.part.to_dict())
+            rolled.features = rolled.features[:[f.name for f in rolled.features].index(edit)]
+            before = rebuild(rolled).bodies
+            self.view.set_geometry(Geometry(before), reset=False)
+            self._rolled_back = True
+            panel = ExtrudePanel(self, self.result.values, bodies=[b.name for b in before],
+                                 distance=feature["distance"], operation=feature["operation"],
+                                 body=feature["body"], title=f"Edit {edit}")
             self.view.set_profile_selection([("profile", feature["sketch"], key) for key in feature.profiles])
         else:
-            panel = ExtrudePanel(self, self.result.values)
+            panel = ExtrudePanel(self, self.result.values, bodies=[b.name for b in self.result.bodies])
             if len(items) == 1:                 # the only profile: taken at once (as Inventor does)
                 self.view.set_profile_selection([items[0][0]])
         panel.applied.connect(self._apply_extrude)
         panel.cancelled.connect(self._end_extrude)
-        panel.distance.textChanged.connect(lambda _text: self._update_preview())
+        panel.changed.connect(self._update_preview)
         self.extrude_panel = panel
         self._profiles_picked(self.view.profile_selection)
         panel.show()
@@ -1009,7 +1084,10 @@ class MainWindow(QMainWindow):
         self._update_preview()
 
     def _update_preview(self):
-        """The body the command would make (see-through), or none while it cannot make one."""
+        """
+        What the command would add (amber) or take away (red, a cut): the
+        swept profiles, see-through; none while it cannot make them.
+        """
         panel, keys = self.extrude_panel, self.view.profile_selection
         distance = panel.distance_value() if panel is not None else None
         if not keys or not isinstance(distance, float):
@@ -1019,24 +1097,29 @@ class MainWindow(QMainWindow):
         regions = {r.key: r for r in find_regions(built)}
         try:
             shape = extrude_shape(built.frame, [regions[k[2]] for k in keys], distance)
-            self.view.set_preview(body_from_shape("preview", shape))
         except (ValueError, RuntimeError, KeyError):
             self.view.set_preview(None)
+            return
+        self.view.set_preview(body_from_shape("preview", shape), cut=panel.operation_key() == "cut")
 
     def _apply_extrude(self, distance):
         keys = list(self.view.profile_selection)
-        edit = self._extruding
+        panel, edit = self.extrude_panel, self._extruding
+        operation, target = panel.operation_key(), panel.body_name()
         self._end_extrude()
         if not keys:
             return
         profiles = [k[2] for k in keys]
         if edit:
             feature = self.part.feature(edit)
+            if operation == "new":              # keeps its own name if it made a body already
+                target = feature["body"] if feature["operation"] == "new" else self.part.free_body_name()
             feature.profiles = [tuple(sorted(p)) for p in profiles]
-            feature.values["distance"] = distance
+            feature.values.update(distance=distance, operation=operation, body=target)
         else:
-            feature = Extrude(self.part.free_feature_name("Extrusion"), profiles=profiles,
-                              sketch=keys[0][1], distance=distance, body=self.part.free_body_name())
+            feature = Extrude(self.part.free_feature_name("Extrusion"), profiles=profiles, sketch=keys[0][1],
+                              distance=distance, operation=operation,
+                              body=target if operation != "new" else self.part.free_body_name())
             self.part.add_feature(feature)
         self._commit()
         error = self.result.feature_errors.get(feature.name)
@@ -1049,15 +1132,14 @@ class MainWindow(QMainWindow):
         if panel is not None:
             panel.applied.disconnect()
             panel.cancelled.disconnect()
+            panel.changed.disconnect()
             panel.close()
         self.view.set_profile_mode(None)
         self.view.on_profiles = None
         self.view.set_preview(None)
-        if self._hidden_body is not None:
-            body, visible = self._hidden_body
-            self._hidden_body = None
-            if body in self.view._bodies:
-                self.view.set_visible(body, visible)
+        if self._rolled_back:                   # the whole model again
+            self._rolled_back = False
+            self.view.set_geometry(Geometry(self.result.bodies), reset=False)
         self._extruding = None
         self.extrude_action.setEnabled(True)
         self._on_pick(self.view.picks)
@@ -1170,7 +1252,9 @@ class MainWindow(QMainWindow):
             if feature.TYPE == "sketch":
                 tip = f"sketch on {feature['plane']}"
             elif feature.TYPE == "extrude":
-                tip = f"extrusion of {feature['sketch']} by {feature['distance']} mm into {feature['body']}"
+                what = {"new": "into", "join": "joined to", "cut": "cut from", "intersect": "intersected with"}
+                tip = (f"extrusion of {feature['sketch']} by {feature['distance']} mm "
+                       f"{what[feature['operation']]} {feature['body']}")
             else:
                 tip = feature.TYPE
             if feature.name in errors:
@@ -1228,11 +1312,13 @@ class MainWindow(QMainWindow):
         if self._plane_picked(key):
             return
         self.view.select(key)
+        self._show_sketches()                   # a used sketch shows while its row is selected
         self._show_info(key)
 
     def _row_hovered(self, item):
         key = self._key_of(item)
         self.view.set_hover(key if key is not None and key[0] in ("datum", "feature") else None)
+        self._show_sketches()                   # ... or hovered
 
     def _on_view_select(self, key):
         """A click in 3D selected `key` (or nothing): follow it in the tree."""
@@ -1240,6 +1326,7 @@ class MainWindow(QMainWindow):
             self._plane_picked(key)
             return
         self._sync_construction()
+        self._show_sketches()
         self.tree.blockSignals(True)
         if key is None or key not in self._rows:
             self.tree.setCurrentItem(None)
@@ -1265,6 +1352,8 @@ class MainWindow(QMainWindow):
     def _show_info(self, key):
         if key is None:
             self.info.setText("")
+        elif key[0] == "face":
+            self.info.setText(self._face_info(key))
         elif key[0] == "datum":
             self.info.setText(self._datum_info(self.part.datum(key[1])))
         elif key[0] == "entity":
@@ -1275,11 +1364,12 @@ class MainWindow(QMainWindow):
             if feature.TYPE == "sketch":
                 lines.append(f"on {feature['plane']}")
             elif feature.TYPE == "extrude":
-                built = self.result.outputs.get(feature.name)
+                verb = {"new": "makes", "join": "joins", "cut": "cuts", "intersect": "intersects"}[feature["operation"]]
                 lines += [f"of {feature['sketch']}: {len(feature.profiles)} profile(s)",
-                          f"distance = {feature['distance']} mm", f"body {feature['body']}"]
-                if built is not None:
-                    lines.append(f"volume {built.body.volume / MM ** 3:.6g} mm³")
+                          f"distance = {feature['distance']} mm", f"{verb} {feature['body']}"]
+                body = next((b for b in self.result.bodies if b.name == feature["body"]), None)
+                if body is not None and feature.name in self.result.outputs:
+                    lines.append(f"{body.name} now: {body.volume / MM ** 3:.6g} mm³")
             error = self.result.feature_errors.get(feature.name)
             if error:
                 lines.append(f"<span style='color:#c81e1e'>error: {error}</span>")
@@ -1309,6 +1399,21 @@ class MainWindow(QMainWindow):
         length = float(((points[line.end] - points[line.start]) ** 2).sum() ** 0.5)
         return (f"<b>{name}</b> (line of {sketch_name})<br>from {where(line.start)}<br>to {where(line.end)}"
                 f"<br>length {length:.6g} mm")
+
+    def _face_info(self, key):
+        _, body, index = key
+        triangles = self.view.face_triangles(key) * MM
+        normals = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
+        area = 0.5 * float(np.linalg.norm(normals, axis=1).sum())
+        lines = [f"<b>{body}</b>, face {index}", f"area {area / MM ** 2:.6g} mm²"]
+        reference, why = self.face_reference(key)
+        if reference is not None:
+            unit = normals[0] / np.linalg.norm(normals[0])
+            lines += [f"flat, normal {_fmt_vector(np.round(unit, 6))}", f"named {reference}",
+                      "Start 2D Sketch puts a sketch on it"]
+        else:
+            lines.append(why)
+        return "<br>".join(lines)
 
     @staticmethod
     def _datum_info(datum):

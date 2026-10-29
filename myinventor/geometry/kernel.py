@@ -8,6 +8,8 @@
 #   circle), minus its holes;
 # - extrude: the faces swept along the sketch's normal by a distance
 #   (negative: the other way), several regions fused into one solid;
+# - boolean: join (fuse), cut or intersect (common) of two shapes, for the
+#   features that change a body;
 # - volume, solids: exact properties for the checks and the window.
 #
 # OCP 8 naming: static methods end in _s; booleans are pairwise (no
@@ -15,7 +17,8 @@
 
 import numpy as np
 
-from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
+from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
+from OCP.BRepCheck import BRepCheck_Analyzer
 from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
 from OCP.BRepGProp import BRepGProp
 from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
@@ -71,7 +74,35 @@ def extrude(frame, regions, distance):
         solid = prism if solid is None else BRepAlgoAPI_Fuse(solid, prism).Shape()
     unify = ShapeUpgrade_UnifySameDomain(solid, True, True, False)
     unify.Build()
-    return unify.Shape()
+    solid = unify.Shape()
+    _check_valid(solid)
+    return solid
+
+
+def boolean(operation, target, tool):
+    """
+    "join" (fuse), "cut" (target - tool) or "intersect" (common) of two
+    shapes (mm), coplanar faces merged; ValueError if nothing is left.
+    """
+    maker = {"join": BRepAlgoAPI_Fuse, "cut": BRepAlgoAPI_Cut, "intersect": BRepAlgoAPI_Common}[operation]
+    result = maker(target, tool).Shape()
+    unify = ShapeUpgrade_UnifySameDomain(result, True, True, False)
+    unify.Build()
+    result = unify.Shape()
+    if solid_count(result) == 0 or volume(result) <= 1e-12:
+        what = {"cut": "the cut removes all of it", "intersect": "they do not overlap",
+                "join": "nothing is left"}[operation]
+        raise ValueError(what)
+    if operation == "cut" and abs(volume(result) - volume(target)) <= 1e-9 * max(volume(target), 1.0):
+        raise ValueError("the cut removes nothing (it does not reach the body)")
+    _check_valid(result)
+    return result
+
+
+def _check_valid(shape):
+    """ValueError if OCC made a shape that is not a valid solid (self-crossing, degenerate)."""
+    if not BRepCheck_Analyzer(shape).IsValid():
+        raise ValueError("the result is not a valid solid (a self-crossing or degenerate profile?)")
 
 
 def body(name, shape, color=None):

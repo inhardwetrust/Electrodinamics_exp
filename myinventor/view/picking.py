@@ -101,6 +101,18 @@ class Picker:
         origin, direction = _ray(transform, np.asarray(pos[:2], dtype=float))
         return _first_hit(origin, direction, faces, lambda points: np.ones(len(points), bool))[0]
 
+    def face_at(self, transform, pos, visible=None):
+        """(body name, CAD face index) where the ray through `pos` first enters a visible body, or None."""
+        shown = [i for i, n in enumerate(self.names) if visible is None or n in visible]
+        if not shown:
+            return None
+        faces = np.concatenate([self.triangles[i] for i in shown])
+        owner = np.repeat(shown, [len(self.triangles[i]) for i in shown])
+        face_ids = np.concatenate([self.faces[i] for i in shown])
+        origin, direction = _ray(transform, np.asarray(pos[:2], dtype=float))
+        t, k = _first_hit(origin, direction, faces, lambda points: np.ones(len(points), bool))
+        return None if k < 0 else (self.names[owner[k]], int(face_ids[k]))
+
     def _vertex_candidates(self, transform, pos, shown):
         points = np.concatenate([self.corners[i] for i in shown])
         bodies = np.repeat(shown, [len(self.corners[i]) for i in shown])

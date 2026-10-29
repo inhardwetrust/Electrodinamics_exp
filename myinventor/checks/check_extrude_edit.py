@@ -7,7 +7,8 @@
 #     new distance updates it; a bad distance hides it; the disc added makes
 #     it 200 mm³; Cancel leaves no preview, no feature;
 #   - edit (double click on Extrusion1 in the browser): the panel says Edit
-#     Extrusion1, holds the distance formula, the ring taken; Solid1 hidden,
+#     Extrusion1, holds the distance formula, the ring taken; rolled back
+#     (no Solid1 before it),
 #     the preview in its place; only regions of its own sketch; the distance
 #     set to a parameter and the disc added: Apply changes the feature (one
 #     undo step), Solid1 = 20 * h, shown again, no preview; undo brings the
@@ -127,8 +128,8 @@ def main():
     check("double click: the panel edits Extrusion1, with its distance and its ring",
           panel is not None and panel.windowTitle() == "Edit Extrusion1" and panel.distance.text() == "3"
           and view.profile_selection == [RING], f"{view.profile_selection}")
-    check("  Solid1 hidden, the preview in its place", not view._bodies["Solid1"].mesh.visible
-          and math.isclose(preview_volume(view) or 0, ring * 3, rel_tol=1e-3))
+    check("  rolled back: no Solid1 yet (it is this feature's), the preview in its place",
+          "Solid1" not in view._bodies and math.isclose(preview_volume(view) or 0, ring * 3, rel_tol=1e-3))
     check("  regions of its own sketch only", {p[0] for p in view._profiles} == {RING, DISC})
     panel.distance.setText("h")
     click(native, pixel(view, frame, (2, 2.5)))

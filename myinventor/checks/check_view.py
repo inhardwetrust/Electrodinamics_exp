@@ -233,8 +233,9 @@ def check_window():
     view.look_from("Top")
     settle()
     over = pixel_of(view, (5, 5, 8))
-    check("a cube over the XY plane: the click selects the cube", view.key_at(over) == ("body", "Cube"),
-          f"{view.key_at(over)}")
+    key = view.key_at(over)
+    top = key is not None and key[:2] == ("face", "Cube") and np.allclose(view.face_triangles(key)[..., 2], 8.0)
+    check("a cube over the XY plane: the click selects the cube's top face (z = 8)", top, f"{key}")
     view.set_xray(True)
     check("  X-ray: the XY plane behind it", view.key_at(over) == ("datum", "XY Plane"), f"{view.key_at(over)}")
     view.set_xray(False)

@@ -74,6 +74,18 @@ Principles that sidestep them:
   `[origin]`, `[[parameter]]`, `[[feature]]`); strict reading, atomic
   writing checked by reading back. Undo: snapshots of the plain data.
 - Bodies get explicit names: customcst assigns materials by body name.
+  While the history rebuilds, bodies live by name (`ctx.shapes`): a
+  feature makes one (New solid) or changes a named one above it (Join,
+  Cut, Intersect); a failed feature leaves it as it was. Editing a feature
+  rolls the view back to the bodies just before it (as Inventor does).
+- **Sketches on faces** (done for extrusions): `plane = "Extrusion1:end"`
+  (or `start`, `side.L3`). The plane is computed from the feature's own
+  values (its sketch frame, distance, profile line), not looked up among
+  the OCP faces, so it follows parameter changes; the normal points out of
+  the material (into the pocket for a cut). A picked body face is matched
+  to the first feature whose named face lies on its plane
+  (`MainWindow.face_reference`); curved faces and faces no feature names
+  are refused.
 - **Profiles** (`model/profiles.py`): the closed regions of a sketch are
   the bounded faces of the planar graph of its lines (points at one place
   join), plus circles; a loop inside another is its hole. A feature names a

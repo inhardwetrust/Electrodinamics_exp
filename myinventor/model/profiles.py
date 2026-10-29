@@ -32,7 +32,7 @@ CIRCLE_SAMPLES = 96
 class Loop:
     names: tuple            # sorted entity names (the key)
     polygon: np.ndarray     # (N, 2) mm, counter-clockwise, not closed
-    edges: list             # [("line", (2,) mm, (2,) mm)] in order, or [("circle", center (2,), radius)]
+    edges: list             # [("line", (2,) mm, (2,) mm, line name)] in order, or [("circle", center (2,), radius)]
 
     @property
     def area(self):
@@ -151,7 +151,7 @@ def _line_loops(result):
         if _area(polygon) <= 1e-12:
             continue                            # the outer face of a component (clockwise)
         names = tuple(sorted({name_of[h] for h in face}))
-        loop_edges = [("line", places[a].copy(), places[b].copy()) for a, b in face]
+        loop_edges = [("line", places[a].copy(), places[b].copy(), name_of[(a, b)]) for a, b in face]
         loops.append(Loop(names, polygon, loop_edges))
     return loops
 

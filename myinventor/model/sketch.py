@@ -9,7 +9,8 @@
 #   [[feature]]
 #   name = "Sketch1"
 #   type = "sketch"
-#   plane = "XY Plane"        # an origin plane now; later a work plane or a face
+#   plane = "XY Plane"        # an origin plane, or a planar face of a feature by meaning:
+#                             # "Extrusion1:end", "Extrusion1:start", "Extrusion1:side.L3"
 #
 #   [[feature.point]]
 #   name = "P1"
@@ -46,7 +47,6 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from model.expressions import ExpressionError, evaluate
 from model.features import Feature, FeatureError, Field, feature_type
 
 MM = 1e-3
@@ -130,7 +130,7 @@ class SketchResult:
 class Sketch(Feature):
     TYPE = "sketch"
     FIELDS = (
-        Field("plane", "ref", doc="the plane the sketch lies on"),
+        Field("plane", "ref", doc="the plane the sketch lies on: a datum, or 'Feature:face'"),
     )
 
     def __init__(self, name, points=(), lines=(), circles=(), **values):
@@ -180,6 +180,15 @@ class Sketch(Feature):
             data["circle"] = [{"name": c.name, "center": c.center, "radius": c.radius, **_construction(c)}
                               for c in self.circles]
         return data
+
+    def references(self):
+        """The plane's datum or feature ("Extrusion1:end" refers to Extrusion1)."""
+        return [self["plane"].split(":", 1)[0]]
+
+    def rename_reference(self, old, new):
+        feature, sep, face = self["plane"].partition(":")
+        if feature == old:
+            self.values["plane"] = new + sep + face
 
     def formulas(self):
         rows = super().formulas()
@@ -279,27 +288,31 @@ class Sketch(Feature):
     # Build
     # =====================================================
 
-    def build(self, ctx):
+    def _frame(self, ctx):
+        """Where the sketch lies: an origin plane, or a feature's planar face (its frame, normal outward)."""
         name = self["plane"]
+        feature, _, face = name.partition(":")
+        if face:
+            built = ctx.outputs.get(feature)
+            if built is None or not hasattr(built, "face_frame"):
+                raise ValueError(f"{feature!r} has no faces to sketch on")
+            return built.face_frame(face)
         try:
             datum = ctx.part.datum(name)
         except KeyError:
             raise ValueError(f"{name!r} is not a plane") from None
         if datum.kind != "plane":
             raise ValueError(f"{name!r} is a work {datum.kind}, not a plane")
-        frame = SketchFrame(datum.origin.copy(), datum.u.copy(), datum.v.copy(), datum.direction.copy())
+        return SketchFrame(datum.origin.copy(), datum.u.copy(), datum.v.copy(), datum.direction.copy())
+
+    def build(self, ctx):
+        frame = self._frame(ctx)
         points = {}
         for p in self.points:
-            try:
-                points[p.name] = np.array([evaluate(p.x, ctx.values), evaluate(p.y, ctx.values)])
-            except ExpressionError as error:
-                raise ValueError(f"point {p.name}: {error}") from None
+            points[p.name] = np.array([ctx.evaluate(p.x, f"point {p.name}"), ctx.evaluate(p.y, f"point {p.name}")])
         radii = {}
         for c in self.circles:
-            try:
-                radii[c.name] = evaluate(c.radius, ctx.values)
-            except ExpressionError as error:
-                raise ValueError(f"circle {c.name}: radius {error}") from None
+            radii[c.name] = ctx.evaluate(c.radius, f"circle {c.name}: the radius")
             if radii[c.name] <= 0:
                 raise ValueError(f"circle {c.name}: the radius must be > 0, it is {radii[c.name]:g} mm")
         return SketchResult(frame, points, list(self.lines), {p.name for p in self.points if p.explicit},

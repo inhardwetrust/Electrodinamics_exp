@@ -24,10 +24,11 @@
 # DATUM_HALF_MIN for an empty part, else a bit more than the bodies' reach
 # from the origin.
 #
-# Hover and selection: moving the mouse (no button) over a shown datum
-# highlights it green (on_hover(key)); a click selects it or a body
+# Hover and selection: moving the mouse (no button) over a shown datum, or
+# a body's face, highlights it green (on_hover(key)); a click selects it
+# (a face: ("face", body, CAD face index), drawn blue over the body)
 # (on_select(key)), a click on nothing clears the selection. Keys are
-# ("datum", name) or ("body", name). set_hover / select do the same from
+# ("datum", name), ("body", name) (from the browser) or ("face", body, index). set_hover / select do the same from
 # the browser; a hovered datum is drawn even when hidden (as in Inventor,
 # where hovering a hidden plane in the browser shows it).
 #
@@ -74,8 +75,8 @@
 # found under the cursor by the ray's hit on its sketch's plane (the nearest
 # such hit wins).
 #
-# Preview (set_preview): the body a feature command would make, see-through
-# amber, until it is applied or cancelled.
+# Preview (set_preview): what a feature command would add (see-through
+# amber) or cut away (red), until it is applied or cancelled.
 #
 # Alignment hints (set_guides): dashed lines in the sketch's plane, from a
 # point to the one being placed or dragged that took its x or y.
@@ -138,7 +139,10 @@ GUIDE_COLOR = (0.55, 0.85, 1.0, 0.9)              # alignment hints (dashed)
 GUIDE_DASH_PX, GUIDE_GAP_PX = 6.0, 4.0
 PROFILE_HOVER_COLOR = (0.25, 1.0, 0.35, 0.35)      # a profile under the cursor
 PROFILE_SELECTED_COLOR = (0.35, 0.65, 1.0, 0.45)  # a selected profile
-PREVIEW_COLOR = (0.95, 0.7, 0.25, 0.45)           # the body a feature command would make (see-through)
+PREVIEW_COLOR = (0.95, 0.7, 0.25, 0.45)           # what a feature command would add (see-through)
+PREVIEW_CUT_COLOR = (1.0, 0.3, 0.25, 0.45)        # what it would cut away
+FACE_HOVER_COLOR = (0.25, 1.0, 0.35, 0.55)        # a body face under the cursor
+FACE_SELECTED_COLOR = (0.35, 0.65, 1.0, 0.6)      # a selected body face
 SNAP_MARKER_COLOR = (0.25, 1.0, 0.35, 1.0)        # where a drag snapped (green, as the tools' marker)
 BOX_COLOR_WINDOW = (0.45, 0.75, 1.0, 1.0)         # the selection box: solid, wholly inside
 BOX_COLOR_CROSSING = (0.45, 1.0, 0.6, 1.0)        # dashed: inside or crossing
@@ -731,6 +735,16 @@ class GeometryView:
         self.on_profiles = None         # callback(keys) after a click changed the selection
         self.shown_profiles = {}        # key -> "hover" | "selected" | None, as drawn
         self.preview_body = None        # the Body shown as a feature's preview, or None
+        self.preview_cut = False        # drawn as a cut (red)
+        # A hovered body face (green) and the selected ones (blue), over the body's own faces
+        # (those are pushed back by their polygon offset, so these coplanar ones win).
+        self.face_hover = scene.visuals.Mesh(color=FACE_HOVER_COLOR, parent=self.root)
+        self.face_selected = scene.visuals.Mesh(color=FACE_SELECTED_COLOR, parent=self.root)
+        for order, visual in enumerate((self.face_selected, self.face_hover)):
+            visual.set_gl_state("translucent", depth_test=True, cull_face=False,
+                                polygon_offset_fill=True, polygon_offset=(-1.0, -1.0))
+            visual.order = 3 + order
+            visual.visible = False
         self.preview = scene.visuals.Mesh(parent=self.root, shading="smooth")
         self.preview.set_gl_state("translucent", depth_test=True, cull_face=False)
         self.preview.order = 8
@@ -846,6 +860,8 @@ class GeometryView:
         if self.measure:
             return
         key = self.datum_at(event.pos)
+        if key is None:
+            key = self.face_key_at(event.pos)
         if key != self.hovered:
             self.set_hover(key)
             if self.on_hover is not None:
@@ -1105,12 +1121,29 @@ class GeometryView:
         return hit[0] if hit is not None else None
 
     def key_at(self, pos):
-        """What a click at `pos` selects: a datum, else a body, else None."""
+        """What a click at `pos` selects: a datum, else a body's face, else None."""
         key = self.datum_at(pos)
-        if key is None and self._picker is not None and self._pick_kinds is None:
-            pick = self._picker.pick(self._transform(), pos, self._visible_bodies(), occlude=not self.xray)
-            key = ("body", pick.body) if pick is not None else None
-        return key
+        return key if key is not None else self.face_key_at(pos)
+
+    def face_key_at(self, pos):
+        """
+        ("face", body, CAD face index) of the body face under `pos`, or None
+        (none in sketch mode; while picking, only if faces are asked for).
+        """
+        if self._picker is None or self.editing_sketch is not None:
+            return None
+        if self._pick_kinds is not None and "face" not in self._pick_kinds:
+            return None
+        hit = self._picker.face_at(self._transform(), pos, self._visible_bodies())
+        return None if hit is None else ("face", *hit)
+
+    def face_triangles(self, key):
+        """(K, 3, 3) mm: the triangles of a ("face", body, index) key."""
+        visual = self._bodies.get(key[1])
+        if visual is None:
+            return np.zeros((0, 3, 3))
+        body = visual.body
+        return body.vertices[body.triangles[body.faces == key[2]]] / SCENE_UNIT
 
     def pick_at(self, pos):
         """The Pick under canvas pixel `pos`, or None."""
@@ -1366,12 +1399,16 @@ class GeometryView:
             self._profiles.append((key, frame, region, mesh))
         self._style_profiles()
 
-    def set_preview(self, body):
-        """A feature command's result before it is applied: a see-through body (geometry.body.Body), or None."""
+    def set_preview(self, body, cut=False):
+        """
+        What a feature command would add (amber) or cut away (red), before it
+        is applied: a see-through body (geometry.body.Body), or None.
+        """
         self.preview_body = body
+        self.preview_cut = bool(cut)
         if body is not None and len(body.triangles):
             self.preview.set_data(vertices=(body.vertices / SCENE_UNIT).astype(np.float32), faces=body.triangles,
-                                  color=PREVIEW_COLOR)
+                                  color=PREVIEW_CUT_COLOR if cut else PREVIEW_COLOR)
             self.preview.visible = True
             self._update_light()
         else:
@@ -1542,4 +1579,14 @@ class GeometryView:
             visual.set_style(True, state)
         for name, visual in self._sketch_geometry.items():
             visual.set_style(self.hovered, selected, name == self.editing_sketch, self._mm_per_px())
+        self._draw_faces(selected)
         self.canvas.update()
+
+    def _draw_faces(self, selected):
+        for visual, keys in ((self.face_hover, [self.hovered]), (self.face_selected, [k for k in selected])):
+            triangles = [self.face_triangles(k) for k in keys if k is not None and k[0] == "face"]
+            triangles = np.concatenate(triangles) if triangles else np.zeros((0, 3, 3))
+            visual.visible = len(triangles) > 0
+            if visual.visible:
+                visual.set_data(vertices=triangles.reshape(-1, 3).astype(np.float32),
+                                faces=np.arange(3 * len(triangles), dtype=np.uint32).reshape(-1, 3))
