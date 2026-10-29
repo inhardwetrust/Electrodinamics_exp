@@ -97,6 +97,54 @@ Principles that sidestep them:
   name. Not yet: curves crossing without a shared point do not split
   regions.
 
+## Two ways of drawing (decided)
+
+The same geometry can be drawn two ways, and a part may mix them. Both are
+the same part file, so the user and an AI (`.claude/skills/mycad`) work on
+one document.
+
+**1. Manual.** Primitives as a person draws them: points with plain numbers,
+lines, circles, wide polylines; formulas only for the sizes that matter.
+Everything drags with the mouse. Missing primitives, to add: an arc, a
+poly-arc (a chain of lines and tangent arcs), Bézier curves and splines.
+
+**2. Parametric (generators).** Control parameters → generators → geometry:
+the shape is computed from a few numbers (a parabola from its focal length
+and diameter, a spiral, a meander), and changes when they change.
+- **A generator** is a sketch entity `[[feature.curve]]` with a `kind` from
+  a registry in the program. The kind declares its arguments the way a
+  Feature declares its `FIELDS` (name, type, meaning); the file stores the
+  kind and one formula per argument:
+
+      [[feature.curve]]
+      name = "Reflector"
+      kind = "parabola"
+      focal = "f"
+      from = "0"            # the radius range it covers
+      to = "D/2"
+
+  The properties panel builds the argument fields from the declaration
+  (the same fields an AI fills); the rebuild evaluates them and makes the
+  curve. A new kind is one class in the registry, nothing else changes.
+- **Exact where possible.** Kinds OCC has exactly (`Geom_Parabola`,
+  ellipse, hyperbola, arcs) are built exactly. The general kind `function`
+  (`x = "..."`, `y = "..."` of the variable `t`, a range of `t`) becomes a
+  B-spline interpolated within a stated tolerance: in STEP a smooth curve,
+  not a polyline.
+- **No code in files.** Generators live in the program; arguments and
+  `function`'s `x(t)`, `y(t)` go through the same `ast` evaluator as every
+  formula (`t` is one more name). A file from elsewhere cannot run anything.
+- **Joining.** A curve's ends are derived points (`Reflector.start`,
+  `Reflector.end`) that lines may use, so curves and lines close loops
+  (profiles) like lines do today.
+- **The bridge to manual: Deparametrize** (done for formulas): the
+  selection's formulas become their values, the geometry stays and drags.
+  For a generator it will turn the curve into manual primitives with
+  numbers (exact arcs or a spline through its points).
+- **Then features on top**: a curve thickened to one side or both (a closed
+  profile, like a polyline's outline), and Revolve around an axis: a
+  parabolic reflector is a parabola, thickened, revolved.
+
 ## Where to look
 
 - **build123d / CadQuery**: Python APIs over the same OCP. Study how they
@@ -107,23 +155,25 @@ Principles that sidestep them:
   Study the ideas, not the UX.
 - **Plasticity**: a modern modeler UX (commercial, on Parasolid).
 
-## First steps (a proposal, to discuss in the new session)
+## Roadmap
 
-1. **Skeleton.** A Qt window with a 3D view (copied from customcst: the
-   camera, edges, picking), a parameter table and a feature list. Open
-   and save the model file. Export STEP.
-2. **Parameters.** Names, formulas, units (mm, deg), evaluation order,
-   errors that name the parameter.
-3. **Features.**
-   - box, cylinder;
-   - a sketch of primitives on a plane and its extrude;
-   - booleans between named bodies.
-   Changing a parameter rebuilds the model (in a background thread when
-   slow).
-4. **Measure.** Picking and the A-B distance (already done in customcst).
-5. **Later.**
-   - revolve, patterns, fillets;
-   - RF primitives: a board with a layer stack, a line or CPW, a via
-     fence, an SMA template;
-   - integration into customcst: a parameter sweep that rebuilds the STEP
-     and re-runs the simulation.
+Done: the window and 3D view, parameters, sketches (points, lines,
+circles, wide polylines with bends, construction geometry, snapping,
+copy / paste), Extrude with join / cut / intersect, sketches on faces,
+failed-feature marking, body colors, STEP export (and on Save), the
+headless report and STEP (`cli.py`), the AI skill, reload on a change on
+disk, Deparametrize.
+
+Next, in this order:
+1. Generators: `[[feature.curve]]` with the registry, `parabola` and
+   `function` first; argument fields in the properties; drawn and part of
+   profiles; derived end points.
+2. Thickness for curves (one side or both): a closed profile.
+3. Revolve.
+4. Manual primitives: arc, poly-arc, Bézier / spline; Deparametrize for
+   generators (to primitives).
+
+Later: patterns, fillets; RF primitives (a board with a layer stack, a
+line or CPW, a via fence, an SMA template); measure (picking and the A-B
+distance, done in customcst); integration into customcst (a parameter
+sweep that rebuilds the STEP and re-runs the simulation).

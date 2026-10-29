@@ -69,6 +69,29 @@ So prefer formulas when in doubt: freeing is one click, the reverse is not.
 Before editing a file again, re-read it: deparametrized values are numbers
 now and must not be turned back into formulas without being asked.
 
+## Two ways of drawing
+
+The user and you share the file, so pick the way that fits the shape
+(DESIGN.md "Two ways of drawing"); one part may mix both:
+
+1. **Manual**: primitives as a person would draw them (points, lines,
+   circles, wide polylines). Plain numbers where the user may want to move
+   things by hand, formulas for the sizes that matter. Use it for layouts:
+   patches, feeds, slots, boards, anything made of straight pieces, arcs
+   of polyline bends and circles.
+2. **Parametric (generators)**: a few control parameters → a computed
+   shape (a parabola from f and D, a spiral, a meander), rebuilt when they
+   change. In the file a generator is `[[feature.curve]]` with a `kind` and
+   one formula per argument; its ends are points (`Name.start`, `Name.end`)
+   that lines can join. **Not in the program yet** (next on the roadmap):
+   until it is, say so, and either draw the curve's points with formulas
+   joined by lines or a polyline (a faceted approximation: say how many
+   segments and the deviation), or wait for the generator. Never pretend a
+   faceted curve is exact.
+
+Either way the user can free formulas later (Deparametrize, below) and keep
+working by hand.
+
 ## The file
 
 All lengths are mm. Names are unique: parameters and features in the part,
