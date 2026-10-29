@@ -283,3 +283,52 @@ def fit_spline(at, t0, t1, tolerance=FIT_TOLERANCE):
             return bspline_edge(spline)
         spans *= 2
     raise CurveError(f"not within {tolerance:g} mm with {MAX_SPANS} spans (does it jump, stop or have a cusp?)")
+
+
+def edge_function(edge):
+    """(at, t0, t1) of a curve's kernel edge: at(t values) -> (N, 2) points, t from t0 to t1."""
+    if edge[0] == "parabola":
+        _, vertex, focal, u0, u1 = edge
+        return (lambda u: np.asarray(vertex, float)
+                + np.stack([np.asarray(u, float), np.asarray(u, float) ** 2 / (4.0 * focal)], axis=1)), u0, u1
+    if edge[0] == "bspline":
+        return (lambda u: bspline_at(edge, u)), float(edge[2][0]), float(edge[2][-1])
+    raise CurveError(f"no points of a {edge[0]} edge")
+
+
+def spline_points(edge, tolerance=1e-3, checks=64):
+    """
+    (K, 2) points on a curve's kernel edge such that the interpolating
+    spline through them (spline_shape) stays within `tolerance` (mm) of the
+    curve both ways (closed: the last point is the first). Starts with 5
+    points; a span off by more gets a point halfway (in the curve's
+    parameter) until none is.
+    """
+    at, t0, t1 = edge_function(edge)
+    ts = list(np.linspace(t0, t1, 5))
+    while len(ts) <= MAX_SPANS:
+        p = at(np.array(ts))
+        spline, _ = spline_function(p)
+        if len(spline.knots) != len(ts):
+            raise CurveError("the curve stops (two of its points at one place)")
+        bad = []
+        for j in range(len(ts) - 1):
+            curve = at(np.linspace(ts[j], ts[j + 1], checks + 1))
+            near = spline(np.linspace(spline.knots[j], spline.knots[j + 1], 4 * checks + 1))
+            if max(_off(curve, near), _off(near, curve)) > tolerance:
+                bad.append(j)
+        if not bad:
+            return p
+        for j in reversed(bad):
+            ts.insert(j + 1, 0.5 * (ts[j] + ts[j + 1]))
+    raise CurveError(f"not within {tolerance:g} mm with {MAX_SPANS} points")
+
+
+def _off(points, path):
+    """The largest distance from points (N, 2) to the polyline path (M, 2)."""
+    a, b = path[:-1], path[1:]
+    d = b - a
+    length2 = np.maximum((d * d).sum(axis=1), 1e-30)
+    t = np.clip(((points[:, None, :] - a[None]) * d[None]).sum(axis=2) / length2, 0.0, 1.0)
+    nearest = a[None] + t[..., None] * d[None]
+    return float(np.sqrt(((points[:, None, :] - nearest) ** 2).sum(axis=2).min(axis=1)).max())

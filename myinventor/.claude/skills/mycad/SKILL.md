@@ -160,7 +160,11 @@ Geometry (each is a `[[feature.<kind>]]` table under the sketch):
   Its ends are `Name.start` and `Name.end`: use them as line ends to close
   a profile; a profile's key then names the curve too (`["L1", "Parabola1"]`,
   from the report). A curve cannot be dragged; Deparametrize does not
-  touch it (yet). The report lists each curve with its ends' coordinates.
+  touch it. `visible = false` hides it (not drawn, not in profiles; its
+  ends stay). The user turns one into a spline by hand (browser row or
+  properties: Convert to Spline, or Copy as Spline, which hides the curve;
+  1 µm by default): lines on its ends and extrusion profiles move to the
+  spline. The report lists each curve with its ends' coordinates.
 - `spline`: an interpolating spline (cubic, smooth, through every point):
   `name`, `points` (two or more, each once; the first again at the end
   closes it, smooth all around, then three or more). Its key on its own

@@ -55,10 +55,13 @@
 #   from = "0"
 #   to = "D / 2"
 #   x0 = "0"                  # optional arguments take their defaults
+#   visible = false           # optional: hidden (not drawn, not in profiles; its ends stay)
 #
 # A curve's ends are points "Parabola1.start" / "Parabola1.end" that lines,
 # circles and polylines may use (they are not entities of their own: the
-# curve sets them; deleting the curve takes what uses them).
+# curve sets them; deleting the curve takes what uses them). A curve can be
+# replaced by a spline through points on it (curve_to_spline: by hand from
+# then on), or copied into one and hidden.
 #
 # An explicit point is a sketch point in its own right (Inventor's Point),
 # not just the end of lines or a circle's center: it is drawn as a dot in a
@@ -80,7 +83,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from model.features import Feature, FeatureError, Field, PartialBuild, feature_type
-from model.curves import KINDS, CurveError, end_points, spline_shape
+from model.curves import KINDS, CurveError, end_points, spline_points, spline_shape
 from model.traces import BENDS, TraceError, outline
 
 MM = 1e-3
@@ -167,6 +170,7 @@ class SketchCurve:
     kind: str
     args: dict              # argument name -> formula, every argument of the kind
     construction: bool = False
+    visible: bool = True    # hidden: not drawn, not in profiles (its ends stay points)
 
 
 ENDS = ("flat", "round")
@@ -182,7 +186,7 @@ class SketchResult:
     radii: dict = field(default_factory=dict)       # circle name -> radius (mm)
     polylines: list = field(default_factory=list)   # SketchPolyline
     outlines: dict = field(default_factory=dict)    # polyline name -> (edges, polygon (M, 2) mm): model/traces.py
-    curves: list = field(default_factory=list)      # SketchCurve
+    curves: list = field(default_factory=list)      # SketchCurve, the visible ones
     shapes: dict = field(default_factory=dict)      # curve or spline name -> model.curves.CurveShape (built)
     splines: list = field(default_factory=list)     # SketchSpline
 
@@ -325,7 +329,8 @@ class Sketch(Feature):
                                  "width": w.width, "start": w.start, "end": w.end, **_bends(w)}
                                 for w in self.polylines]
         if self.curves:
-            data["curve"] = [{"name": c.name, "kind": c.kind, **c.args, **_construction(c)} for c in self.curves]
+            data["curve"] = [{"name": c.name, "kind": c.kind, **c.args, **_construction(c),
+                              **({} if c.visible else {"visible": False})} for c in self.curves]
         if self.splines:
             data["spline"] = [{"name": w.name, "points": list(w.points), **_construction(w)} for w in self.splines]
         return data
@@ -565,6 +570,35 @@ class Sketch(Feature):
         self.curves.append(SketchCurve(name, kind, values, construction))
         return name
 
+    def curve_to_spline(self, name, shape, tolerance, keep):
+        """
+        A spline in place of generated curve `name` (shape: its built
+        CurveShape): through points on it with plain numbers, within
+        `tolerance` mm of it (model/curves.spline_points). What used the
+        curve's ends uses the spline's ends. keep: the curve stays, hidden
+        (a copy); else it goes. Returns the spline's name.
+        """
+        curve = self.gen_curve(name)
+        xy = spline_points(shape.edges[0], tolerance)
+        closed = len(xy) > 3 and np.allclose(xy[0], xy[-1], atol=1e-9)
+        names = [self.add_point(_plain(x), _plain(y)) for x, y in (xy[:-1] if closed else xy)]
+        names += names[:1] if closed else []
+        spline = self.free_name("Spline")
+        self.splines.append(SketchSpline(spline, names, curve.construction))
+        start, end = end_points(name)
+        moved = {start: names[0], end: names[-1]}
+        for line in self.lines:
+            line.start, line.end = moved.get(line.start, line.start), moved.get(line.end, line.end)
+        for c in self.circles:
+            c.center = moved.get(c.center, c.center)
+        for w in self.polylines + self.splines[:-1]:
+            w.points = [moved.get(p, p) for p in w.points]
+        if keep:
+            curve.visible = False
+        else:
+            self.curves.remove(curve)
+        return spline
+
     def line(self, name):
         return next(line for line in self.lines if line.name == name)
 
@@ -749,7 +783,8 @@ class Sketch(Feature):
             except TraceError as error:
                 broken.append(f"polyline {w.name}: {error}")    # no outline; its center line still shows
         result = SketchResult(frame, points, lines, {p.name for p in self.points if p.explicit},
-                              circles, radii, polylines, outlines, list(self.curves), shapes, splines)
+                              circles, radii, polylines, outlines, [c for c in self.curves if c.visible], shapes,
+                              splines)
         if broken:
             raise PartialBuild("; ".join(broken), result)
         return result
@@ -869,7 +904,7 @@ def _curve(owner, i, row):
     if kind not in KINDS:
         raise FeatureError(f"{owner}: {where}: kind must be one of {', '.join(KINDS)}")
     declared = KINDS[kind].ARGS
-    _keys(owner, where, row, ("name", "kind", "construction", *(a.name for a in declared)))
+    _keys(owner, where, row, ("name", "kind", "construction", "visible", *(a.name for a in declared)))
     args = {}
     for a in declared:
         if a.name in row:
@@ -878,7 +913,11 @@ def _curve(owner, i, row):
             raise FeatureError(f"{owner}: {where}: a {kind} needs {a.name} ({a.doc})")
         else:
             args[a.name] = a.default
-    return SketchCurve(_text(owner, where, row, "name"), kind, args, _flag(owner, where, row, "construction"))
+    visible = row.get("visible", True)
+    if not isinstance(visible, bool):
+        raise FeatureError(f"{owner}: {where}: visible must be true or false")
+    return SketchCurve(_text(owner, where, row, "name"), kind, args, _flag(owner, where, row, "construction"),
+                       visible)
 
 
 def _circle(owner, i, row):

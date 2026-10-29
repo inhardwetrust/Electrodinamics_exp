@@ -483,7 +483,8 @@ class _SketchVisual:
         # Dashed: construction lines, circles, curves and splines, and the polylines' center lines.
         self.construction = {e.name for e in result.lines + result.circles + curves + splines
                              if e.construction} | set(centers)
-        self.entity_names = set(self.seg_owner) | set(result.points) | set(self.polyline_names)
+        # Hidden curves too (not drawn, so not picked): their browser rows select them.
+        self.entity_names = set(self.seg_owner) | set(result.points) | set(self.polyline_names) | set(result.shapes)
         self.point_names = list(result.points)
         self.point_pos = np.array([result.world_mm(n) for n in self.point_names]).reshape(-1, 3)
         self.explicit = [n in result.explicit for n in self.point_names]
@@ -518,7 +519,9 @@ class _SketchVisual:
 
     def set_style(self, hovered, selected, editing, mm_per_px):
         """selected: the set of selected keys."""
-        def color(key):
+        def color(key, entity=None):
+            if entity is not None and key[0] == "feature" and key not in selected and key != hovered:
+                key = ("entity", self.name, entity)    # one entity of a sketch not edited (its browser row)
             return HOVER_COLOR if key == hovered else SELECTED_COLOR if key in selected else None
 
         # The sketch being edited is drawn over the bodies (as Inventor does): one on a face
@@ -534,7 +537,7 @@ class _SketchVisual:
         colors = []
         for n in self.seg_owner:
             key = self.key(n, editing)
-            c = color(key) or SKETCH_LINE_COLOR
+            c = color(key, n) or SKETCH_LINE_COLOR
             self.shown_colors[key] = c
             if n in self.construction:
                 self._dash_colors[n] = c

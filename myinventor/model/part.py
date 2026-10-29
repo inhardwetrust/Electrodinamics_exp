@@ -175,6 +175,12 @@ class Part:
     # Parameters
     # =====================================================
 
+    def replace_in_profiles(self, sketch, old, new):
+        """Profiles of `sketch` that named entity `old` name `new` instead (a curve became a spline)."""
+        for f in self.features:
+            if f.TYPE == "extrude" and f["sketch"] == sketch:
+                f.profiles = [tuple(sorted(new if n == old else n for n in p)) for p in f.profiles]
+
     def free_parameter_name(self, stem="p"):
         taken = {p.name for p in self.parameters}
         n = 1

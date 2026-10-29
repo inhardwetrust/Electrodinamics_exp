@@ -116,7 +116,7 @@ from model.extrude import Extrude
 from model.profiles import find_regions
 from model.expressions import evaluate
 from model.sketch import Sketch, SketchPolyline, SketchSpline
-from model.curves import KINDS
+from model.curves import KINDS, CurveError
 from model.traces import BENDS
 
 # The arguments a curve added with the Curve button starts with (then edited in the properties).
@@ -232,6 +232,7 @@ class MainWindow(QMainWindow):
         self.clipboard = None       # copied sketch geometry (see copy_selection), or None
         self._trace = None          # the polyline the Polyline tool is drawing
         self._spline = None         # the spline the Spline tool is drawing
+        self.spline_tolerance = "1"     # µm: how far a spline made from a curve may be off it
         self.extrude_panel = None   # the Extrude command's panel while it runs
         self._extruding = None      # the extrusion being edited by it, or None (a new one)
         self._rolled_back = False   # the view shows the bodies from before the edited extrusion
@@ -1270,7 +1271,7 @@ class MainWindow(QMainWindow):
         used = self._consumed_sketches()
         outputs = self.result.outputs
         wanted = {self.editing} | {k[1] for k in (self.view.hovered, self.view.selected)
-                                   if k is not None and k[0] == "feature"}
+                                   if k is not None and k[0] in ("feature", "entity")}
         shown = [(f.name, outputs[f.name]) for f in self.part.features
                  if f.TYPE == "sketch" and f.name in outputs and (f.name not in used or f.name in wanted)]
         # force: after a rebuild (their geometry changed); else only when the set of names changes
@@ -1433,6 +1434,12 @@ class MainWindow(QMainWindow):
         key = self._key_of(item)
         if key is None:
             return []
+        if key[0] == "entity":                  # a generated curve's row
+            sketch_name, curve = key[1], key[2]
+            visible = self.part.feature(sketch_name).gen_curve(curve).visible
+            return [("Hide" if visible else "Show", lambda: self.set_curve_visible(sketch_name, curve, not visible)),
+                    ("Convert to Spline", lambda: self.curve_to_spline(sketch_name, curve, keep=False)),
+                    ("Copy as Spline", lambda: self.curve_to_spline(sketch_name, curve, keep=True))]
         kind, name = key
         if kind == "body_color":
             return [("Pick a color...", lambda: self.pick_body_color(name)),
@@ -1575,6 +1582,12 @@ class MainWindow(QMainWindow):
             parent = root if consumer is None else self._rows.setdefault(("feature", consumer), QTreeWidgetItem())
             parent.addChild(item)
             self._rows[key] = item
+            if feature.TYPE == "sketch":        # its generated curves, one row each (tick: shown)
+                for c in feature.curves:
+                    row_key = ("entity", feature.name, c.name)
+                    self._rows[row_key] = _checkable(
+                        item, c.name, row_key, f"{c.kind} curve: {KINDS[c.kind].DOC}\nTick: shown (hidden: not drawn, "
+                        "not in profiles). Select: its arguments. Right click: Convert / Copy as Spline.", c.visible)
         bodies = self.result.bodies if self.result is not None else []
         if bodies:
             group = _group_item(None, f"Solid Bodies ({len(bodies)})")
@@ -1596,6 +1609,9 @@ class MainWindow(QMainWindow):
         root.setExpanded(True)
         for i in range(root.childCount()):
             root.child(i).setExpanded(True)
+        for feature in self.part.features:      # sketches with curves: open, the curves' rows in sight
+            if feature.TYPE == "sketch" and feature.curves:
+                self._rows[("feature", feature.name)].setExpanded(True)
         selected = self._rows.get(self.view.selected)
         if selected is not None:
             self.tree.setCurrentItem(selected)
@@ -1613,7 +1629,9 @@ class MainWindow(QMainWindow):
         if key is None:
             return
         on = item.checkState(0) == Qt.Checked
-        if key[0] == "datum":
+        if key[0] == "entity":                  # a curve's row: after this signal (the tree is rebuilt)
+            QTimer.singleShot(0, lambda: self.set_curve_visible(key[1], key[2], on))
+        elif key[0] == "datum":
             self.part.datum(key[1]).visible = on          # saved with the part, one undo step
             self.view.set_datum_visible(key[1], on)
             self._commit(refresh=False)
@@ -1630,7 +1648,7 @@ class MainWindow(QMainWindow):
 
     def _row_hovered(self, item):
         key = self._key_of(item)
-        self.view.set_hover(key if key is not None and key[0] in ("datum", "feature") else None)
+        self.view.set_hover(key if key is not None and key[0] in ("datum", "feature", "entity") else None)
         self._show_sketches()                   # ... or hovered
 
     def _on_view_select(self, key):
@@ -1728,6 +1746,7 @@ class MainWindow(QMainWindow):
                 if a.default is not None:
                     field.setPlaceholderText(a.default)
                 self.props_form.addRow(f"{a.name}:", field)
+            self._add_spline_buttons(sketch_name, curve.name)
             return
         if kind in ("polyline", "segment"):
             w = sketch.polyline(name.rpartition(".")[0] if kind == "segment" else name)
@@ -1776,6 +1795,66 @@ class MainWindow(QMainWindow):
         self.view.select_keys([("entity", self.editing, name)])
         self._on_view_select(self.view.selected)
         return name
+
+    def _add_spline_buttons(self, sketch_name, name):
+        """Under a curve's arguments: the tolerance, Convert to Spline and Copy as Spline."""
+        tolerance = QLineEdit(self.spline_tolerance)
+        tolerance.setToolTip("How far (µm) the spline made from the curve may be off it")
+        tolerance.editingFinished.connect(lambda: setattr(self, "spline_tolerance", tolerance.text().strip()))
+        self.props_form.addRow("Tolerance, µm:", tolerance)
+        convert = QPushButton("Convert to Spline")
+        convert.setToolTip("Replace the curve by a spline through points on it (plain numbers: drag them); "
+                           "what used its ends uses the spline's")
+        convert.clicked.connect(lambda: self.curve_to_spline(sketch_name, name, keep=False))
+        copy = QPushButton("Copy as Spline")
+        copy.setToolTip("The same spline, and the curve stays, hidden (tick its browser row to show it)")
+        copy.clicked.connect(lambda: self.curve_to_spline(sketch_name, name, keep=True))
+        self.props_form.addRow(convert)
+        self.props_form.addRow(copy)
+
+    def set_curve_visible(self, sketch_name, name, on):
+        """A generated curve shown or hidden (not drawn, not in profiles); one undo step."""
+        curve = self.part.feature(sketch_name).gen_curve(name)
+        if curve.visible == on:
+            return
+        curve.visible = on
+        self._commit()
+
+    def curve_to_spline(self, sketch_name, name, keep):
+        """
+        A spline through points on generated curve `name`, within the
+        tolerance (µm, the field under its arguments); keep: the curve stays,
+        hidden (else it goes). Lines on its ends and extrusions of profiles
+        with it move to the spline. One undo step; the spline is selected.
+        """
+        built = self.result.outputs.get(sketch_name)
+        shape = built.shapes.get(name) if built is not None else None
+        if shape is None:
+            self.statusBar().showMessage(f"{name}: not built (see its error), no spline made", 8000)
+            return None
+        try:
+            tolerance = float(self.spline_tolerance) * 1e-3
+        except ValueError:
+            tolerance = 0.0
+        if not tolerance > 0:
+            self.show_error(f"The tolerance must be a number of µm > 0, not {self.spline_tolerance!r}")
+            return None
+        sketch = self.part.feature(sketch_name)
+        try:
+            spline = sketch.curve_to_spline(name, shape, tolerance, keep)
+        except CurveError as error:
+            self.doc.revert()
+            self.show_error(f"{name}: no spline: {error}")
+            return None
+        self.part.replace_in_profiles(sketch_name, name, spline)
+        self._commit()
+        count = len(dict.fromkeys(self.part.feature(sketch_name).spline(spline).points))
+        self.statusBar().showMessage(f"{spline}: {count} points on {name}, within {self.spline_tolerance} µm"
+                                     + (f"; {name} hidden" if keep else f"; {name} removed"), 8000)
+        key = ("entity", sketch_name, spline)
+        self.view.select_keys([key])
+        self._on_view_select(key)
+        return spline
 
     def _set_curve_arg(self, sketch_name, name, arg, text):
         """A generated curve's argument changed in the properties: one undo step (empty: its default)."""
@@ -1911,8 +1990,9 @@ class MainWindow(QMainWindow):
             args = "<br>".join(f"{a} = {text}" for a, text in curve.args.items())
             ends = (f"<br>from {where(name + '.start')}<br>to {where(name + '.end')}<br>"
                     f"{len(built.edges)} exact edge(s)" if built is not None else "<br>not built (see the error)")
-            return (f"<b>{name}</b> ({curve.kind} curve of {sketch_name})<br>{KINDS[curve.kind].DOC}<br>{args}"
-                    f"{ends}<br>generated: change it by its arguments (properties)")
+            hidden = "" if curve.visible else " (hidden: not drawn, not in profiles)"
+            return (f"<b>{name}</b> ({curve.kind} curve of {sketch_name}){hidden}<br>{KINDS[curve.kind].DOC}<br>"
+                    f"{args}{ends}<br>generated: change it by its arguments (properties)")
         if sketch.kind_of(name) == "spline":
             w = sketch.spline(name)
             built = self.result.outputs[sketch_name].shapes.get(name)

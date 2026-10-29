@@ -32,6 +32,12 @@
 #     refusals; delete a point / the spline;
 #   - the window: Spline tool (curved preview, closing click), hover, info,
 #     dragging a point, copy / paste, extrude.
+#   - a curve to a spline (Convert / Copy as Spline): plain points, within
+#     1 um, lines and the extrusion's profile moved, 4/3 kept; the copy's
+#     curve hidden (not in profiles, visible = false, it moves alone); a
+#     closed function (an ellipse): a closed spline of area pi 60;
+#   - the browser: the curve's row (tick: shown, select: its arguments and
+#     the spline buttons, its menu), both actions from the window.
 #
 #   python checks/check_curves.py [--no-window]
 
@@ -333,6 +339,131 @@ def check_spline_step(part, spline):
           f"{v} vs {2 * area}, {os.path.getsize(path)} bytes, back {back}")
 
 
+def reflector_part():
+    """Half a parabola (f = 1, 0..2) closed by two lines to the axis, extruded by 1 (4/3)."""
+    part, s, c = parabola_part("0", "2", half=True)
+    part.add_feature(Extrude("E", profiles=[("L1", "L2", c)], sketch="S", distance="1", body="B"))
+    return part, s, c
+
+
+def check_curve_to_spline():
+    from model.curves import spline_shape
+    from model.sketch import _is_number
+
+    for keep in (False, True):
+        part, s, c = reflector_part()
+        shape = rebuild(part).outputs["S"].shapes[c]
+        w = s.curve_to_spline(c, shape, 1e-3, keep)
+        part.replace_in_profiles("S", c, w)
+        result = rebuild(part)
+        spline = s.spline(w)
+        xy = np.array([[float(s.point(p).x), float(s.point(p).y)] for p in spline.points])
+        curve = spline_shape(xy).points
+        off = float(np.abs(curve[:, 1] - curve[:, 0] ** 2 / 4).max())
+        v = kernel.volume(result.shapes["B"]) if "B" in result.shapes else None
+        how = "Copy as Spline" if keep else "Convert to Spline"
+        check(f"{how}: points with plain numbers, the spline within 1 um of the parabola",
+              all(_is_number(s.point(p).x) and _is_number(s.point(p).y) for p in spline.points) and off <= 1e-3,
+              f"{len(spline.points)} points, off {off:.1e} mm")
+        check("  the lines on its ends now on the spline's; the extrusion's profile names the spline; 4/3",
+              {s.line("L1").start, s.line("L2").end} == {spline.points[0], spline.points[-1]}
+              and part.feature("E").profiles == [tuple(sorted(("L1", "L2", w)))] and not result.feature_errors
+              and v is not None and math.isclose(v, 4 / 3, abs_tol=2.5e-3),
+              f"{part.feature('E').profiles} {v} {result.feature_errors}")
+        if keep:
+            text = dumps(part)
+            regions = find_regions(result.outputs["S"])
+            check("  the curve stays, hidden: not drawn, not in profiles; visible = false in the file",
+                  not s.gen_curve(c).visible and c in result.outputs["S"].shapes
+                  and c not in [x.name for x in result.outputs["S"].curves]
+                  and all(c not in r.key for r in regions) and "visible = false" in text
+                  and from_data(tomllib.loads(text)).to_dict() == part.to_dict(), f"{[r.key for r in regions]}")
+            s.gen_curve(c).args["focal"] = "2"
+            result = rebuild(part)
+            check("  its focal changed: the hidden curve moves, the spline (and the body) stay",
+                  np.allclose(result.outputs["S"].points[f"{c}.end"], (2, 0.5))
+                  and math.isclose(kernel.volume(result.shapes["B"]), v, rel_tol=1e-12))
+        else:
+            check("  the curve is gone", not s.curves)
+
+    part = Part()
+    sk = part.add_feature(Sketch("S", plane="XY Plane"))
+    ring = sk.add_curve("function", x="10 * cos(360 * t)", y="6 * sin(360 * t)")
+    shape = rebuild(part).outputs["S"].shapes[ring]
+    w = sk.curve_to_spline(ring, shape, 1e-3, False)
+    points = sk.spline(w).points
+    result = rebuild(part)
+    area = find_regions(result.outputs["S"])[0].area if find_regions(result.outputs["S"]) else 0
+    check("a closed function (an ellipse 10 x 6): a closed spline, its area pi 60",
+          points[0] == points[-1] and len(points) > 4 and math.isclose(area, math.pi * 60, rel_tol=1e-4),
+          f"{len(points)} points, area {area}")
+
+
+def check_window_tree(window, settle):
+    """A curve's browser row: tick = shown, select = its arguments and the spline buttons, the menu."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QPushButton
+
+    part, _, c = reflector_part()
+    path = os.path.join(TMP, "reflector.part.toml")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(dumps(part))
+    window.open_file(path)
+    settle()
+    key = ("entity", "S", c)
+    row = window._rows.get(key)
+    check("the browser: a row for the curve under its sketch, ticked, in sight",
+          row is not None and row.parent() is window._rows[("feature", "S")]
+          and row.checkState(0) == Qt.Checked and row.parent().isExpanded())
+    window.tree.setCurrentItem(row)
+    settle()
+    buttons = [window.props_form.itemAt(i, window.props_form.ItemRole.SpanningRole) for i in
+               range(window.props_form.rowCount())]
+    labels = [b.widget().text() for b in buttons if b is not None and isinstance(b.widget(), QPushButton)]
+    check("  selected: its arguments, Convert / Copy as Spline; the used sketch shows",
+          view_selected(window) == key and "parabola curve" in window.info.text()
+          and labels == ["Convert to Spline", "Copy as Spline"] and "S" in window.view._sketch_geometry,
+          f"{labels}")
+    steps = len(window.doc._undo)
+    row.setCheckState(0, Qt.Unchecked)
+    settle()
+    out = window.result.outputs["S"]
+    check("  unticked: hidden (one undo step), no profile with it: the extrusion fails, red",
+          not window.part.feature("S").gen_curve(c).visible and len(window.doc._undo) == steps + 1
+          and "E" in window.result.feature_errors and c not in window.view._sketch_geometry["S"].seg_owner,
+          f"{window.result.feature_errors}")
+    window.undo()
+    settle()
+    texts = [t for t, _ in window.context_actions(window._rows[key])]
+    check("  undone: shown again; its menu: Hide, Convert to Spline, Copy as Spline",
+          window.part.feature("S").gen_curve(c).visible and texts == ["Hide", "Convert to Spline", "Copy as Spline"]
+          and not window.result.feature_errors, f"{texts}")
+    v = kernel.volume(window.result.shapes["B"])
+    steps = len(window.doc._undo)
+    w = window.curve_to_spline("S", c, keep=True)
+    settle()
+    sketch = window.part.feature("S")
+    row = window._rows.get(key)
+    check("Copy as Spline: one undo step, the curve hidden (its row unticked), the spline selected, "
+          "the body the same within the tolerance",
+          w is not None and len(window.doc._undo) == steps + 1 and not sketch.gen_curve(c).visible
+          and row is not None and row.checkState(0) == Qt.Unchecked and view_selected(window) == ("entity", "S", w)
+          and not window.result.feature_errors and math.isclose(kernel.volume(window.result.shapes["B"]), v,
+                                                                abs_tol=2.5e-3), f"{window.result.feature_errors}")
+    window.undo()
+    settle()
+    w = window.curve_to_spline("S", c, keep=False)
+    settle()
+    check("Convert to Spline: the curve and its row gone, the extrusion on the spline",
+          not window.part.feature("S").curves and key not in window._rows
+          and window.part.feature("E").profiles == [tuple(sorted(("L1", "L2", w)))]
+          and not window.result.feature_errors)
+
+
+def view_selected(window):
+    return window.view.selected
+
+
 def check_window():
     """The window: the Curve button, the argument fields, hover, drag refused, lines on its ends, delete."""
     from vispy import app
@@ -381,7 +512,7 @@ def check_window():
     check("Curve: a parabola, one undo step, selected, its arguments in the properties",
           [c.kind for c in sketch().curves] == ["parabola"] and len(window.doc._undo) == steps + 1
           and view.selected == ("entity", "Sketch1", "Parabola1")
-          and list(fields) == ["focal:", "from:", "to:", "x0:", "y0:"] and fields["focal:"].text() == "10"
+          and list(fields) == ["focal:", "from:", "to:", "x0:", "y0:", "Tolerance, µm:"] and fields["focal:"].text() == "10"
           and "parabola curve" in window.info.text(), f"{list(fields)} {view.selected}")
     fields["focal:"].setText("5")
     fields["focal:"].editingFinished.emit()
@@ -492,6 +623,7 @@ def check_window():
     v = kernel.volume(window.result.shapes["B"])
     check("  extruded by 1: its area (the polygon of its samples, within 0.1 %)", math.isclose(v, area, rel_tol=1e-3),
           f"{v} vs {area}")
+    check_window_tree(window, settle)
     check("no error dialogs", not errors, f"{errors}")
     window.close()
     check("no errors in VisPy callbacks", not vispy_errors, f"{vispy_errors[:3]}")
@@ -503,6 +635,7 @@ def main():
     check_file()
     check_failures()
     check_splines()
+    check_curve_to_spline()
     if "--no-window" not in sys.argv:
         check_window()
     print("FAILED: " + ", ".join(FAILED) if FAILED else "all checks passed")

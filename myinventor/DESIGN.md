@@ -144,9 +144,13 @@ and diameter, a spiral, a meander), and changes when they change.
   (profiles) like lines do today.
 - **The bridge to manual: Deparametrize** (done for formulas): the
   selection's formulas become their values, the geometry stays and drags.
-  For a generator it will turn the curve into a spline through K of its
-  points with numbers, K chosen so the spline stays within a tolerance of
-  the curve (a field beside the button, 1 µm by default).
+  A generator has its own browser row under its sketch (tick: shown;
+  select: its arguments). Convert to Spline replaces it by a spline
+  through points on it with plain numbers, as few as keep the spline
+  within a tolerance of it (1 µm by default); Copy as Spline makes the
+  same spline and hides the curve (`visible = false`: not drawn, not in
+  profiles). Either way lines on its ends and extrusion profiles move to
+  the spline. Then draw over it by hand.
 - **Then features on top**: a curve thickened to one side or both (a closed
   profile, like a polyline's outline), and Revolve around an axis: a
   parabolic reflector is a parabola, thickened, revolved.
@@ -170,13 +174,13 @@ failed-feature marking, body colors, STEP export (and on Save), the
 headless report and STEP (`cli.py`), the AI skill, reload on a change on
 disk, Deparametrize, generators (`[[feature.curve]]`: `parabola`,
 `function`; argument fields; part of profiles through their end points),
-the interpolating spline (Sketch > Spline).
+the interpolating spline (Sketch > Spline), true B-splines in the kernel,
+generators in the browser (show / hide, Convert / Copy as Spline).
 
 Next, in this order:
-1. Deparametrize for generators: a spline within a tolerance (1 µm default).
-2. Thickness for curves (one side or both): a closed profile.
-3. Revolve.
-4. Manual primitives: arc, poly-arc, Bézier; copy / paste of generators.
+1. Thickness for curves (one side or both): a closed profile.
+2. Revolve.
+3. Manual primitives: arc, poly-arc, Bézier; copy / paste of generators.
 
 Later: patterns, fillets; RF primitives (a board with a layer stack, a
 line or CPW, a via fence, an SMA template); measure (picking and the A-B

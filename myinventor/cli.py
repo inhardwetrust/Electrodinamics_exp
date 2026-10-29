@@ -45,7 +45,7 @@ def report(part, result):
             row["lines"] = [line.name + (" (construction)" if line.construction else "") for line in feature.lines]
             row["circles"] = [c.name + (" (construction)" if c.construction else "") for c in feature.circles]
             row["polylines"] = [w.name for w in feature.polylines]
-            row["curves"] = [{"name": c.name, "kind": c.kind, "args": dict(c.args),
+            row["curves"] = [{"name": c.name, "kind": c.kind, "args": dict(c.args), "visible": c.visible,
                               **({"start": [round(float(v), 6) for v in out.points[c.name + ".start"]],
                                   "end": [round(float(v), 6) for v in out.points[c.name + ".end"]]}
                                  if out is not None and c.name in out.shapes else {})}
@@ -93,7 +93,7 @@ def text(data):
                 ends = (f"from ({', '.join(f'{v:g}' for v in c['start'])}) to "
                         f"({', '.join(f'{v:g}' for v in c['end'])})" if "start" in c else "not built")
                 args = ", ".join(f"{k} = {v}" for k, v in c["args"].items())
-                lines.append(f"    curve {c['name']} ({c['kind']}: {args}): {ends}; "
+                lines.append(f"    curve {c['name']}{'' if c['visible'] else ' (hidden)'} ({c['kind']}: {args}): {ends}; "
                              f"its ends {c['name']}.start / {c['name']}.end")
             for w in f["splines"]:
                 built = f"a B-spline of {w['spans']} span(s)" if "spans" in w else "not built"
