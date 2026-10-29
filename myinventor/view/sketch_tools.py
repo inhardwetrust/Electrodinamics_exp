@@ -31,6 +31,8 @@
 #
 # CircleTool (Sketch > Circle): a center, then the radius (see the class).
 #
+# PasteTool (Ctrl+V): the copied geometry follows the cursor, a click puts it.
+#
 # PointTool (Sketch > Point), as Inventor's Point: every click puts an
 # explicit point (add_point((x, y) mm), the window); a click on an existing
 # point puts nothing; Esc leaves the tool.
@@ -427,3 +429,61 @@ class CircleTool(SketchTool):
         else:
             self.on_exit()
         return True
+
+
+class PasteTool(SketchTool):
+    """
+    Ctrl+V in sketch mode: the copied geometry (window's clipboard: points
+    (2,) mm, lines and circles between them) hangs on the cursor by its
+    anchor (the middle of its extent), which snaps like a new point; a click
+    puts it there (paste(offset mm), the window) and leaves the tool; Esc
+    leaves without pasting.
+    """
+
+    name = "Paste"
+
+    def __init__(self, view, sketch, sketch_result, clip, paste, on_exit):
+        super().__init__(view, sketch, sketch_result, on_exit)
+        self.clip = clip
+        self.paste = paste
+        self.offset = None          # (2,) mm of the last preview
+        self.shape = scene.visuals.Line(connect="segments", color=PREVIEW_COLOR, width=2.0,
+                                        parent=view.view.scene)
+        self.shape.set_gl_state("translucent", depth_test=False)
+        self.shape.order = 30
+        self.shape.visible = False
+
+    def remove(self):
+        super().remove()
+        self.shape.parent = None
+
+    def preview_xy(self, offset):
+        """(K, 2, 2) the copied lines and circles moved by `offset`, in the sketch (mm)."""
+        points = {n: p["xy"] + offset for n, p in self.clip["points"].items()}
+        segments = [[points[a], points[b]] for a, b, _ in self.clip["lines"]]
+        t = np.linspace(0.0, 2.0 * np.pi, 65)
+        for center, radius, _, _ in self.clip["circles"]:
+            ring = points[center] + radius * np.stack([np.cos(t), np.sin(t)], axis=1)
+            segments += [[p, q] for p, q in zip(ring[:-1], ring[1:])]
+        return np.array(segments).reshape(-1, 2, 2)
+
+    def move(self, pos):
+        hit = self._show(pos)
+        if hit is None:
+            self.shape.visible = False
+            return
+        self.offset = hit[1] - self.clip["anchor"]
+        segments = self.preview_xy(self.offset)
+        if len(segments):
+            frame = self.sketch_result().frame
+            world = frame.to_world(segments.reshape(-1, 2) * MM) / MM
+            self.shape.set_data(pos=world.astype(np.float32))
+        self.shape.visible = len(segments) > 0
+        self.view.canvas.update()
+
+    def click(self, pos):
+        hit = self.snap(pos)
+        if hit is None:
+            return
+        self.paste(hit[1] - self.clip["anchor"])
+        self.on_exit()

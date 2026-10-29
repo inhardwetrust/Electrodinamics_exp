@@ -52,6 +52,9 @@
 #   given by a formula stays; points at one place take the alignment hints,
 #   view/sketch_tools.py align()); one undo step, Esc while dragging puts it
 #   back;
+# - Ctrl+C / Ctrl+X / Ctrl+V (Sketch > Clipboard) copy, cut and paste the
+#   selected sketch geometry; a paste hangs on the cursor until a click puts
+#   it (view/sketch_tools.py PasteTool);
 # - Delete deletes the selection: a sketch line (with its end points no
 #   other line uses) or point (with its lines), or a feature nothing uses.
 #
@@ -82,8 +85,8 @@ from model.part_file import EXTENSION, PartFileError
 from model.rebuild import rebuild
 from model.sketch import Sketch
 from view.sketch_tools import (
-    ALIGN_PX, CURVE_SNAP_PX, SNAP_PX, CircleTool, PointTool, PolylineTool, align, curve_snap, fmt_mm,
-    radius_snap,
+    ALIGN_PX, CURVE_SNAP_PX, SNAP_PX, CircleTool, PasteTool, PointTool, PolylineTool, align, curve_snap,
+    fmt_mm, radius_snap,
 )
 from view.geometry_view import GeometryView
 from view.parameters_panel import COMMENT, FORMULA, NAME, ParametersPanel
@@ -99,6 +102,7 @@ LINE_HINT = ("Line: click points; click the first point to close, the last one t
              "Esc: end the chain, Esc again: leave Line")
 POINT_HINT = "Point: click to put a point · Esc: leave Point"
 CIRCLE_HINT = "Circle: click the center, then a point on the circle · Esc: drop the center, again: leave Circle"
+PASTE_HINT = "Paste: click where the copy goes (it hangs on the cursor by its middle) · Esc: cancel"
 PICK_PLANE_HINT = "Start 2D Sketch: select a plane (in 3D or in the browser), Esc: cancel"
 ERROR_COLOR = QColor(200, 30, 30)
 EDITING_ROW = QColor(0, 120, 215, 45)        # the sketch being edited
@@ -161,6 +165,7 @@ class MainWindow(QMainWindow):
         self._hover_row = None
         self.editing = None         # name of the sketch in sketch mode, or None
         self.construction_mode = False  # new lines and circles are construction ones
+        self.clipboard = None       # copied sketch geometry (see copy_selection), or None
         self.picking_plane = False  # Start 2D Sketch waits for a plane
         self.view = GeometryView()
         self.view.on_pick = self._on_pick
@@ -260,6 +265,15 @@ class MainWindow(QMainWindow):
             tip="Construction lines and circles (dashed). With lines or circles selected: theirs (on only if "
                 "all are); a click sets them all. With none: for the new ones")
         group.add_action(self.construction_action)
+        group = sketch.add_group("Clipboard")
+        self.copy_action = self._action("Copy", self.copy_selection, QKeySequence.Copy,
+                                         "Copy the selected sketch geometry")
+        self.cut_action = self._action("Cut", self.cut_selection, QKeySequence.Cut,
+                                        "Copy the selected sketch geometry and delete it")
+        self.paste_action = self._action("Paste", self.start_paste, QKeySequence.Paste,
+                                          "The copied geometry follows the cursor; a click puts it there")
+        for action in (self.copy_action, self.cut_action, self.paste_action):
+            group.add_action(action)
         group = sketch.add_group("View")
         group.add_action(self._action("Look At", self._look_at_sketch, tip="Look at the sketch's plane again"))
         group = sketch.add_group("Exit")
@@ -564,6 +578,7 @@ class MainWindow(QMainWindow):
         self.ribbon.show_tab("Sketch")
         self.start_sketch_action.setEnabled(False)
         self._fill_tree()
+        self._sync_construction()               # Paste, Construction: they depend on the edited sketch
         self.statusBar().showMessage(f"{name} on {self.part.feature(name)['plane']}: Finish Sketch to leave it")
 
     def finish_sketch(self, refresh=True):
@@ -576,6 +591,7 @@ class MainWindow(QMainWindow):
         self.ribbon.set_tab_enabled("Sketch", False)
         self.ribbon.show_tab("3D Model")
         self.start_sketch_action.setEnabled(True)
+        self._sync_construction()
         if refresh:
             self._fill_tree()
             self._on_pick(self.view.picks)
@@ -635,7 +651,14 @@ class MainWindow(QMainWindow):
         return [k[2] for k in self.view.selection if k[0] == "entity" and k[1] == self.editing and k[2] in names]
 
     def _sync_construction(self):
-        """The Construction button shows the selected curves' type (on only if all are), else the mode."""
+        """
+        The Construction button shows the selected curves' type (on only if
+        all are), else the mode; Copy / Cut / Paste are on when they can act.
+        """
+        entities = bool(self._selected_entities())
+        self.copy_action.setEnabled(entities)
+        self.cut_action.setEnabled(entities)
+        self.paste_action.setEnabled(self.editing is not None and self.clipboard is not None)
         curves = self._selected_curves()
         if curves:
             sketch = self.part.feature(self.editing)
@@ -656,6 +679,86 @@ class MainWindow(QMainWindow):
         else:                                   # the mode for the new ones
             self.construction_mode = on
         self._sync_construction()
+
+    # =====================================================
+    # Clipboard
+    # =====================================================
+
+    def _selected_entities(self):
+        """Names of the selected entities of the edited sketch."""
+        if self.editing is None:
+            return []
+        return [k[2] for k in self.view.selection if k[0] == "entity" and k[1] == self.editing]
+
+    def copy_selection(self):
+        """
+        Ctrl+C: the selected lines, circles and points with the points they
+        need. Points are copied as values (the copy goes where it is put);
+        a radius keeps its formula (moving does not change it).
+        """
+        names = self._selected_entities()
+        if not names:
+            self.statusBar().showMessage("Copy: select sketch lines, circles or points first", 5000)
+            return False
+        sketch = self.part.feature(self.editing)
+        built = self.result.outputs[self.editing]
+        kinds = {n: sketch.kind_of(n) for n in names}
+        points = [p for n in names for p in sketch.points_of(n)]
+        lines = [sketch.line(n) for n in names if kinds[n] == "line"]
+        circles = [sketch.circle(n) for n in names if kinds[n] == "circle"]
+        clip = {
+            "points": {p: {"xy": built.points[p].copy(), "explicit": sketch.point(p).explicit}
+                       for p in dict.fromkeys(points)},
+            "lines": [(e.start, e.end, e.construction) for e in lines],
+            "circles": [(c.center, built.radii[c.name], c.radius, c.construction) for c in circles],
+        }
+        # The anchor: the middle of the copy's extent (circles included).
+        extent = [p["xy"] for p in clip["points"].values()]
+        extent += [built.points[c.center] + sign * built.radii[c.name] for c in circles for sign in (-1, 1)]
+        extent = np.array(extent)
+        clip["anchor"] = 0.5 * (extent.min(axis=0) + extent.max(axis=0))
+        self.clipboard = clip
+        self.statusBar().showMessage(f"copied {len(names)}: {', '.join(names)}", 5000)
+        self._sync_construction()
+        return True
+
+    def cut_selection(self):
+        """Ctrl+X: copy, then delete the selection (one undo step)."""
+        if self.copy_selection():
+            self.delete_selected()
+
+    def start_paste(self):
+        """Ctrl+V: the copy hangs on the cursor (PasteTool); a click puts it."""
+        if self.editing is None or self.clipboard is None:
+            self.statusBar().showMessage("Paste: copy sketch geometry first (in sketch mode)", 5000)
+            return
+        for action in self.tool_actions:
+            action.setChecked(False)
+        self.view.select(None)
+        self._on_view_select(None)
+        self.view.set_tool(PasteTool(self.view, self.editing, self._edited_result, self.clipboard, self._paste,
+                                     on_exit=self._end_paste))
+        self._on_pick(self.view.picks)
+
+    def _end_paste(self):
+        self.view.set_tool(None)
+        self._on_pick(self.view.picks)
+
+    def _paste(self, offset):
+        """The copy moved by `offset` (mm) into the edited sketch; one undo step; the pasted is selected."""
+        sketch = self.part.feature(self.editing)
+        clip = self.clipboard
+        names = {}
+        for old, p in clip["points"].items():
+            x, y = p["xy"] + offset
+            names[old] = sketch.add_point(fmt_mm(x), fmt_mm(y), explicit=p["explicit"])
+        new = list(names.values())
+        new += [sketch.add_line(names[a], names[b], construction=c) for a, b, c in clip["lines"]]
+        new += [sketch.add_circle(names[center], formula, construction=c)
+                for center, _, formula, c in clip["circles"]]
+        self._commit()
+        self.view.select_keys([("entity", self.editing, n) for n in new])
+        self._on_view_select(self.view.selected)
 
     def _add_point(self, xy):
         """The Point tool's callback: an explicit point at (x, y) mm; one undo step."""
@@ -1062,7 +1165,7 @@ class MainWindow(QMainWindow):
         hint = MEASURE_HINT if self.view.measure else PICK_PLANE_HINT if self.picking_plane else HINT
         if self.editing is not None and not self.view.measure:
             tool = self.view.tool
-            hints = {PolylineTool: LINE_HINT, PointTool: POINT_HINT, CircleTool: CIRCLE_HINT}
+            hints = {PolylineTool: LINE_HINT, PointTool: POINT_HINT, CircleTool: CIRCLE_HINT, PasteTool: PASTE_HINT}
             hint = f"{self.editing}: " + (hints[type(tool)] if tool is not None
                                           else "Finish Sketch to leave it · " + HINT)
         self.statusBar().showMessage("   ".join(parts) if parts else hint)
