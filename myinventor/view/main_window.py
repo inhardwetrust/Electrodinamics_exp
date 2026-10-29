@@ -62,7 +62,9 @@
 # 3D Model > Extrude (view/extrude_panel.py): closed regions of the sketches
 # are picked in 3D (hover: green, click: take or drop, blue), the panel takes
 # the distance; Apply adds an Extrusion making a new body (Solid1, ...), one
-# undo step; Cancel or Esc leaves.
+# undo step; Cancel or Esc leaves. A see-through preview shows the body it
+# would make. Double click (or Edit Extrusion) on an extrusion opens the same
+# panel on it: its profiles taken, its body hidden meanwhile; Apply changes it.
 #
 # A click in 3D selects; the Measure button switches to picking points A / B
 # (view/geometry_view.py), shown with the distance in the status bar.
@@ -85,7 +87,7 @@ from PySide6.QtWidgets import (
 
 from app_settings import AppSettings
 from geometry.body import Geometry
-from geometry.kernel import region_face
+from geometry.kernel import extrude as extrude_shape, region_face
 from geometry.tessellate import body_from_shape
 from model.document import Document
 from model.part import PartError
@@ -178,6 +180,8 @@ class MainWindow(QMainWindow):
         self.construction_mode = False  # new lines and circles are construction ones
         self.clipboard = None       # copied sketch geometry (see copy_selection), or None
         self.extrude_panel = None   # the Extrude command's panel while it runs
+        self._extruding = None      # the extrusion being edited by it, or None (a new one)
+        self._hidden_body = None    # (body, visible before) hidden while its extrusion is edited
         self.picking_plane = False  # Start 2D Sketch waits for a plane
         self.view = GeometryView()
         self.view.on_pick = self._on_pick
@@ -935,43 +939,64 @@ class MainWindow(QMainWindow):
                 used.setdefault(feature["sketch"], feature.name)
         return used
 
-    def start_extrude(self):
+    def start_extrude(self, edit=None):
         """
         3D Model > Extrude: the panel opens and the closed regions of the
         (visible) sketches can be picked in 3D; Apply makes the extrusion.
+        edit: the name of an extrusion to change instead (double click, Edit
+        Extrusion): the panel opens with its distance, its profiles taken,
+        regions of its own sketch only; its body hides meanwhile.
+        While the command runs, a preview shows the body it would make.
         """
         if self.extrude_panel is not None:
             self.extrude_panel.raise_()
             return
         self._stop_picking_plane()
         self.finish_sketch()
-        used = self._consumed_sketches()
+        feature = self.part.feature(edit) if edit else None
+        if feature is not None:
+            sketches = [feature["sketch"]]
+        else:
+            used = self._consumed_sketches()
+            sketches = [f.name for f in self.part.features if f.TYPE == "sketch" and f.name not in used]
         items = []
-        for feature in self.part.features:
-            built = self.result.outputs.get(feature.name)
-            if feature.TYPE != "sketch" or built is None or feature.name in used:
+        for name in sketches:
+            built = self.result.outputs.get(name)
+            if built is None:
                 continue
             for region in find_regions(built):
                 fill = body_from_shape("profile", region_face(built.frame, region))
-                items.append((("profile", feature.name, region.key), built.frame, region,
-                              fill.vertices / MM, fill.triangles))
+                items.append((("profile", name, region.key), built.frame, region, fill.vertices / MM, fill.triangles))
         if not items:
-            self.show_error("Extrude needs a closed region in a sketch (lines meeting at their ends, or a circle).")
+            where = f"{feature['sketch']}" if feature is not None else "a sketch"
+            self.show_error(f"Extrude needs a closed region in {where} (lines meeting at their ends, or a circle).")
             return
         self.view.select(None)
         self._on_view_select(None)
         self.view.set_profile_mode(items)
         self.view.on_profiles = self._profiles_picked
-        panel = ExtrudePanel(self, self.result.values)
+        self._extruding = edit
+        self._hidden_body = None
+        if feature is not None:
+            body = feature["body"]
+            if body in self.view._bodies:       # the old body hides; the preview stands for it
+                self._hidden_body = (body, self.view._visible.get(body, True))
+                self.view.set_visible(body, False)
+            panel = ExtrudePanel(self, self.result.values, distance=feature["distance"], title=f"Edit {edit}")
+            self.view.set_profile_selection([("profile", feature["sketch"], key) for key in feature.profiles])
+        else:
+            panel = ExtrudePanel(self, self.result.values)
+            if len(items) == 1:                 # the only profile: taken at once (as Inventor does)
+                self.view.set_profile_selection([items[0][0]])
         panel.applied.connect(self._apply_extrude)
         panel.cancelled.connect(self._end_extrude)
+        panel.distance.textChanged.connect(lambda _text: self._update_preview())
         self.extrude_panel = panel
-        if len(items) == 1:                     # the only profile: taken at once (as Inventor does)
-            self.view.set_profile_selection([items[0][0]])
-            self._profiles_picked(self.view.profile_selection)
+        self._profiles_picked(self.view.profile_selection)
         panel.show()
         self.extrude_action.setEnabled(False)
-        self.statusBar().showMessage("Extrude: click closed regions to take or drop them · Apply · Esc: cancel")
+        self.statusBar().showMessage(f"{'Edit ' + edit if edit else 'Extrude'}: click closed regions to take or "
+                                     "drop them · Apply · Esc: cancel")
 
     def _profiles_picked(self, keys):
         """Profiles come from one sketch: a pick in another sketch starts over with it."""
@@ -981,15 +1006,38 @@ class MainWindow(QMainWindow):
                 self.view.set_profile_selection([keys[-1]])
         if self.extrude_panel is not None:
             self.extrude_panel.set_profile_count(len(self.view.profile_selection))
+        self._update_preview()
+
+    def _update_preview(self):
+        """The body the command would make (see-through), or none while it cannot make one."""
+        panel, keys = self.extrude_panel, self.view.profile_selection
+        distance = panel.distance_value() if panel is not None else None
+        if not keys or not isinstance(distance, float):
+            self.view.set_preview(None)
+            return
+        built = self.result.outputs[keys[0][1]]
+        regions = {r.key: r for r in find_regions(built)}
+        try:
+            shape = extrude_shape(built.frame, [regions[k[2]] for k in keys], distance)
+            self.view.set_preview(body_from_shape("preview", shape))
+        except (ValueError, RuntimeError, KeyError):
+            self.view.set_preview(None)
 
     def _apply_extrude(self, distance):
         keys = list(self.view.profile_selection)
+        edit = self._extruding
         self._end_extrude()
         if not keys:
             return
-        feature = Extrude(self.part.free_feature_name("Extrusion"), profiles=[k[2] for k in keys],
-                          sketch=keys[0][1], distance=distance, body=self.part.free_body_name())
-        self.part.add_feature(feature)
+        profiles = [k[2] for k in keys]
+        if edit:
+            feature = self.part.feature(edit)
+            feature.profiles = [tuple(sorted(p)) for p in profiles]
+            feature.values["distance"] = distance
+        else:
+            feature = Extrude(self.part.free_feature_name("Extrusion"), profiles=profiles,
+                              sketch=keys[0][1], distance=distance, body=self.part.free_body_name())
+            self.part.add_feature(feature)
         self._commit()
         error = self.result.feature_errors.get(feature.name)
         if error:
@@ -1004,6 +1052,13 @@ class MainWindow(QMainWindow):
             panel.close()
         self.view.set_profile_mode(None)
         self.view.on_profiles = None
+        self.view.set_preview(None)
+        if self._hidden_body is not None:
+            body, visible = self._hidden_body
+            self._hidden_body = None
+            if body in self.view._bodies:
+                self.view.set_visible(body, visible)
+        self._extruding = None
         self.extrude_action.setEnabled(True)
         self._on_pick(self.view.picks)
 
@@ -1027,6 +1082,9 @@ class MainWindow(QMainWindow):
         if kind == "feature" and self.part.feature(name).TYPE == "sketch":
             actions = [] if name == self.editing else [("Edit Sketch", lambda: self.edit_sketch(name))]
             return actions + [("Delete", lambda: self.delete_feature(name))]
+        if kind == "feature" and self.part.feature(name).TYPE == "extrude":
+            return [("Edit Extrusion", lambda: self.start_extrude(edit=name)),
+                    ("Delete", lambda: self.delete_feature(name))]
         return []
 
     def _show_context_menu(self, pos):
@@ -1040,8 +1098,13 @@ class MainWindow(QMainWindow):
 
     def _row_double_clicked(self, item):
         key = self._key_of(item)
-        if key is not None and key[0] == "feature" and self.part.feature(key[1]).TYPE == "sketch":
+        if key is None or key[0] != "feature":
+            return
+        kind = self.part.feature(key[1]).TYPE
+        if kind == "sketch":
             self.edit_sketch(key[1])
+        elif kind == "extrude":
+            self.start_extrude(edit=key[1])
 
     # =====================================================
     # Parameters

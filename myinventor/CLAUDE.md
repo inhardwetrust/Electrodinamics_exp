@@ -49,7 +49,7 @@ Compatibility with Inventor or any other CAD is not a goal.
   `checks/check_sketch_align.py`, `checks/check_sketch_select.py`,
   `checks/check_sketch_circle.py`, `checks/check_sketch_snap.py`,
   `checks/check_sketch_construction.py`, `checks/check_sketch_clipboard.py`,
-  `checks/check_extrude.py`.
+  `checks/check_extrude.py`, `checks/check_extrude_edit.py`.
 - Features that need OCP get it as `ctx.kernel` (`geometry/kernel.py`,
   imported lazily by `model/rebuild.py`), so `model/` stays OCP-free.
 - VisPy swallows an exception raised in an event callback (it only logs

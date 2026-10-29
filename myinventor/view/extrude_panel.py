@@ -8,8 +8,10 @@
 #   Apply      makes the extrusion (off until there is a profile and the
 #              distance is a number other than 0); Cancel (or Esc, or
 #              closing the panel) leaves without one.
-# The panel only shows and reports (applied(distance text), cancelled());
-# the window does the rest.
+# The same panel edits an extrusion (its distance formula filled in, the
+# title "Edit Extrusion1"). The panel only shows and reports (applied(distance
+# text), cancelled(), and the distance field's textChanged); the window does
+# the rest, the preview included.
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -25,10 +27,10 @@ class ExtrudePanel(QDialog):
     applied = Signal(str)
     cancelled = Signal()
 
-    def __init__(self, parent, values, distance="10"):
-        """values: the parameters' values, for evaluating the distance formula."""
+    def __init__(self, parent, values, distance="10", title="Extrude"):
+        """values: the parameters' values, for evaluating the distance formula; title: "Edit Extrusion1"..."""
         super().__init__(parent, Qt.Tool)
-        self.setWindowTitle("Extrude")
+        self.setWindowTitle(title)
         self.setModal(False)
         self.values = values
         self.profiles = QLabel()

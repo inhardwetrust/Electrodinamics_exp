@@ -74,6 +74,9 @@
 # found under the cursor by the ray's hit on its sketch's plane (the nearest
 # such hit wins).
 #
+# Preview (set_preview): the body a feature command would make, see-through
+# amber, until it is applied or cancelled.
+#
 # Alignment hints (set_guides): dashed lines in the sketch's plane, from a
 # point to the one being placed or dragged that took its x or y.
 #
@@ -135,6 +138,7 @@ GUIDE_COLOR = (0.55, 0.85, 1.0, 0.9)              # alignment hints (dashed)
 GUIDE_DASH_PX, GUIDE_GAP_PX = 6.0, 4.0
 PROFILE_HOVER_COLOR = (0.25, 1.0, 0.35, 0.35)      # a profile under the cursor
 PROFILE_SELECTED_COLOR = (0.35, 0.65, 1.0, 0.45)  # a selected profile
+PREVIEW_COLOR = (0.95, 0.7, 0.25, 0.45)           # the body a feature command would make (see-through)
 SNAP_MARKER_COLOR = (0.25, 1.0, 0.35, 1.0)        # where a drag snapped (green, as the tools' marker)
 BOX_COLOR_WINDOW = (0.45, 0.75, 1.0, 1.0)         # the selection box: solid, wholly inside
 BOX_COLOR_CROSSING = (0.45, 1.0, 0.6, 1.0)        # dashed: inside or crossing
@@ -726,6 +730,11 @@ class GeometryView:
         self.profile_selection = []     # keys of the selected profiles
         self.on_profiles = None         # callback(keys) after a click changed the selection
         self.shown_profiles = {}        # key -> "hover" | "selected" | None, as drawn
+        self.preview_body = None        # the Body shown as a feature's preview, or None
+        self.preview = scene.visuals.Mesh(parent=self.root, shading="smooth")
+        self.preview.set_gl_state("translucent", depth_test=True, cull_face=False)
+        self.preview.order = 8
+        self.preview.visible = False
 
         self._picker = None
         self.picks = [None, None]       # points A and B: Pick or None
@@ -1183,6 +1192,8 @@ class GeometryView:
 
         for visual in self._bodies.values():
             visual.mesh.shading_filter.light_dir = -direction
+        if self.preview.visible:
+            self.preview.shading_filter.light_dir = -direction
 
     # =====================================================
     # Content
@@ -1354,6 +1365,18 @@ class GeometryView:
             mesh.order = 5
             self._profiles.append((key, frame, region, mesh))
         self._style_profiles()
+
+    def set_preview(self, body):
+        """A feature command's result before it is applied: a see-through body (geometry.body.Body), or None."""
+        self.preview_body = body
+        if body is not None and len(body.triangles):
+            self.preview.set_data(vertices=(body.vertices / SCENE_UNIT).astype(np.float32), faces=body.triangles,
+                                  color=PREVIEW_COLOR)
+            self.preview.visible = True
+            self._update_light()
+        else:
+            self.preview.visible = False
+        self.canvas.update()
 
     def set_profile_selection(self, keys):
         self.profile_selection = [k for k in keys if any(k == p[0] for p in self._profiles)]
