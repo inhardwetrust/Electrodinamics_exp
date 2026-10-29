@@ -5,7 +5,8 @@
 #
 # - region_face: a sketch region (model/profiles.py) as a planar face in 3D:
 #   its outer loop's wire (lines as straight edges, a circle as an exact
-#   circle, an arc through three points exactly), minus its holes;
+#   circle, an arc through three points exactly, a parabola as OCC's, a
+#   B-spline as one B-spline edge), minus its holes;
 # - extrude: the faces swept along the sketch's normal by a distance
 #   (negative: the other way), several regions fused into one solid;
 # - boolean: join (fuse), cut or intersect (common) of two shapes, for the
@@ -14,10 +15,15 @@
 #   the report (cli.py).
 #
 # OCP 8 naming: static methods end in _s; booleans are pairwise (no
-# TopTools_ListOfShape binding).
+# TopTools_ListOfShape binding). It binds no point arrays either, so a
+# B-spline cannot be made through the API: _bspline writes it as OCC's own
+# BREP text and reads that back (from memory).
+
+import io
 
 import numpy as np
 
+from OCP.BRep import BRep_Builder
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
 from OCP.BRepBndLib import BRepBndLib
 from OCP.Bnd import Bnd_Box
@@ -25,12 +31,15 @@ from OCP.BRepCheck import BRepCheck_Analyzer
 from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
 from OCP.BRepGProp import BRepGProp
 from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
-from OCP.GC import GC_MakeArcOfCircle
+from OCP.BRepTools import BRepTools
+from OCP.GC import GC_MakeArcOfCircle, GC_MakeArcOfParabola
 from OCP.GProp import GProp_GProps
-from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
+from OCP.GeomAbs import GeomAbs_C3
+from OCP.ShapeUpgrade import ShapeUpgrade_ShapeDivideContinuity, ShapeUpgrade_UnifySameDomain
 from OCP.TopAbs import TopAbs_SOLID
 from OCP.TopExp import TopExp_Explorer
-from OCP.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pnt, gp_Vec
+from OCP.TopoDS import TopoDS, TopoDS_Shape
+from OCP.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Parab, gp_Pnt, gp_Vec
 
 from geometry.tessellate import body_from_shape
 
@@ -51,6 +60,10 @@ def _wire(frame, loop):
         elif edge[0] == "arc":                  # through three points: exact
             arc = GC_MakeArcOfCircle(_world(frame, edge[1]), _world(frame, edge[2]), _world(frame, edge[3])).Value()
             builder.Add(BRepBuilderAPI_MakeEdge(arc).Edge())
+        elif edge[0] == "parabola":
+            builder.Add(_parabola(frame, *edge[1:]))
+        elif edge[0] == "bspline":
+            builder.Add(_bspline(frame, *edge[1:]))
         else:
             _, center, radius = edge
             axis = gp_Ax2(_world(frame, center), gp_Dir(*map(float, frame.normal)), gp_Dir(*map(float, frame.u)))
@@ -58,6 +71,48 @@ def _wire(frame, loop):
     if not builder.IsDone():
         raise ValueError(f"the loop {', '.join(loop.names)} does not close")
     return builder.Wire()
+
+
+def _parabola(frame, vertex, focal, u0, u1):
+    """
+    The exact parabola vertex + (u, u^2 / (4 focal)) of the sketch (model/curves.py), u from u0
+    to u1. OCC's: P(u) = O + u^2 / (4F) XDir + u YDir, so XDir = the sketch's v (its axis),
+    YDir = its u, and the main direction XDir x YDir = -normal.
+    """
+    axis = gp_Ax2(_world(frame, vertex), gp_Dir(*map(float, -np.asarray(frame.normal))),
+                  gp_Dir(*map(float, frame.v)))
+    parab = gp_Parab(axis, float(focal))
+    lo, hi = sorted((float(u0), float(u1)))
+    edge = BRepBuilderAPI_MakeEdge(GC_MakeArcOfParabola(parab, lo, hi, True).Value()).Edge()
+    return edge if u0 < u1 else TopoDS.Edge(edge.Reversed())
+
+
+def _bspline(frame, poles, knots, mults, degree):
+    """
+    A non-rational B-spline edge (poles (K, 2) mm in the sketch; the ends
+    clamped) through OCC's BREP text (curve record 7: rational, periodic,
+    degree, poles, knots, then the poles and the knots with multiplicities).
+    The frame is affine, so the world poles make the same curve in 3D.
+    """
+    world = frame.to_world(np.asarray(poles, float) * MM) / MM
+    numbers = lambda values: " ".join(f"{float(v):.17g}" for v in values)     # noqa: E731
+    closed = bool(np.allclose(world[0], world[-1], atol=1e-9))
+    ends = [world[0]] if closed else [world[0], world[-1]]
+    lines = ["CASCADE Topology V3, (c) Open Cascade", "Locations 0", "Curve2ds 0", "Curves 1",
+             f"7 0 0 {degree} {len(world)} {len(knots)} {numbers(world.ravel())} "
+             + " ".join(f"{float(u):.17g} {int(m)}" for u, m in zip(knots, mults)),
+             "Polygon3D 0", "PolygonOnTriangulations 0", "Surfaces 0", "Triangulations 0", "",
+             f"TShapes {len(ends) + 1}"]
+    for p in ends:                              # numbered from the end: the edge is 1
+        lines += ["Ve", "1e-07", numbers(p), "0 0", "", "0101101", "*"]
+    first, last = len(ends) + 1, len(ends) + 1 if closed else len(ends)
+    lines += ["Ed", " 1e-07 1 1 0", f"1  1 0 {float(knots[0]):.17g} {float(knots[-1]):.17g}", "0", "",
+              "1101000", f"+{first} 0 -{last} 0 *", "", "+1 0", ""]
+    shape = TopoDS_Shape()
+    BRepTools.Read_s(shape, io.BytesIO("\n".join(lines).encode()), BRep_Builder())
+    if shape.IsNull():
+        raise ValueError("a B-spline could not be built")
+    return TopoDS.Edge(shape)
 
 
 def region_face(frame, region):
@@ -118,9 +173,16 @@ def body(name, shape, color=None):
 
 
 def volume(shape):
-    """Exact volume (mm^3)."""
+    """
+    Exact volume (mm^3). OCC integrates a B-spline face of many spans badly
+    (5e-5 off, worse with a tolerance): a copy split at its knots is exact.
+    """
+    split = ShapeUpgrade_ShapeDivideContinuity(shape)
+    for criterion in (split.SetBoundaryCriterion, split.SetPCurveCriterion, split.SetSurfaceCriterion):
+        criterion(GeomAbs_C3)
+    split.Perform()
     props = GProp_GProps()
-    BRepGProp.VolumeProperties_s(shape, props)
+    BRepGProp.VolumeProperties_s(split.Result(), props)
     return props.Mass()
 
 

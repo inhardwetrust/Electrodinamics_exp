@@ -105,8 +105,11 @@ one document.
 
 **1. Manual.** Primitives as a person draws them: points with plain numbers,
 lines, circles, wide polylines; formulas only for the sizes that matter.
-Everything drags with the mouse. Missing primitives, to add: an arc, a
-poly-arc (a chain of lines and tangent arcs), Bézier curves and splines.
+Everything drags with the mouse. The interpolating spline is done
+(`[[feature.spline]]`: a cubic C2 curve through its points, chord-length
+parameter, natural ends or periodic when closed; one exact B-spline in
+the kernel and STEP). Missing primitives, to add: an arc, a poly-arc (a chain
+of lines and tangent arcs), Bézier curves.
 
 **2. Parametric (generators).** Control parameters → generators → geometry:
 the shape is computed from a few numbers (a parabola from its focal length
@@ -126,11 +129,13 @@ and diameter, a spiral, a meander), and changes when they change.
   The properties panel builds the argument fields from the declaration
   (the same fields an AI fills); the rebuild evaluates them and makes the
   curve. A new kind is one class in the registry, nothing else changes.
-- **Exact where possible.** Kinds OCC has exactly (`Geom_Parabola`,
-  ellipse, hyperbola, arcs) are built exactly. The general kind `function`
-  (`x = "..."`, `y = "..."` of the variable `t`, a range of `t`) becomes a
-  B-spline interpolated within a stated tolerance: in STEP a smooth curve,
-  not a polyline.
+- **Exact where possible.** Kinds OCC has exactly (`gp_Parab`; later
+  ellipse, hyperbola) are built exactly. The general kind `function`
+  (`x = "..."`, `y = "..."` of the variable `t`, a range of `t`) becomes
+  one cubic B-spline through its points at evenly spaced t, refined until
+  it is within 0.1 µm of the curve (`curves.FIT_TOLERANCE`): in STEP one
+  smooth curve, as Inventor's splines are. (OCP 8 binds no point arrays:
+  the kernel writes the B-spline as BREP text and reads it back.)
 - **No code in files.** Generators live in the program; arguments and
   `function`'s `x(t)`, `y(t)` go through the same `ast` evaluator as every
   formula (`t` is one more name). A file from elsewhere cannot run anything.
@@ -139,8 +144,9 @@ and diameter, a spiral, a meander), and changes when they change.
   (profiles) like lines do today.
 - **The bridge to manual: Deparametrize** (done for formulas): the
   selection's formulas become their values, the geometry stays and drags.
-  For a generator it will turn the curve into manual primitives with
-  numbers (exact arcs or a spline through its points).
+  For a generator it will turn the curve into a spline through K of its
+  points with numbers, K chosen so the spline stays within a tolerance of
+  the curve (a field beside the button, 1 µm by default).
 - **Then features on top**: a curve thickened to one side or both (a closed
   profile, like a polyline's outline), and Revolve around an axis: a
   parabolic reflector is a parabola, thickened, revolved.
@@ -162,16 +168,15 @@ circles, wide polylines with bends, construction geometry, snapping,
 copy / paste), Extrude with join / cut / intersect, sketches on faces,
 failed-feature marking, body colors, STEP export (and on Save), the
 headless report and STEP (`cli.py`), the AI skill, reload on a change on
-disk, Deparametrize.
+disk, Deparametrize, generators (`[[feature.curve]]`: `parabola`,
+`function`; argument fields; part of profiles through their end points),
+the interpolating spline (Sketch > Spline).
 
 Next, in this order:
-1. Generators: `[[feature.curve]]` with the registry, `parabola` and
-   `function` first; argument fields in the properties; drawn and part of
-   profiles; derived end points.
+1. Deparametrize for generators: a spline within a tolerance (1 µm default).
 2. Thickness for curves (one side or both): a closed profile.
 3. Revolve.
-4. Manual primitives: arc, poly-arc, Bézier / spline; Deparametrize for
-   generators (to primitives).
+4. Manual primitives: arc, poly-arc, Bézier; copy / paste of generators.
 
 Later: patterns, fillets; RF primitives (a board with a layer stack, a
 line or CPW, a via fence, an SMA template); measure (picking and the A-B

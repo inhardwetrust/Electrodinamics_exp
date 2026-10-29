@@ -75,19 +75,19 @@ The user and you share the file, so pick the way that fits the shape
 (DESIGN.md "Two ways of drawing"); one part may mix both:
 
 1. **Manual**: primitives as a person would draw them (points, lines,
-   circles, wide polylines). Plain numbers where the user may want to move
+   circles, wide polylines, splines). Plain numbers where the user may want to move
    things by hand, formulas for the sizes that matter. Use it for layouts:
    patches, feeds, slots, boards, anything made of straight pieces, arcs
    of polyline bends and circles.
 2. **Parametric (generators)**: a few control parameters → a computed
-   shape (a parabola from f and D, a spiral, a meander), rebuilt when they
-   change. In the file a generator is `[[feature.curve]]` with a `kind` and
-   one formula per argument; its ends are points (`Name.start`, `Name.end`)
-   that lines can join. **Not in the program yet** (next on the roadmap):
-   until it is, say so, and either draw the curve's points with formulas
-   joined by lines or a polyline (a faceted approximation: say how many
-   segments and the deviation), or wait for the generator. Never pretend a
-   faceted curve is exact.
+   shape (a parabola from f and D, a horn's profile, any x(t), y(t)),
+   rebuilt when they change. In the file a generator is `[[feature.curve]]`
+   with a `kind` and one formula per argument (see "Curves" below); its
+   ends are points (`Name.start`, `Name.end`) that lines use to close a
+   profile. Prefer a generator to many points with formulas: it is exact
+   (a parabola is OCC's parabola, a function a B-spline within 0.1 µm)
+   and the user edits its arguments in the properties. Never draw a curve
+   as a polyline of points and call it exact.
 
 Either way the user can free formulas later (Deparametrize, below) and keep
 working by hand.
@@ -147,7 +147,28 @@ Geometry (each is a `[[feature.<kind>]]` table under the sketch):
     `radii` = the cutting circle's radius around the point (default w/2).
   Its outline is a profile on its own, key `["<its name>"]`. A bend's radius
   or setback must fit between its neighbours or the sketch fails, naming it.
-- `construction = true` on a line or circle: a helper, never a profile.
+- `curve`: a generator, `name`, `kind`, then its arguments (formulas;
+  the optional ones may be left out). Kinds (the registry is
+  `model/curves.py`; its `ARGS` say what each argument means):
+  - `parabola`: `focal` (f > 0), `from`, `to` (its distance from the axis
+    where it starts and ends, signed), `x0`, `y0` (the vertex, default 0):
+    y = y0 + (x − x0)² / (4f), the axis along the sketch's y. Exact.
+  - `function`: `x`, `y` (formulas of `t` and the parameters), `from`,
+    `to` (the range of t, default 0..1). Inside x and y, `t` is the
+    curve's own variable (it hides a parameter named t there). Trig in
+    degrees: `sin(360 * t)`. One B-spline within 0.1 µm.
+  Its ends are `Name.start` and `Name.end`: use them as line ends to close
+  a profile; a profile's key then names the curve too (`["L1", "Parabola1"]`,
+  from the report). A curve cannot be dragged; Deparametrize does not
+  touch it (yet). The report lists each curve with its ends' coordinates.
+- `spline`: an interpolating spline (cubic, smooth, through every point):
+  `name`, `points` (two or more, each once; the first again at the end
+  closes it, smooth all around, then three or more). Its key on its own
+  when closed (`["Spline1"]`); open, it joins lines at its first and last
+  points like a line. Its points drag; in the kernel and STEP it is one
+  exact B-spline. Use it for a free smooth shape the user will shape
+  by hand; for a shape with a formula use a generator.
+- `construction = true` on a line, circle, curve or spline: a helper, never a profile.
 
 A loop inside another one is a hole of the outer profile (a rectangle with
 a circle inside: the plate with a hole, and the disc, two profiles). Curves

@@ -115,8 +115,15 @@ from model.rebuild import rebuild
 from model.extrude import Extrude
 from model.profiles import find_regions
 from model.expressions import evaluate
-from model.sketch import Sketch, SketchPolyline
+from model.sketch import Sketch, SketchPolyline, SketchSpline
+from model.curves import KINDS
 from model.traces import BENDS
+
+# The arguments a curve added with the Curve button starts with (then edited in the properties).
+CURVE_STARTERS = {
+    "parabola": {"focal": "10", "from": "-20", "to": "20"},
+    "function": {"x": "20 * t", "y": "5 * sin(360 * t)"},
+}
 
 # A bend's one number in the properties: (its label, the default shown when empty).
 BEND_PARAMETER = {
@@ -126,7 +133,8 @@ BEND_PARAMETER = {
 }
 from view.extrude_panel import ExtrudePanel
 from view.sketch_tools import (
-    ALIGN_PX, CURVE_SNAP_PX, SNAP_PX, CircleTool, LineTool, PasteTool, PointTool, TraceTool, align, curve_snap,
+    ALIGN_PX, CURVE_SNAP_PX, SNAP_PX, CircleTool, LineTool, PasteTool, PointTool, SplineTool, TraceTool, align,
+    curve_snap,
     fmt_mm, radius_snap,
 )
 from view.geometry_view import DEFAULT_COLORS, GeometryView
@@ -145,6 +153,8 @@ LINE_HINT = ("Line: click points; click the first point to close, the last one t
              "Esc: end the chain, Esc again: leave Line")
 TRACE_HINT = ("Polyline: click its center line point by point (the width beside the button); click the last "
               "point to stop · Esc: end it, Esc again: leave Polyline")
+SPLINE_HINT = ("Spline: click the points it runs through; click the first point to close it (smooth all around), "
+               "the last one to stop · Esc: end it, Esc again: leave Spline")
 POINT_HINT = "Point: click to put a point · Esc: leave Point"
 CIRCLE_HINT = "Circle: click the center, then a point on the circle · Esc: drop the center, again: leave Circle"
 PASTE_HINT = "Paste: click where the copy goes (it hangs on the cursor by its middle) · Esc: cancel"
@@ -221,6 +231,7 @@ class MainWindow(QMainWindow):
         self.construction_mode = False  # new lines and circles are construction ones
         self.clipboard = None       # copied sketch geometry (see copy_selection), or None
         self._trace = None          # the polyline the Polyline tool is drawing
+        self._spline = None         # the spline the Spline tool is drawing
         self.extrude_panel = None   # the Extrude command's panel while it runs
         self._extruding = None      # the extrusion being edited by it, or None (a new one)
         self._rolled_back = False   # the view shows the bodies from before the edited extrusion
@@ -341,11 +352,24 @@ class MainWindow(QMainWindow):
                                          tip="A wide polyline: click its center line point by point; each new "
                                              "point gets the width beside it, then its own (Properties)")
         group.add_action(self.trace_action)
+        self.spline_action = self._action("Spline", self._set_spline_tool, checkable=True,
+                                          tip="An interpolating spline: click the points it runs through; the "
+                                              "first point again closes it")
+        group.add_action(self.spline_action)
         group.add_widget(QLabel(" Width "))
         self.trace_width = group.add_widget(QLineEdit("1"))
         self.trace_width.setFixedWidth(60)
         self.trace_width.setToolTip("The width (mm, a number or a formula of the parameters) of new polylines")
-        self.tool_actions = (self.line_action, self.point_action, self.circle_action, self.trace_action)
+        self.curve_menu = QMenu(self)
+        for kind in KINDS:
+            self.curve_menu.addAction(kind.capitalize(), lambda k=kind: self.add_curve(k)).setToolTip(KINDS[kind].DOC)
+        self.curve_menu.setToolTipsVisible(True)
+        self.curve_action = self._action("Curve", lambda: self.add_curve("parabola"),
+                                         tip="A generated curve (a parabola; the arrow: other kinds), set by its "
+                                             "arguments in the properties")
+        group.add_action(self.curve_action, self.curve_menu)
+        self.tool_actions = (self.line_action, self.point_action, self.circle_action, self.trace_action,
+                             self.spline_action)
         group = sketch.add_group("Format")
         self.construction_action = self._action(
             "Construction", self._construction_toggled, checkable=True,
@@ -873,6 +897,35 @@ class MainWindow(QMainWindow):
         self._commit()
         return a, b
 
+    def _set_spline_tool(self, on):
+        self._spline = None
+        self._set_tool(on, self.spline_action, lambda: SplineTool(
+            self.view, self.editing, self._edited_result, self._add_spline,
+            on_exit=lambda: self.spline_action.setChecked(False)))
+
+    def _add_spline(self, start, end):
+        """
+        The Spline tool's callback (anchors, as for Line): the first pair
+        makes a spline; a pair that goes on from its last point extends it
+        (back to its first point: closed). One undo step each.
+        """
+        sketch = self.part.feature(self.editing)
+
+        def point(anchor):
+            if anchor[0] == "point":
+                return anchor[1]
+            x, y = anchor[1]
+            return sketch.add_point(fmt_mm(x), fmt_mm(y))
+
+        a, b = point(start), point(end)
+        current = next((w for w in sketch.splines if w.name == self._spline), None)
+        if current is not None and current.points[-1] == a:
+            sketch.extend_spline(current.name, b)
+        else:
+            self._spline = sketch.add_spline(a, b, construction=self.construction_mode)
+        self._commit()
+        return a, b
+
     def _set_circle_tool(self, on):
         self._set_tool(on, self.circle_action, lambda: CircleTool(
             self.view, self.editing, self._edited_result, self._add_circle,
@@ -905,11 +958,11 @@ class MainWindow(QMainWindow):
         return circle
 
     def _selected_curves(self):
-        """Names of the selected lines and circles of the edited sketch."""
+        """Names of the selected lines, circles, generated curves and splines of the edited sketch."""
         if self.editing is None:
             return []
         sketch = self.part.feature(self.editing)
-        names = {e.name for e in sketch.lines + sketch.circles}
+        names = {e.name for e in sketch.lines + sketch.circles + sketch.curves + sketch.splines}
         return [k[2] for k in self.view.selection if k[0] == "entity" and k[1] == self.editing and k[2] in names]
 
     def _sync_construction(self):
@@ -964,7 +1017,20 @@ class MainWindow(QMainWindow):
             return False
         sketch = self.part.feature(self.editing)
         built = self.result.outputs[self.editing]
-        kinds = {n: sketch.kind_of(n) for n in names}
+
+        def kind(n):
+            try:
+                return sketch.kind_of(n)
+            except KeyError:
+                return None             # a generated curve's end point
+
+        kinds = {n: kind(n) for n in names}
+        skipped = [n for n in names if kinds[n] in (None, "curve")]
+        names = [n for n in names if n not in skipped]
+        if not names:
+            self.statusBar().showMessage("Copy: generated curves are not copied (yet)", 5000)
+            return False
+        own = {p.name for p in sketch.points}
         points = [p for n in names for p in sketch.points_of(n)]
         lines = [sketch.line(n) for n in names if kinds[n] == "line"]
         circles = [sketch.circle(n) for n in names if kinds[n] == "circle"]
@@ -973,13 +1039,15 @@ class MainWindow(QMainWindow):
                   if kinds[n] in ("polyline", "segment")]
         polylines = [sketch.polyline(n) for n in dict.fromkeys(owners)]
         points += [p for w in polylines for p in w.points]
+        splines = [sketch.spline(n) for n in names if kinds[n] == "spline"]
         clip = {
-            "points": {p: {"xy": built.points[p].copy(), "explicit": sketch.point(p).explicit}
+            "points": {p: {"xy": built.points[p].copy(), "explicit": p in own and sketch.point(p).explicit}
                        for p in dict.fromkeys(points)},
             "lines": [(e.start, e.end, e.construction) for e in lines],
             "circles": [(c.center, built.radii[c.name], c.radius, c.construction) for c in circles],
             "polylines": [(list(w.points), list(w.widths), w.width, w.start, w.end, list(w.bends), list(w.radii))
                           for w in polylines],
+            "splines": [(list(w.points), w.construction) for w in splines],
         }
         # The anchor: the middle of the copy's extent (circles included).
         extent = [p["xy"] for p in clip["points"].values()]
@@ -1030,6 +1098,10 @@ class MainWindow(QMainWindow):
             name = sketch.free_name("W")
             sketch.polylines.append(SketchPolyline(name, [names[p] for p in points], list(widths), width, start, end,
                                                    list(bends), list(radii)))
+            new.append(name)
+        for points, c in clip.get("splines", []):
+            name = sketch.free_name("Spline")
+            sketch.splines.append(SketchSpline(name, [names[p] for p in points], c))
             new.append(name)
         self._commit()
         self.view.select_keys([("entity", self.editing, n) for n in new])
@@ -1082,7 +1154,21 @@ class MainWindow(QMainWindow):
                 circle = sketch.circle(names[0])
                 self._dragged = {"circle": circle.name, "radius": _number(circle.radius), "points": {}}
                 return
-            points = [p for n in names for p in sketch.points_of(n)]
+            own = {p.name for p in sketch.points}
+            points, generated = [], []
+            for n in names:
+                try:
+                    of = sketch.points_of(n)
+                except KeyError:                # a curve's end point
+                    of = [n]
+                points += [p for p in of if p in own]
+                generated += [p for p in of if p not in own]
+            if not points:                      # only a generated curve or its ends: set by its arguments
+                self._dragged = None
+                if generated:
+                    self.statusBar().showMessage(f"{', '.join(dict.fromkeys(names))}: a generated curve, it stays "
+                                                 "(change its arguments in the properties)", 8000)
+                return
             self._dragged = {"circle": None, "points": {
                 n: (_number(sketch.point(n).x), _number(sketch.point(n).y)) for n in dict.fromkeys(points)}}
             return
@@ -1628,6 +1714,21 @@ class MainWindow(QMainWindow):
             kind = sketch.kind_of(name)
         except KeyError:
             return
+        if kind == "curve":                     # a generator: its declared arguments, as formulas
+            curve = sketch.gen_curve(name)
+            declared = KINDS[curve.kind]
+            title = QLabel(f"<b>{curve.name}</b>: {curve.kind}")
+            title.setToolTip(declared.DOC)
+            self.props_form.addRow(title)
+            for a in declared.ARGS:
+                field = self._formula_field(
+                    curve.args[a.name], lambda text, c=curve.name, a=a: self._set_curve_arg(sketch_name, c, a, text),
+                    empty=a.default is not None)
+                field.setToolTip(a.doc + (f" (empty: {a.default})" if a.default is not None else ""))
+                if a.default is not None:
+                    field.setPlaceholderText(a.default)
+                self.props_form.addRow(f"{a.name}:", field)
+            return
         if kind in ("polyline", "segment"):
             w = sketch.polyline(name.rpartition(".")[0] if kind == "segment" else name)
             self.props_form.addRow(QLabel(f"<b>{w.name}</b>"))
@@ -1663,6 +1764,23 @@ class MainWindow(QMainWindow):
                             empty=True)
                         radius.setPlaceholderText(default)
                         self.props_form.addRow(f"{label} on {w.name}:", radius)
+
+    def add_curve(self, kind):
+        """A generated curve of `kind` in the edited sketch, with starter arguments, selected: one undo step."""
+        if self.editing is None:
+            self.statusBar().showMessage("Curve: edit a sketch first", 5000)
+            return None
+        sketch = self.part.feature(self.editing)
+        name = sketch.add_curve(kind, **CURVE_STARTERS.get(kind, {}))
+        self._commit()
+        self.view.select_keys([("entity", self.editing, name)])
+        self._on_view_select(self.view.selected)
+        return name
+
+    def _set_curve_arg(self, sketch_name, name, arg, text):
+        """A generated curve's argument changed in the properties: one undo step (empty: its default)."""
+        self.part.feature(sketch_name).gen_curve(name).args[arg.name] = text or arg.default
+        self._commit()
 
     def _deparametrize_target(self, key):
         """(sketch name, entity names or None for the whole sketch) the selection stands for, or None."""
@@ -1783,6 +1901,28 @@ class MainWindow(QMainWindow):
             p = sketch.point(name)
             kind = "sketch point" if p.explicit else "point"
             return f"<b>{name}</b> ({kind} of {sketch_name})<br>x = {p.x}, y = {p.y} mm<br>{where(name)}"
+        owner, _, end = name.rpartition(".")
+        if end in ("start", "end") and any(c.name == owner for c in sketch.curves):
+            return (f"<b>{name}</b> (the {end} of curve {owner})<br>{where(name) if name in points else 'not built'}"
+                    "<br>set by the curve: lines may use it")
+        if sketch.kind_of(name) == "curve":
+            curve = sketch.gen_curve(name)
+            built = self.result.outputs[sketch_name].shapes.get(name)
+            args = "<br>".join(f"{a} = {text}" for a, text in curve.args.items())
+            ends = (f"<br>from {where(name + '.start')}<br>to {where(name + '.end')}<br>"
+                    f"{len(built.edges)} exact edge(s)" if built is not None else "<br>not built (see the error)")
+            return (f"<b>{name}</b> ({curve.kind} curve of {sketch_name})<br>{KINDS[curve.kind].DOC}<br>{args}"
+                    f"{ends}<br>generated: change it by its arguments (properties)")
+        if sketch.kind_of(name) == "spline":
+            w = sketch.spline(name)
+            built = self.result.outputs[sketch_name].shapes.get(name)
+            closed = len(w.points) > 3 and w.points[0] == w.points[-1]
+            shape = (f"<br>length {float(np.linalg.norm(np.diff(built.points, axis=0), axis=1).sum()):.6g} mm, "
+                     f"a B-spline of {len(built.edges[0][2]) - 1} span(s)" if built is not None
+                     else "<br>not built (see the error)")
+            return (f"<b>{name}</b> ({'closed ' if closed else ''}spline of {sketch_name})<br>through "
+                    f"{len(w.points) - closed} points: {', '.join(w.points)}{shape}"
+                    "<br>drag its points to bend it")
         if sketch.kind_of(name) in ("polyline", "segment"):
             owner = name.rpartition(".")[0] if sketch.kind_of(name) == "segment" else name
             w = sketch.polyline(owner)
@@ -1864,7 +2004,7 @@ class MainWindow(QMainWindow):
         if self.editing is not None and not self.view.measure:
             tool = self.view.tool
             hints = {LineTool: LINE_HINT, PointTool: POINT_HINT, CircleTool: CIRCLE_HINT, PasteTool: PASTE_HINT,
-                     TraceTool: TRACE_HINT}
+                     TraceTool: TRACE_HINT, SplineTool: SPLINE_HINT}
             hint = f"{self.editing}: " + (hints[type(tool)] if tool is not None
                                           else "Finish Sketch to leave it · " + HINT)
         self.statusBar().showMessage("   ".join(parts) if parts else hint)

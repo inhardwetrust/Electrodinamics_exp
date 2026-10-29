@@ -43,6 +43,23 @@
 #   radius = "d / 2"          # a formula (mm), > 0
 #   construction = true       # optional, as for lines
 #
+#   [[feature.spline]]        # an interpolating spline: a smooth curve through the points, in order
+#   name = "Spline1"
+#   points = ["P1", "P2", "P3"]     # the last one = the first: closed (smooth all around)
+#   construction = true       # optional
+#
+#   [[feature.curve]]         # a generator (model/curves.py): a kind and its arguments
+#   name = "Parabola1"
+#   kind = "parabola"
+#   focal = "f"
+#   from = "0"
+#   to = "D / 2"
+#   x0 = "0"                  # optional arguments take their defaults
+#
+# A curve's ends are points "Parabola1.start" / "Parabola1.end" that lines,
+# circles and polylines may use (they are not entities of their own: the
+# curve sets them; deleting the curve takes what uses them).
+#
 # An explicit point is a sketch point in its own right (Inventor's Point),
 # not just the end of lines or a circle's center: it is drawn as a dot in a
 # gapped cross even outside sketch mode, and it stays when what uses it is
@@ -57,11 +74,13 @@
 # u x v is the normal (the side the sketch is seen from).
 
 import math
+import re
 from dataclasses import dataclass, field
 
 import numpy as np
 
 from model.features import Feature, FeatureError, Field, PartialBuild, feature_type
+from model.curves import KINDS, CurveError, end_points, spline_shape
 from model.traces import BENDS, TraceError, outline
 
 MM = 1e-3
@@ -133,6 +152,23 @@ class SketchPolyline:
             setattr(self, key, [values[i] for i in indices])
 
 
+@dataclass
+class SketchSpline:
+    """An interpolating spline through points, in order (the last one = the first: closed)."""
+    name: str
+    points: list            # point names
+    construction: bool = False
+
+
+@dataclass
+class SketchCurve:
+    """A generator (model/curves.py): its kind and one formula per argument of that kind."""
+    name: str
+    kind: str
+    args: dict              # argument name -> formula, every argument of the kind
+    construction: bool = False
+
+
 ENDS = ("flat", "round")
 
 
@@ -146,6 +182,9 @@ class SketchResult:
     radii: dict = field(default_factory=dict)       # circle name -> radius (mm)
     polylines: list = field(default_factory=list)   # SketchPolyline
     outlines: dict = field(default_factory=dict)    # polyline name -> (edges, polygon (M, 2) mm): model/traces.py
+    curves: list = field(default_factory=list)      # SketchCurve
+    shapes: dict = field(default_factory=dict)      # curve or spline name -> model.curves.CurveShape (built)
+    splines: list = field(default_factory=list)     # SketchSpline
 
     def world_mm(self, name):
         """A point's position in the scene (mm)."""
@@ -176,6 +215,13 @@ class SketchResult:
         ring = self.frame.to_world(np.vstack([polygon, polygon[:1]]) * MM) / MM
         return np.stack([ring[:-1], ring[1:]], axis=1)
 
+    def curve_segments_mm(self, name):
+        """(K, 2, 3) a generated curve as segments in the scene (mm); none if it failed."""
+        if name not in self.shapes:
+            return np.zeros((0, 2, 3))
+        ring = self.frame.to_world(self.shapes[name].points * MM) / MM
+        return np.stack([ring[:-1], ring[1:]], axis=1)
+
     def center_segments_mm(self, name):
         """(N - 1, 2, 3) a polyline's center line, segment by segment, in the scene (mm)."""
         polyline = next(w for w in self.polylines if w.name == name)
@@ -190,17 +236,36 @@ class Sketch(Feature):
         Field("plane", "ref", doc="the plane the sketch lies on: a datum, or 'Feature:face'"),
     )
 
-    def __init__(self, name, points=(), lines=(), circles=(), polylines=(), **values):
+    def __init__(self, name, points=(), lines=(), circles=(), polylines=(), curves=(), splines=(), **values):
         super().__init__(name, **values)
         self.points = list(points)
         self.lines = list(lines)
         self.circles = list(circles)
         self.polylines = list(polylines)
-        names = [p.name for p in self.points] + [e.name for e in self.lines + self.circles + self.polylines]
+        self.curves = list(curves)
+        self.splines = list(splines)
+        names = [p.name for p in self.points] + [e.name for e in self.lines + self.circles + self.polylines
+                                                 + self.curves + self.splines]
         duplicates = sorted({n for n in names if names.count(n) > 1})
         if duplicates:
             raise FeatureError(f"{name}: duplicate sketch names {duplicates}")
-        points = {p.name for p in self.points}
+        for c in self.curves:
+            kind = KINDS.get(c.kind)
+            if kind is None:
+                raise FeatureError(f"{name}: curve {c.name}: unknown kind {c.kind!r} (one of {', '.join(KINDS)})")
+            wanted = {a.name for a in kind.ARGS}
+            if set(c.args) != wanted:
+                raise FeatureError(f"{name}: curve {c.name} ({c.kind}) takes {', '.join(a.name for a in kind.ARGS)}")
+        points = self.point_names()
+        for w in self.splines:
+            missing = [p for p in w.points if p not in points]
+            if missing:
+                raise FeatureError(f"{name}: spline {w.name}: no point {missing[0]!r}")
+            closed = len(w.points) > 3 and w.points[0] == w.points[-1]
+            body = w.points[:-1] if closed else w.points
+            if len(w.points) < 2 or len(set(body)) != len(body):
+                raise FeatureError(f"{name}: spline {w.name} needs two points or more, each once "
+                                   "(the last may be the first: closed, then three or more)")
         for line in self.lines:
             for end in (line.start, line.end):
                 if end not in points:
@@ -238,7 +303,11 @@ class Sketch(Feature):
                    for i, row in enumerate(_rows(name, data.pop("circle", []), "circle"), 1)]
         polylines = [_polyline(name, i, row)
                      for i, row in enumerate(_rows(name, data.pop("polyline", []), "polyline"), 1)]
-        return cls(name, points=points, lines=lines, circles=circles, polylines=polylines, **data)
+        curves = [_curve(name, i, row) for i, row in enumerate(_rows(name, data.pop("curve", []), "curve"), 1)]
+        splines = [_spline(name, i, row)
+                   for i, row in enumerate(_rows(name, data.pop("spline", []), "spline"), 1)]
+        return cls(name, points=points, lines=lines, circles=circles, polylines=polylines, curves=curves,
+                   splines=splines, **data)
 
     def to_dict(self):
         data = super().to_dict()
@@ -255,6 +324,10 @@ class Sketch(Feature):
             data["polyline"] = [{"name": w.name, "points": list(w.points), "widths": list(w.widths),
                                  "width": w.width, "start": w.start, "end": w.end, **_bends(w)}
                                 for w in self.polylines]
+        if self.curves:
+            data["curve"] = [{"name": c.name, "kind": c.kind, **c.args, **_construction(c)} for c in self.curves]
+        if self.splines:
+            data["spline"] = [{"name": w.name, "points": list(w.points), **_construction(w)} for w in self.splines]
         return data
 
     def references(self):
@@ -274,6 +347,13 @@ class Sketch(Feature):
         for w in self.polylines:
             rows += [(f"{w.name}.width", w.width)] + [(f"{w.name}.width[{p}]", t) for p, t in zip(w.points, w.widths)]
             rows += [(f"{w.name}.radius[{p}]", t) for p, t in zip(w.points, w.radii) if t]
+        for c in self.curves:
+            # A kind's own variable (a function's t, in x and y) is not a parameter: hidden from the search.
+            kind = KINDS[c.kind]
+            for arg, text in c.args.items():
+                if arg in getattr(kind, "VARIABLE_ARGS", ()):
+                    text = re.sub(rf"\b{kind.VARIABLE}\b", "0", text)
+                rows.append((f"{c.name}.{arg}", text))
         return rows
 
     def rename_formulas(self, rename):
@@ -286,6 +366,12 @@ class Sketch(Feature):
             w.width = rename(w.width)
             w.widths = [rename(t) for t in w.widths]
             w.radii = [rename(t) if t else t for t in w.radii]
+        for c in self.curves:
+            kind = KINDS[c.kind]
+            own = getattr(kind, "VARIABLE", None)
+            hides = own is not None and rename(own) != own      # a parameter named like the variable
+            c.args = {arg: text if hides and arg in kind.VARIABLE_ARGS else rename(text)
+                      for arg, text in c.args.items()}
 
     # =====================================================
     # Editing
@@ -293,7 +379,8 @@ class Sketch(Feature):
 
     def free_name(self, prefix):
         """P1, P2..., L1..., C1..., W1...: the first one not taken in this sketch."""
-        taken = {p.name for p in self.points} | {e.name for e in self.lines + self.circles + self.polylines}
+        taken = {p.name for p in self.points} | {e.name for e in self.lines + self.circles + self.polylines
+                                                 + self.curves + self.splines}
         n = 1
         while f"{prefix}{n}" in taken:
             n += 1
@@ -301,11 +388,12 @@ class Sketch(Feature):
 
     def kind_of(self, name):
         """
-        "point", "line", "circle", "polyline", or "segment" (a polyline's
-        center segment, "W1.2": the second one); KeyError if there is none.
+        "point", "line", "circle", "polyline", "curve" (a generator), or
+        "segment" (a polyline's center segment, "W1.2": the second one);
+        KeyError if there is none (a curve's end point is not an entity).
         """
         for kind, items in (("point", self.points), ("line", self.lines), ("circle", self.circles),
-                            ("polyline", self.polylines)):
+                            ("polyline", self.polylines), ("curve", self.curves), ("spline", self.splines)):
             if any(item.name == name for item in items):
                 return kind
         owner, _, index = name.rpartition(".")
@@ -338,11 +426,15 @@ class Sketch(Feature):
 
         for name in names:
             kind = self.kind_of(name)
+            if kind == "curve":
+                continue                # a generator: freed into primitives later (DESIGN.md), not here
             if kind == "point":
                 points.append(name)
             elif kind == "line":
                 line = self.line(name)
                 points += [line.start, line.end]
+            elif kind == "spline":
+                points += list(self.spline(name).points)
             elif kind == "circle":
                 circle = self.circle(name)
                 points.append(circle.center)
@@ -357,7 +449,10 @@ class Sketch(Feature):
                     if w.radii[i]:
                         add(f"{w.name}.radius[{p}]", lambda w=w, i=i: w.radii[i],
                             lambda v, w=w, i=i: w.radii.__setitem__(i, v))
+        real = {p.name for p in self.points}
         for name in points:
+            if name not in real:
+                continue                # a curve's end: set by the curve
             point = self.point(name)
             add(f"{name}.x", lambda p=point: p.x, lambda v, p=point: setattr(p, "x", v))
             add(f"{name}.y", lambda p=point: p.y, lambda v, p=point: setattr(p, "y", v))
@@ -388,14 +483,14 @@ class Sketch(Feature):
         if start == end:
             raise FeatureError(f"{self.name}: a polyline needs two different points")
         for p in (start, end):
-            self.point(p)
+            self._check_point(p)
         name = self.free_name("W")
         self.polylines.append(SketchPolyline(name, [start, end], [str(width)] * 2, str(width)))
         return name
 
     def extend_polyline(self, name, point):
         """Appends a point at its end; it gets the polyline's width (its text, then its own)."""
-        self.point(point)
+        self._check_point(point)
         w = self.polyline(name)
         w.points.append(point)
         w.widths.append(w.width)
@@ -404,7 +499,7 @@ class Sketch(Feature):
 
     def insert_into_polyline(self, name, index, point, width):
         """A point put into the center line before point `index` (1..N-1), with this width (a formula)."""
-        self.point(point)
+        self._check_point(point)
         w = self.polyline(name)
         if not 1 <= index < len(w.points):
             raise FeatureError(f"{self.name}: polyline {w.name}: no segment before point {index}")
@@ -413,12 +508,62 @@ class Sketch(Feature):
         w.bends.insert(index, "normal")
         w.radii.insert(index, "")
 
+    def spline(self, name):
+        return next(w for w in self.splines if w.name == name)
+
+    def add_spline(self, start, end, construction=False):
+        """A new spline from point `start` to point `end` (a line until it gets more points)."""
+        if start == end:
+            raise FeatureError(f"{self.name}: a spline needs two different points")
+        for p in (start, end):
+            self._check_point(p)
+        name = self.free_name("Spline")
+        self.splines.append(SketchSpline(name, [start, end], construction))
+        return name
+
+    def extend_spline(self, name, point):
+        """Appends a point at its end (the first point again closes it)."""
+        self._check_point(point)
+        w = self.spline(name)
+        if point in w.points[1:] or (point == w.points[0] and len(w.points) < 3):
+            raise FeatureError(f"{self.name}: spline {name} has {point} already")
+        w.points.append(point)
+
     def polyline_widths(self, point):
         """[(polyline, index)] where a point is on a polyline's center line."""
         return [(w, i) for w in self.polylines for i, p in enumerate(w.points) if p == point]
 
     def point(self, name):
         return next(p for p in self.points if p.name == name)
+
+    def point_names(self):
+        """Every point a line, circle or polyline may use: the sketch's points and the curves' ends."""
+        return {p.name for p in self.points} | {e for c in self.curves for e in end_points(c.name)}
+
+    def _check_point(self, name):
+        if name not in self.point_names():
+            raise FeatureError(f"{self.name}: no point {name!r}")
+
+    def gen_curve(self, name):
+        """A generated curve (SketchCurve) by name."""
+        return next(c for c in self.curves if c.name == name)
+
+    def add_curve(self, kind, construction=False, **args):
+        """A new generated curve of a kind (model/curves.py); missing arguments take their defaults."""
+        if kind not in KINDS:
+            raise FeatureError(f"{self.name}: unknown curve kind {kind!r}")
+        declared = KINDS[kind].ARGS
+        unknown = set(args) - {a.name for a in declared}
+        if unknown:
+            raise FeatureError(f"{self.name}: a {kind} has no {sorted(unknown)}")
+        values = {}
+        for a in declared:
+            if a.name not in args and a.default is None:
+                raise FeatureError(f"{self.name}: a {kind} needs {a.name!r}")
+            values[a.name] = str(args.get(a.name, a.default))
+        name = self.free_name(kind.capitalize())
+        self.curves.append(SketchCurve(name, kind, values, construction))
+        return name
 
     def line(self, name):
         return next(line for line in self.lines if line.name == name)
@@ -435,20 +580,20 @@ class Sketch(Feature):
         if start == end:
             raise FeatureError(f"{self.name}: a line needs two different points")
         for p in (start, end):
-            self.point(p)
+            self._check_point(p)
         name = self.free_name("L")
         self.lines.append(SketchLine(name, start, end, construction))
         return name
 
     def add_circle(self, center, radius, construction=False):
-        self.point(center)
+        self._check_point(center)
         name = self.free_name("C")
         self.circles.append(SketchCircle(name, center, str(radius), construction))
         return name
 
     def curve(self, name):
-        """A line or a circle by name."""
-        return next(e for e in self.lines + self.circles if e.name == name)
+        """A line, a circle or a generated curve by name (what may be construction)."""
+        return next(e for e in self.lines + self.circles + self.curves + self.splines if e.name == name)
 
     def points_of(self, name):
         """The points an entity is made of: a point itself, a line's ends, a circle's center, a polyline's."""
@@ -464,11 +609,15 @@ class Sketch(Feature):
             owner, _, index = name.rpartition(".")
             points = self.polyline(owner).points
             return [points[int(index) - 1], points[int(index)]]
+        if kind == "curve":
+            return list(end_points(name))
+        if kind == "spline":
+            return list(dict.fromkeys(self.spline(name).points))
         return [self.circle(name).center]
 
     def _used_points(self):
         return ({e for line in self.lines for e in (line.start, line.end)} | {c.center for c in self.circles}
-                | {p for w in self.polylines for p in w.points})
+                | {p for w in self.polylines + self.splines for p in w.points})
 
     def delete(self, name):
         """
@@ -477,15 +626,34 @@ class Sketch(Feature):
         (with its points if nothing else uses them and they are not explicit,
         as Inventor does), or a polyline's center segment ("W1.2": the
         polyline splits in two there, each keeping its own ends; a piece of
-        one point goes).
+        one point goes), or a generated curve (with what uses its end points,
+        as for a point), or a spline (with its points as for a polyline; a
+        point deleted out of a spline: it runs through the others).
         """
         kind = self.kind_of(name)
+        if kind == "curve":
+            ends = set(end_points(name))
+            gone = [line for line in self.lines if {line.start, line.end} & ends]
+            others = {p for line in gone for p in (line.start, line.end)}
+            self.lines = [line for line in self.lines if line not in gone]
+            self.circles = [c for c in self.circles if c.center not in ends]
+            for w in self.polylines:
+                others |= set(w.points)
+                w.take([i for i, p in enumerate(w.points) if p not in ends])
+            self.polylines = [w for w in self.polylines if len(w.points) >= 2]
+            others |= {p for w in self.splines for p in w.points}
+            self._drop_from_splines(ends)
+            self.curves = [c for c in self.curves if c.name != name]
+            used = self._used_points()
+            self.points = [p for p in self.points if p.explicit or p.name in used or p.name not in others]
+            return
         if kind == "point":
             self.lines = [line for line in self.lines if name not in (line.start, line.end)]
             self.circles = [c for c in self.circles if c.center != name]
             for w in self.polylines:
                 w.take([i for i, p in enumerate(w.points) if p != name])
             self.polylines = [w for w in self.polylines if len(w.points) >= 2]
+            self._drop_from_splines({name})
             self.points = [p for p in self.points if p.name != name]
             return
         mine = self.points_of(name)
@@ -502,8 +670,17 @@ class Sketch(Feature):
         self.lines = [line for line in self.lines if line.name != name]
         self.circles = [c for c in self.circles if c.name != name]
         self.polylines = [w for w in self.polylines if w.name != name]
+        self.splines = [w for w in self.splines if w.name != name]
         used = self._used_points()
         self.points = [p for p in self.points if p.explicit or p.name in used or p.name not in mine]
+
+    def _drop_from_splines(self, names):
+        """These points out of every spline (it runs on through the others); one left with < 2 goes."""
+        for w in self.splines:
+            w.points = [p for p in w.points if p not in names]
+            if len(w.points) < 4 and w.points[:1] == w.points[-1:] and len(w.points) > 1:
+                w.points = w.points[:-1]        # closed with too few points left: open
+        self.splines = [w for w in self.splines if len(w.points) >= 2]
 
     # =====================================================
     # Build
@@ -531,13 +708,38 @@ class Sketch(Feature):
         points = {}
         for p in self.points:
             points[p.name] = np.array([ctx.evaluate(p.x, f"point {p.name}"), ctx.evaluate(p.y, f"point {p.name}")])
+        shapes, broken = {}, []
+        for c in self.curves:
+            try:
+                shape = KINDS[c.kind].build(lambda arg, c=c: ctx.evaluate(c.args[arg], f"curve {c.name}: {arg}"),
+                                            lambda arg, c=c: c.args[arg], ctx.values)
+            except ValueError as error:         # CurveError or a formula's: no curve, no ends
+                broken.append(f"curve {c.name}: {error}" if isinstance(error, CurveError) else str(error))
+                continue
+            shapes[c.name] = shape
+            start, end = end_points(c.name)
+            points[start], points[end] = shape.start, shape.end
+        # What uses the ends of a curve that failed is left out (the sketch fails, but shows the rest).
+        lines = [line for line in self.lines if line.start in points and line.end in points]
+        circles = [c for c in self.circles if c.center in points]
+        polylines = [w for w in self.polylines if all(p in points for p in w.points)]
+        splines = []
+        for w in self.splines:
+            if not all(p in points for p in w.points):
+                continue
+            try:
+                shapes[w.name] = spline_shape([points[p] for p in w.points])
+            except CurveError as error:
+                broken.append(f"spline {w.name}: {error}")
+                continue
+            splines.append(w)
         radii = {}
-        for c in self.circles:
+        for c in circles:
             radii[c.name] = ctx.evaluate(c.radius, f"circle {c.name}: the radius")
             if radii[c.name] <= 0:
                 raise ValueError(f"circle {c.name}: the radius must be > 0, it is {radii[c.name]:g} mm")
-        outlines, broken = {}, []
-        for w in self.polylines:
+        outlines = {}
+        for w in polylines:
             widths = [ctx.evaluate(t, f"polyline {w.name}: the width at {p}") for p, t in zip(w.points, w.widths)]
             bend_radii = [ctx.evaluate(t, f"polyline {w.name}: the bend radius at {p}") if t.strip() else None
                           for p, t in zip(w.points, w.radii)]
@@ -546,8 +748,8 @@ class Sketch(Feature):
                                            bend_radii)
             except TraceError as error:
                 broken.append(f"polyline {w.name}: {error}")    # no outline; its center line still shows
-        result = SketchResult(frame, points, list(self.lines), {p.name for p in self.points if p.explicit},
-                              list(self.circles), radii, list(self.polylines), outlines)
+        result = SketchResult(frame, points, lines, {p.name for p in self.points if p.explicit},
+                              circles, radii, polylines, outlines, list(self.curves), shapes, splines)
         if broken:
             raise PartialBuild("; ".join(broken), result)
         return result
@@ -650,6 +852,33 @@ def _polyline(owner, i, row):
                           _text(owner, where, row, "width", True) if "width" in row else "1",
                           row.get("start", "flat"), row.get("end", "flat"), bends,
                           None if radii is None else [t if isinstance(t, str) else repr(t) for t in radii])
+
+
+def _spline(owner, i, row):
+    where = _where("spline", i, row)
+    _keys(owner, where, row, ("name", "points", "construction"))
+    points = row.get("points")
+    if not isinstance(points, list) or not all(isinstance(p, str) for p in points):
+        raise FeatureError(f"{owner}: {where}: points must be a list of point names")
+    return SketchSpline(_text(owner, where, row, "name"), list(points), _flag(owner, where, row, "construction"))
+
+
+def _curve(owner, i, row):
+    where = _where("curve", i, row)
+    kind = row.get("kind")
+    if kind not in KINDS:
+        raise FeatureError(f"{owner}: {where}: kind must be one of {', '.join(KINDS)}")
+    declared = KINDS[kind].ARGS
+    _keys(owner, where, row, ("name", "kind", "construction", *(a.name for a in declared)))
+    args = {}
+    for a in declared:
+        if a.name in row:
+            args[a.name] = _text(owner, where, row, a.name, True)
+        elif a.default is None:
+            raise FeatureError(f"{owner}: {where}: a {kind} needs {a.name} ({a.doc})")
+        else:
+            args[a.name] = a.default
+    return SketchCurve(_text(owner, where, row, "name"), kind, args, _flag(owner, where, row, "construction"))
 
 
 def _circle(owner, i, row):

@@ -45,6 +45,15 @@ def report(part, result):
             row["lines"] = [line.name + (" (construction)" if line.construction else "") for line in feature.lines]
             row["circles"] = [c.name + (" (construction)" if c.construction else "") for c in feature.circles]
             row["polylines"] = [w.name for w in feature.polylines]
+            row["curves"] = [{"name": c.name, "kind": c.kind, "args": dict(c.args),
+                              **({"start": [round(float(v), 6) for v in out.points[c.name + ".start"]],
+                                  "end": [round(float(v), 6) for v in out.points[c.name + ".end"]]}
+                                 if out is not None and c.name in out.shapes else {})}
+                             for c in feature.curves]
+            row["splines"] = [{"name": w.name, "points": list(w.points), "construction": w.construction,
+                               **({"spans": len(out.shapes[w.name].edges[0][2]) - 1}
+                                  if out is not None and w.name in out.shapes else {})}
+                              for w in feature.splines]
             if out is not None:
                 row["profiles"] = [{"key": list(r.key), "area": round(r.area, 6), "holes": len(r.holes)}
                                    for r in find_regions(out)]
@@ -80,6 +89,16 @@ def text(data):
         if f["type"] == "sketch":
             lines.append(f"    on {f['plane']}; {f['points']} points; lines {', '.join(f['lines']) or '-'}; "
                          f"circles {', '.join(f['circles']) or '-'}; polylines {', '.join(f['polylines']) or '-'}")
+            for c in f["curves"]:
+                ends = (f"from ({', '.join(f'{v:g}' for v in c['start'])}) to "
+                        f"({', '.join(f'{v:g}' for v in c['end'])})" if "start" in c else "not built")
+                args = ", ".join(f"{k} = {v}" for k, v in c["args"].items())
+                lines.append(f"    curve {c['name']} ({c['kind']}: {args}): {ends}; "
+                             f"its ends {c['name']}.start / {c['name']}.end")
+            for w in f["splines"]:
+                built = f"a B-spline of {w['spans']} span(s)" if "spans" in w else "not built"
+                lines.append(f"    spline {w['name']}{' (construction)' if w['construction'] else ''} through "
+                             f"{', '.join(w['points'])}: {built}")
             for r in f.get("profiles", []):
                 holes = f", {r['holes']} hole(s)" if r["holes"] else ""
                 lines.append(f"    profile {r['key']}: area {r['area']:g} mm2{holes}")

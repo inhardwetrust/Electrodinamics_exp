@@ -97,7 +97,20 @@ def names(text):
 
 def evaluate(text, values):
     """The value of a formula; `values` holds the parameters it may use."""
+    return compile_formula(text)(values)
+
+
+def compile_formula(text):
+    """
+    The formula parsed and checked once: a function values -> its value
+    (ExpressionError as evaluate); for a formula evaluated many times (a
+    curve's x(t), y(t)).
+    """
     tree = parse(text)
+    return lambda values: _value(tree, text, values)
+
+
+def _value(tree, text, values):
     try:
         result = _eval(tree.body, values)
     except ExpressionError:

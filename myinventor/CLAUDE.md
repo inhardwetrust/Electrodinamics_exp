@@ -55,7 +55,7 @@ Compatibility with Inventor or any other CAD is not a goal.
   `checks/check_step_export.py` (it reads the STEP with customcst's own
   reader, in a subprocess: both projects have a `geometry` package),
   `checks/check_sketch_polyline.py`, `checks/check_cli.py`,
-  `checks/check_deparametrize.py`.
+  `checks/check_deparametrize.py`, `checks/check_curves.py`.
 - Without the window: `main.py name.part.toml --report [--json]
   [--export-step out.step]` (`cli.py`: rebuild, report, STEP; no Qt).
   The skill `.claude/skills/mycad/SKILL.md` teaches an AI to draw by
@@ -124,6 +124,14 @@ Compatibility with Inventor or any other CAD is not a goal.
   no `TopTools_IndexedMapOfShape`, and no `TopTools_ListOfShape` for
   multi-argument booleans. Walk documents with `XCAFPrs_DocumentExplorer`,
   deduplicate in numpy, and fuse pairwise.
+- No point arrays either (`TColgp_Array1OfPnt`, `TColgp_HArray1OfPnt`,
+  2D ones): no B-spline can be made through the API. Write it as OCC's
+  BREP text and read it back from memory (`BRepTools.Read_s` takes a
+  `BytesIO`): `kernel._bspline`. Conics have their own `gp_*` (`gp_Parab`
+  + `GC_MakeArcOfParabola`).
+- `BRepGProp.VolumeProperties_s` is off on a B-spline face of many spans
+  (5e-5 by default, ±1.5 % with a tolerance). Split a copy at its knots
+  first (`ShapeUpgrade_ShapeDivideContinuity`, C3): `kernel.volume`.
 - Output float arguments are not returned (`GetLengthUnit_s` is unusable):
   set the document unit to mm before reading.
 - `Bnd_Box.Get()` is broken. Compute bounds from the triangles, or use

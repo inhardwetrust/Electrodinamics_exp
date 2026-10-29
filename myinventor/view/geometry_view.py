@@ -469,9 +469,20 @@ class _SketchVisual:
             blocks.append(result.center_segments_mm(w.name))
             centers += [f"{w.name}.{k}" for k in range(1, len(w.points))]
             self.seg_owner += centers[-(len(w.points) - 1):]
+        curves = getattr(result, "curves", [])
+        for c in curves:                                # generated curves, as their sampled polylines
+            pieces = result.curve_segments_mm(c.name)
+            blocks.append(pieces)
+            self.seg_owner += [c.name] * len(pieces)
+        splines = [w for w in getattr(result, "splines", []) if w.name in result.shapes]
+        for w in splines:                               # splines, the same way
+            pieces = result.curve_segments_mm(w.name)
+            blocks.append(pieces)
+            self.seg_owner += [w.name] * len(pieces)
         self.segments = np.concatenate(blocks) if blocks else np.zeros((0, 2, 3))     # (K, 2, 3) mm
-        # Dashed: construction lines and circles, and the polylines' center lines.
-        self.construction = {e.name for e in result.lines + result.circles if e.construction} | set(centers)
+        # Dashed: construction lines, circles, curves and splines, and the polylines' center lines.
+        self.construction = {e.name for e in result.lines + result.circles + curves + splines
+                             if e.construction} | set(centers)
         self.entity_names = set(self.seg_owner) | set(result.points) | set(self.polyline_names)
         self.point_names = list(result.points)
         self.point_pos = np.array([result.world_mm(n) for n in self.point_names]).reshape(-1, 3)

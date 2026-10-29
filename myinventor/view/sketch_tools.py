@@ -468,6 +468,11 @@ class PasteTool(SketchTool):
             segments += [[p, q] for p, q in zip(ring[:-1], ring[1:])]
         for names, *_ in self.clip.get("polylines", []):           # their center lines
             segments += [[points[p], points[q]] for p, q in zip(names[:-1], names[1:])]
+        for names, _ in self.clip.get("splines", []):
+            from model.curves import spline_function
+            at, length = spline_function(np.array([points[p] for p in names]))
+            curve = at(np.linspace(0.0, length, 32 * len(names) + 1))
+            segments += [[p, q] for p, q in zip(curve[:-1], curve[1:])]
         return np.array(segments).reshape(-1, 2, 2)
 
     def move(self, pos):
@@ -500,3 +505,42 @@ class TraceTool(LineTool):
     """
 
     name = "Polyline"
+
+
+class SplineTool(LineTool):
+    """
+    Sketch > Spline: a click per point, as Line; the chain is one
+    interpolating spline through them (add_line(a, b), the window: the first
+    pair makes it, each next one extends it; a click on its first point
+    closes it, smooth all around). The preview is the spline with the cursor
+    as its next point.
+    """
+
+    name = "Spline"
+
+    def _chain(self):
+        """(2,) mm points of the spline being drawn, up to its last point (or just the pending first click)."""
+        if self.last is None:
+            return []
+        if self.last[0] == "xy":
+            return [np.asarray(self.last[1], float)]
+        result = self.sketch_result()
+        for w in reversed(getattr(result, "splines", [])):
+            if w.points[-1] == self.last[1] and all(p in result.points for p in w.points):
+                return [result.points[p] for p in w.points]
+        return [result.points[self.last[1]]] if self.last[1] in result.points else []
+
+    def _show(self, pos, start_xy=None):
+        hit = super()._show(pos, start_xy)
+        chain = self._chain()
+        if hit is None or start_xy is None or len(chain) < 2:
+            return hit
+        from model.curves import CurveError, spline_function
+        try:
+            at, length = spline_function(np.array(chain + [hit[1]]))
+        except (CurveError, np.linalg.LinAlgError):
+            return hit
+        frame = self.sketch_result().frame
+        xy = at(np.linspace(0.0, length, 32 * len(chain) + 1))
+        self.line.set_data(pos=(frame.to_world(xy * MM) / MM).astype(np.float32))
+        return hit
