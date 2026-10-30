@@ -1,0 +1,833 @@
+{
+  "parameters": [
+    {
+      "name": "bw",
+      "formula": "50",
+      "value": 50.0
+    },
+    {
+      "name": "edge",
+      "formula": "-bw/2",
+      "value": -25.0
+    },
+    {
+      "name": "h",
+      "formula": "1.6",
+      "value": 1.6
+    },
+    {
+      "name": "t",
+      "formula": "0.035",
+      "value": 0.035
+    },
+    {
+      "name": "hd",
+      "formula": "h - 2 * t",
+      "value": 1.53
+    },
+    {
+      "name": "w50",
+      "formula": "2.93",
+      "value": 2.93
+    },
+    {
+      "name": "pin_d",
+      "formula": "0.9",
+      "value": 0.9
+    },
+    {
+      "name": "launch",
+      "formula": "4",
+      "value": 4.0
+    },
+    {
+      "name": "pad_w",
+      "formula": "1.1",
+      "value": 1.1
+    },
+    {
+      "name": "pad_len",
+      "formula": "launch",
+      "value": 4.0
+    },
+    {
+      "name": "taper",
+      "formula": "0.4",
+      "value": 0.4
+    },
+    {
+      "name": "gap",
+      "formula": "0.5",
+      "value": 0.5
+    },
+    {
+      "name": "gnd_xo",
+      "formula": "4.5",
+      "value": 4.5
+    },
+    {
+      "name": "gnd_len",
+      "formula": "launch",
+      "value": 4.0
+    },
+    {
+      "name": "via_d",
+      "formula": "0.5",
+      "value": 0.5
+    },
+    {
+      "name": "via_x",
+      "formula": "3.7",
+      "value": 3.7
+    },
+    {
+      "name": "via_y1",
+      "formula": "solder_in + via_d/2",
+      "value": 0.55
+    },
+    {
+      "name": "via_dy",
+      "formula": "1.6",
+      "value": 1.6
+    },
+    {
+      "name": "solder_in",
+      "formula": "0.3",
+      "value": 0.3
+    },
+    {
+      "name": "solder_h",
+      "formula": "pin_d / 2",
+      "value": 0.45
+    },
+    {
+      "name": "pl",
+      "formula": "11.7",
+      "value": 11.7
+    },
+    {
+      "name": "pw",
+      "formula": "16",
+      "value": 16.0
+    },
+    {
+      "name": "py",
+      "formula": "0",
+      "value": 0.0
+    },
+    {
+      "name": "inset",
+      "formula": "3.9",
+      "value": 3.9
+    },
+    {
+      "name": "inset_gap",
+      "formula": "0.7",
+      "value": 0.7
+    }
+  ],
+  "features": [
+    {
+      "name": "BoardSketch",
+      "type": "sketch",
+      "plane": "XY Plane",
+      "points": 4,
+      "lines": [
+        "L1",
+        "L2",
+        "L3",
+        "L4"
+      ],
+      "circles": [],
+      "polylines": [],
+      "arcs": [],
+      "curves": [],
+      "splines": [],
+      "offsets": [],
+      "profiles": [
+        {
+          "key": [
+            "L1",
+            "L2",
+            "L3",
+            "L4"
+          ],
+          "area": 2500.0,
+          "holes": 0
+        }
+      ],
+      "pieces": []
+    },
+    {
+      "name": "SubstrateExt",
+      "type": "extrude",
+      "sketch": "BoardSketch",
+      "profiles": [
+        [
+          "L1",
+          "L2",
+          "L3",
+          "L4"
+        ]
+      ],
+      "distance": "hd",
+      "operation": "new",
+      "body": "Substrate"
+    },
+    {
+      "name": "GroundSketch",
+      "type": "sketch",
+      "plane": "SubstrateExt:start",
+      "points": 4,
+      "lines": [
+        "L1",
+        "L2",
+        "L3",
+        "L4"
+      ],
+      "circles": [],
+      "polylines": [],
+      "arcs": [],
+      "curves": [],
+      "splines": [],
+      "offsets": [],
+      "profiles": [
+        {
+          "key": [
+            "L1",
+            "L2",
+            "L3",
+            "L4"
+          ],
+          "area": 2500.0,
+          "holes": 0
+        }
+      ],
+      "pieces": []
+    },
+    {
+      "name": "GroundExt",
+      "type": "extrude",
+      "sketch": "GroundSketch",
+      "profiles": [
+        [
+          "L1",
+          "L2",
+          "L3",
+          "L4"
+        ]
+      ],
+      "distance": "t",
+      "operation": "new",
+      "body": "Ground"
+    },
+    {
+      "name": "PatchSketch",
+      "type": "sketch",
+      "plane": "SubstrateExt:end",
+      "points": 8,
+      "lines": [
+        "KL1",
+        "KL2",
+        "KL3",
+        "KL4",
+        "KL5",
+        "KL6",
+        "KL7",
+        "KL8"
+      ],
+      "circles": [],
+      "polylines": [],
+      "arcs": [],
+      "curves": [],
+      "splines": [],
+      "offsets": [],
+      "profiles": [
+        {
+          "key": [
+            "KL1",
+            "KL2",
+            "KL3",
+            "KL4",
+            "KL5",
+            "KL6",
+            "KL7",
+            "KL8"
+          ],
+          "area": 170.313,
+          "holes": 0
+        }
+      ],
+      "pieces": []
+    },
+    {
+      "name": "PatchExt",
+      "type": "extrude",
+      "sketch": "PatchSketch",
+      "profiles": [
+        [
+          "KL1",
+          "KL2",
+          "KL3",
+          "KL4",
+          "KL5",
+          "KL6",
+          "KL7",
+          "KL8"
+        ]
+      ],
+      "distance": "t",
+      "operation": "new",
+      "body": "Patch"
+    },
+    {
+      "name": "TopSketch",
+      "type": "sketch",
+      "plane": "SubstrateExt:end",
+      "points": 12,
+      "lines": [
+        "RL1",
+        "RL2",
+        "RL3",
+        "RL4",
+        "GL1",
+        "GL2",
+        "GL3",
+        "GL4"
+      ],
+      "circles": [],
+      "polylines": [
+        "Trace"
+      ],
+      "arcs": [],
+      "curves": [],
+      "splines": [],
+      "offsets": [],
+      "profiles": [
+        {
+          "key": [
+            "Trace"
+          ],
+          "area": 59.8505,
+          "holes": 0
+        },
+        {
+          "key": [
+            "RL1",
+            "RL2",
+            "RL3",
+            "RL4"
+          ],
+          "area": 13.8,
+          "holes": 0
+        },
+        {
+          "key": [
+            "GL1",
+            "GL2",
+            "GL3",
+            "GL4"
+          ],
+          "area": 13.8,
+          "holes": 0
+        }
+      ],
+      "pieces": []
+    },
+    {
+      "name": "TraceExt",
+      "type": "extrude",
+      "sketch": "TopSketch",
+      "profiles": [
+        [
+          "Trace"
+        ]
+      ],
+      "distance": "t",
+      "operation": "new",
+      "body": "Trace"
+    },
+    {
+      "name": "TopGndExt",
+      "type": "extrude",
+      "sketch": "TopSketch",
+      "profiles": [
+        [
+          "RL1",
+          "RL2",
+          "RL3",
+          "RL4"
+        ],
+        [
+          "GL1",
+          "GL2",
+          "GL3",
+          "GL4"
+        ]
+      ],
+      "distance": "t",
+      "operation": "new",
+      "body": "TopGround"
+    },
+    {
+      "name": "ViaSketch",
+      "type": "sketch",
+      "plane": "XY Plane",
+      "points": 6,
+      "lines": [],
+      "circles": [
+        "C1",
+        "C2",
+        "C3",
+        "C4",
+        "C5",
+        "C6"
+      ],
+      "polylines": [],
+      "arcs": [],
+      "curves": [],
+      "splines": [],
+      "offsets": [],
+      "profiles": [
+        {
+          "key": [
+            "C1"
+          ],
+          "area": 0.196271,
+          "holes": 0
+        },
+        {
+          "key": [
+            "C3"
+          ],
+          "area": 0.196271,
+          "holes": 0
+        },
+        {
+          "key": [
+            "C4"
+          ],
+          "area": 0.196271,
+          "holes": 0
+        },
+        {
+          "key": [
+            "C5"
+          ],
+          "area": 0.196271,
+          "holes": 0
+        },
+        {
+          "key": [
+            "C6"
+          ],
+          "area": 0.196271,
+          "holes": 0
+        },
+        {
+          "key": [
+            "C2"
+          ],
+          "area": 0.196271,
+          "holes": 0
+        }
+      ],
+      "pieces": []
+    },
+    {
+      "name": "ViaExt",
+      "type": "extrude",
+      "sketch": "ViaSketch",
+      "profiles": [
+        [
+          "C1"
+        ],
+        [
+          "C2"
+        ],
+        [
+          "C3"
+        ],
+        [
+          "C4"
+        ],
+        [
+          "C5"
+        ],
+        [
+          "C6"
+        ]
+      ],
+      "distance": "hd",
+      "operation": "new",
+      "body": "Vias"
+    },
+    {
+      "name": "SMA",
+      "type": "import",
+      "file": "patch.files/realconnector.stp",
+      "bodies": [
+        "SMA:connector_outer",
+        "SMA:connector_outer_2",
+        "SMA:connector_dielectric",
+        "SMA:connector_wire",
+        "SMA:Volumenk\u00f6rper16"
+      ]
+    },
+    {
+      "name": "PinSolderSketch",
+      "type": "sketch",
+      "plane": "TraceExt:end",
+      "points": 4,
+      "lines": [
+        "L1",
+        "L2",
+        "L3",
+        "L4"
+      ],
+      "circles": [],
+      "polylines": [],
+      "arcs": [],
+      "curves": [],
+      "splines": [],
+      "offsets": [],
+      "profiles": [
+        {
+          "key": [
+            "L1",
+            "L2",
+            "L3",
+            "L4"
+          ],
+          "area": 3.06,
+          "holes": 0
+        }
+      ],
+      "pieces": []
+    },
+    {
+      "name": "PinSolderExt",
+      "type": "extrude",
+      "sketch": "PinSolderSketch",
+      "profiles": [
+        [
+          "L1",
+          "L2",
+          "L3",
+          "L4"
+        ]
+      ],
+      "distance": "solder_h",
+      "operation": "new",
+      "body": "PinSolder"
+    }
+  ],
+  "bodies": [
+    {
+      "name": "Substrate",
+      "volume": 3825.0,
+      "solids": 1,
+      "bounds": [
+        [
+          -25.0,
+          -25.0,
+          0.0
+        ],
+        [
+          25.0,
+          25.0,
+          1.53
+        ]
+      ],
+      "size": [
+        50.0,
+        50.0,
+        1.53
+      ],
+      "color": "#2e7d32"
+    },
+    {
+      "name": "Ground",
+      "volume": 87.5,
+      "solids": 1,
+      "bounds": [
+        [
+          -25.0,
+          -25.0,
+          -0.035
+        ],
+        [
+          25.0,
+          25.0,
+          0.0
+        ]
+      ],
+      "size": [
+        50.0,
+        50.0,
+        0.035
+      ],
+      "color": "#d4a017"
+    },
+    {
+      "name": "Patch",
+      "volume": 5.960955,
+      "solids": 1,
+      "bounds": [
+        [
+          -8.0,
+          -5.85,
+          1.53
+        ],
+        [
+          8.0,
+          5.85,
+          1.565
+        ]
+      ],
+      "size": [
+        16.0,
+        11.7,
+        0.035
+      ],
+      "color": "#d4a017"
+    },
+    {
+      "name": "Trace",
+      "volume": 2.094767,
+      "solids": 1,
+      "bounds": [
+        [
+          -1.465,
+          -25.0,
+          1.53
+        ],
+        [
+          1.465,
+          -1.95,
+          1.565
+        ]
+      ],
+      "size": [
+        2.93,
+        23.05,
+        0.035
+      ],
+      "color": "#d4a017"
+    },
+    {
+      "name": "TopGround",
+      "volume": 0.966,
+      "solids": 2,
+      "bounds": [
+        [
+          -4.5,
+          -25.0,
+          1.53
+        ],
+        [
+          4.5,
+          -21.0,
+          1.565
+        ]
+      ],
+      "size": [
+        9.0,
+        4.0,
+        0.035
+      ],
+      "color": "#d4a017"
+    },
+    {
+      "name": "Vias",
+      "volume": 1.802489,
+      "solids": 6,
+      "bounds": [
+        [
+          -3.95,
+          -24.7,
+          0.0
+        ],
+        [
+          3.95,
+          -21.0,
+          1.53
+        ]
+      ],
+      "size": [
+        7.9,
+        3.7,
+        1.53
+      ],
+      "color": "#c0c0c0"
+    },
+    {
+      "name": "SMA:connector_outer",
+      "volume": 2.187806,
+      "solids": 1,
+      "bounds": [
+        [
+          -0.5,
+          -25.375612,
+          1.555
+        ],
+        [
+          0.5,
+          -21.0,
+          2.055
+        ]
+      ],
+      "size": [
+        1.0,
+        4.375612,
+        0.5
+      ],
+      "color": null
+    },
+    {
+      "name": "SMA:connector_outer_2",
+      "volume": 124.233167,
+      "solids": 1,
+      "bounds": [
+        [
+          -3.25,
+          -34.5,
+          -1.235
+        ],
+        [
+          3.25,
+          -21.0,
+          5.265
+        ]
+      ],
+      "size": [
+        6.5,
+        13.5,
+        6.5
+      ],
+      "color": null
+    },
+    {
+      "name": "SMA:connector_dielectric",
+      "volume": 120.839202,
+      "solids": 1,
+      "bounds": [
+        [
+          -2.11,
+          -34.5,
+          -0.095
+        ],
+        [
+          2.11,
+          -25.0,
+          4.125
+        ]
+      ],
+      "size": [
+        4.22,
+        9.5,
+        4.22
+      ],
+      "color": null
+    },
+    {
+      "name": "SMA:connector_wire",
+      "volume": 14.578993,
+      "solids": 1,
+      "bounds": [
+        [
+          -0.635,
+          -34.5,
+          1.38
+        ],
+        [
+          0.635,
+          -21.0,
+          2.65
+        ]
+      ],
+      "size": [
+        1.27,
+        13.5,
+        1.27
+      ],
+      "color": null
+    },
+    {
+      "name": "SMA:Volumenk\u00f6rper16",
+      "volume": 22.480059,
+      "solids": 1,
+      "bounds": [
+        [
+          -2.675,
+          -35.5,
+          -0.66
+        ],
+        [
+          2.675,
+          -34.5,
+          4.69
+        ]
+      ],
+      "size": [
+        5.35,
+        1.0,
+        5.35
+      ],
+      "color": null
+    },
+    {
+      "name": "PinSolder",
+      "volume": 1.377,
+      "solids": 1,
+      "bounds": [
+        [
+          -0.45,
+          -24.7,
+          1.565
+        ],
+        [
+          0.45,
+          -21.3,
+          2.015
+        ]
+      ],
+      "size": [
+        0.9,
+        3.4,
+        0.45
+      ],
+      "color": "#b0b0b0"
+    }
+  ],
+  "groups": [
+    {
+      "name": "SMA",
+      "bodies": [
+        "SMA:connector_outer",
+        "SMA:connector_outer_2",
+        "SMA:connector_dielectric",
+        "SMA:connector_wire",
+        "SMA:Volumenk\u00f6rper16"
+      ]
+    }
+  ],
+  "transforms": [
+    {
+      "name": "PlaceSMA",
+      "type": "move",
+      "targets": [
+        "group:SMA"
+      ],
+      "offset": [
+        "0.5",
+        "edge + launch",
+        "hd + t + pin_d/2"
+      ],
+      "axis": "Y Axis",
+      "angle": "90",
+      "what": "offset (0.5, edge + launch, hd + t + pin_d/2) mm, turned 90 deg around Y Axis first"
+    }
+  ],
+  "ok": true
+}

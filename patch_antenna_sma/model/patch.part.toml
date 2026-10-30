@@ -1,0 +1,635 @@
+format = "mycad-part"
+version = 1
+
+[[parameter]]
+name = "bw"
+formula = "50"
+comment = "the board's side (x and y), centered on the origin"
+
+[[parameter]]
+name = "edge"
+formula = "-bw/2"
+comment = "the board's edge with the connector (y)"
+
+[[parameter]]
+name = "h"
+formula = "1.6"
+comment = "the board's total thickness"
+
+[[parameter]]
+name = "t"
+formula = "0.035"
+comment = "copper (1 oz) on each side"
+
+[[parameter]]
+name = "hd"
+formula = "h - 2 * t"
+comment = "FR4 between the copper layers"
+
+[[parameter]]
+name = "w50"
+formula = "2.93"
+comment = "50 Ohm microstrip width (Hammerstad, eps_r 4.3, h 1.53, t 0.035; Z0 profile 49.9)"
+
+[[parameter]]
+name = "pin_d"
+formula = "0.9"
+comment = "the connector's pin diameter where it lies on the board"
+
+[[parameter]]
+name = "launch"
+formula = "4"
+comment = "how far the pin and the legs reach over the board from its edge"
+
+[[parameter]]
+name = "pad_w"
+formula = "1.1"
+comment = "the trace's width under the pin (launch tuning)"
+
+[[parameter]]
+name = "pad_len"
+formula = "launch"
+comment = "the length of the trace at pad_w from the edge"
+
+[[parameter]]
+name = "taper"
+formula = "0.4"
+comment = "the taper from pad_w to w50"
+
+[[parameter]]
+name = "gap"
+formula = "0.5"
+comment = "the gap from the trace under the pin to the top ground pads"
+
+[[parameter]]
+name = "gnd_xo"
+formula = "4.5"
+comment = "the top ground pads' outer edge (x)"
+
+[[parameter]]
+name = "gnd_len"
+formula = "launch"
+comment = "the top ground pads' length from the edge"
+
+[[parameter]]
+name = "via_d"
+formula = "0.5"
+comment = "the vias' diameter (filled, PEC)"
+
+[[parameter]]
+name = "via_x"
+formula = "3.7"
+comment = "the vias' x (both sides)"
+
+[[parameter]]
+name = "via_y1"
+formula = "solder_in + via_d/2"
+comment = "the first via row from the edge: its edge on the solder's start (no tiny cells)"
+
+[[parameter]]
+name = "via_dy"
+formula = "1.6"
+comment = "the via pitch along y"
+
+[[parameter]]
+name = "solder_in"
+formula = "0.3"
+comment = "the pin's solder: set back from both ends of the pin over the board"
+
+[[parameter]]
+name = "solder_h"
+formula = "pin_d / 2"
+comment = "the pin's solder: from the trace's top up to the pin's axis"
+
+[[parameter]]
+name = "pl"
+formula = "11.7"
+comment = "the patch's resonant length (y): tuned, fine mesh S11 min at 5.750 GHz (sweeps/patch_r2)"
+
+[[parameter]]
+name = "pw"
+formula = "16"
+comment = "the patch's width (x): c / (2 f) sqrt(2 / (eps_r + 1))"
+
+[[parameter]]
+name = "py"
+formula = "0"
+comment = "the patch's center (y)"
+
+[[parameter]]
+name = "inset"
+formula = "3.9"
+comment = "the inset depth: cos^2(pi d / L) = 50 / R_edge, R_edge ~250 Ohm"
+
+[[parameter]]
+name = "inset_gap"
+formula = "0.7"
+comment = "the gap on each side of the line in the inset"
+
+[[feature]]
+name = "BoardSketch"
+type = "sketch"
+plane = "XY Plane"
+
+[[feature.point]]
+name = "P1"
+x = "-bw/2"
+y = "-bw/2"
+
+[[feature.point]]
+name = "P2"
+x = "bw/2"
+y = "-bw/2"
+
+[[feature.point]]
+name = "P3"
+x = "bw/2"
+y = "bw/2"
+
+[[feature.point]]
+name = "P4"
+x = "-bw/2"
+y = "bw/2"
+
+[[feature.line]]
+name = "L1"
+start = "P1"
+end = "P2"
+
+[[feature.line]]
+name = "L2"
+start = "P2"
+end = "P3"
+
+[[feature.line]]
+name = "L3"
+start = "P3"
+end = "P4"
+
+[[feature.line]]
+name = "L4"
+start = "P4"
+end = "P1"
+
+[[feature]]
+name = "SubstrateExt"
+type = "extrude"
+sketch = "BoardSketch"
+distance = "hd"
+operation = "new"
+body = "Substrate"
+profiles = [["L1", "L2", "L3", "L4"]]
+
+[[feature]]
+name = "GroundSketch"
+type = "sketch"
+plane = "SubstrateExt:start"
+
+[[feature.point]]
+name = "P1"
+x = "-bw/2"
+y = "-bw/2"
+
+[[feature.point]]
+name = "P2"
+x = "bw/2"
+y = "-bw/2"
+
+[[feature.point]]
+name = "P3"
+x = "bw/2"
+y = "bw/2"
+
+[[feature.point]]
+name = "P4"
+x = "-bw/2"
+y = "bw/2"
+
+[[feature.line]]
+name = "L1"
+start = "P1"
+end = "P2"
+
+[[feature.line]]
+name = "L2"
+start = "P2"
+end = "P3"
+
+[[feature.line]]
+name = "L3"
+start = "P3"
+end = "P4"
+
+[[feature.line]]
+name = "L4"
+start = "P4"
+end = "P1"
+
+[[feature]]
+name = "GroundExt"
+type = "extrude"
+sketch = "GroundSketch"
+distance = "t"
+operation = "new"
+body = "Ground"
+profiles = [["L1", "L2", "L3", "L4"]]
+
+[[feature]]
+name = "PatchSketch"
+type = "sketch"
+plane = "SubstrateExt:end"
+
+[[feature.point]]
+name = "KP1"
+x = "-pw/2"
+y = "py - pl/2"
+
+[[feature.point]]
+name = "KP2"
+x = "-(w50/2 + inset_gap)"
+y = "py - pl/2"
+
+[[feature.point]]
+name = "KP3"
+x = "-(w50/2 + inset_gap)"
+y = "py - pl/2 + inset"
+
+[[feature.point]]
+name = "KP4"
+x = "w50/2 + inset_gap"
+y = "py - pl/2 + inset"
+
+[[feature.point]]
+name = "KP5"
+x = "w50/2 + inset_gap"
+y = "py - pl/2"
+
+[[feature.point]]
+name = "KP6"
+x = "pw/2"
+y = "py - pl/2"
+
+[[feature.point]]
+name = "KP7"
+x = "pw/2"
+y = "py + pl/2"
+
+[[feature.point]]
+name = "KP8"
+x = "-pw/2"
+y = "py + pl/2"
+
+[[feature.line]]
+name = "KL1"
+start = "KP1"
+end = "KP2"
+
+[[feature.line]]
+name = "KL2"
+start = "KP2"
+end = "KP3"
+
+[[feature.line]]
+name = "KL3"
+start = "KP3"
+end = "KP4"
+
+[[feature.line]]
+name = "KL4"
+start = "KP4"
+end = "KP5"
+
+[[feature.line]]
+name = "KL5"
+start = "KP5"
+end = "KP6"
+
+[[feature.line]]
+name = "KL6"
+start = "KP6"
+end = "KP7"
+
+[[feature.line]]
+name = "KL7"
+start = "KP7"
+end = "KP8"
+
+[[feature.line]]
+name = "KL8"
+start = "KP8"
+end = "KP1"
+
+[[feature]]
+name = "PatchExt"
+type = "extrude"
+sketch = "PatchSketch"
+distance = "t"
+operation = "new"
+body = "Patch"
+profiles = [["KL1", "KL2", "KL3", "KL4", "KL5", "KL6", "KL7", "KL8"]]
+
+[[feature]]
+name = "TopSketch"
+type = "sketch"
+plane = "SubstrateExt:end"
+
+[[feature.point]]
+name = "F1"
+x = "0"
+y = "edge"
+
+[[feature.point]]
+name = "F2"
+x = "0"
+y = "edge + pad_len"
+
+[[feature.point]]
+name = "F3"
+x = "0"
+y = "edge + pad_len + taper"
+
+[[feature.point]]
+name = "F4"
+x = "0"
+y = "py - pl/2 + inset"
+
+[[feature.point]]
+name = "RP1"
+x = "pad_w/2 + gap"
+y = "edge"
+
+[[feature.point]]
+name = "RP2"
+x = "gnd_xo"
+y = "edge"
+
+[[feature.point]]
+name = "RP3"
+x = "gnd_xo"
+y = "edge + gnd_len"
+
+[[feature.point]]
+name = "RP4"
+x = "pad_w/2 + gap"
+y = "edge + gnd_len"
+
+[[feature.point]]
+name = "GP1"
+x = "-gnd_xo"
+y = "edge"
+
+[[feature.point]]
+name = "GP2"
+x = "-pad_w/2 - gap"
+y = "edge"
+
+[[feature.point]]
+name = "GP3"
+x = "-pad_w/2 - gap"
+y = "edge + gnd_len"
+
+[[feature.point]]
+name = "GP4"
+x = "-gnd_xo"
+y = "edge + gnd_len"
+
+[[feature.line]]
+name = "RL1"
+start = "RP1"
+end = "RP2"
+
+[[feature.line]]
+name = "RL2"
+start = "RP2"
+end = "RP3"
+
+[[feature.line]]
+name = "RL3"
+start = "RP3"
+end = "RP4"
+
+[[feature.line]]
+name = "RL4"
+start = "RP4"
+end = "RP1"
+
+[[feature.line]]
+name = "GL1"
+start = "GP1"
+end = "GP2"
+
+[[feature.line]]
+name = "GL2"
+start = "GP2"
+end = "GP3"
+
+[[feature.line]]
+name = "GL3"
+start = "GP3"
+end = "GP4"
+
+[[feature.line]]
+name = "GL4"
+start = "GP4"
+end = "GP1"
+
+[[feature.polyline]]
+name = "Trace"
+points = ["F1", "F2", "F3", "F4"]
+widths = ["pad_w", "pad_w", "w50", "w50"]
+width = "w50"
+start = "flat"
+end = "flat"
+
+[[feature]]
+name = "TraceExt"
+type = "extrude"
+sketch = "TopSketch"
+distance = "t"
+operation = "new"
+body = "Trace"
+profiles = [["Trace"]]
+
+[[feature]]
+name = "TopGndExt"
+type = "extrude"
+sketch = "TopSketch"
+distance = "t"
+operation = "new"
+body = "TopGround"
+profiles = [["RL1", "RL2", "RL3", "RL4"], ["GL1", "GL2", "GL3", "GL4"]]
+
+[[feature]]
+name = "ViaSketch"
+type = "sketch"
+plane = "XY Plane"
+
+[[feature.point]]
+name = "V1"
+x = "via_x"
+y = "edge + via_y1 + 0 * via_dy"
+
+[[feature.point]]
+name = "V2"
+x = "via_x"
+y = "edge + via_y1 + 1 * via_dy"
+
+[[feature.point]]
+name = "V3"
+x = "via_x"
+y = "edge + via_y1 + 2 * via_dy"
+
+[[feature.point]]
+name = "V4"
+x = "-via_x"
+y = "edge + via_y1 + 0 * via_dy"
+
+[[feature.point]]
+name = "V5"
+x = "-via_x"
+y = "edge + via_y1 + 1 * via_dy"
+
+[[feature.point]]
+name = "V6"
+x = "-via_x"
+y = "edge + via_y1 + 2 * via_dy"
+
+[[feature.circle]]
+name = "C1"
+center = "V1"
+radius = "via_d/2"
+
+[[feature.circle]]
+name = "C2"
+center = "V2"
+radius = "via_d/2"
+
+[[feature.circle]]
+name = "C3"
+center = "V3"
+radius = "via_d/2"
+
+[[feature.circle]]
+name = "C4"
+center = "V4"
+radius = "via_d/2"
+
+[[feature.circle]]
+name = "C5"
+center = "V5"
+radius = "via_d/2"
+
+[[feature.circle]]
+name = "C6"
+center = "V6"
+radius = "via_d/2"
+
+[[feature]]
+name = "ViaExt"
+type = "extrude"
+sketch = "ViaSketch"
+distance = "hd"
+operation = "new"
+body = "Vias"
+profiles = [["C1"], ["C2"], ["C3"], ["C4"], ["C5"], ["C6"]]
+
+[[feature]]
+name = "SMA"
+type = "import"
+file = "patch.files/realconnector.stp"
+sha256 = "b3ca3a28cd2ffd839aac35b41e640c4d4876db66c2ab465d82391ee13584e0fd"
+bodies = ["SMA:connector_outer", "SMA:connector_outer_2", "SMA:connector_dielectric", "SMA:connector_wire", "SMA:Volumenkörper16"]
+
+[[feature]]
+name = "PinSolderSketch"
+type = "sketch"
+plane = "TraceExt:end"
+
+[[feature.point]]
+name = "P1"
+x = "-pin_d/2"
+y = "edge + solder_in"
+
+[[feature.point]]
+name = "P2"
+x = "pin_d/2"
+y = "edge + solder_in"
+
+[[feature.point]]
+name = "P3"
+x = "pin_d/2"
+y = "edge + launch - solder_in"
+
+[[feature.point]]
+name = "P4"
+x = "-pin_d/2"
+y = "edge + launch - solder_in"
+
+[[feature.line]]
+name = "L1"
+start = "P1"
+end = "P2"
+
+[[feature.line]]
+name = "L2"
+start = "P2"
+end = "P3"
+
+[[feature.line]]
+name = "L3"
+start = "P3"
+end = "P4"
+
+[[feature.line]]
+name = "L4"
+start = "P4"
+end = "P1"
+
+[[feature]]
+name = "PinSolderExt"
+type = "extrude"
+sketch = "PinSolderSketch"
+distance = "solder_h"
+operation = "new"
+body = "PinSolder"
+profiles = [["L1", "L2", "L3", "L4"]]
+
+[[body]]
+name = "Substrate"
+color = "#2e7d32"
+
+[[body]]
+name = "Ground"
+color = "#d4a017"
+
+[[body]]
+name = "Patch"
+color = "#d4a017"
+
+[[body]]
+name = "Trace"
+color = "#d4a017"
+
+[[body]]
+name = "TopGround"
+color = "#d4a017"
+
+[[body]]
+name = "Vias"
+color = "#c0c0c0"
+
+[[body]]
+name = "PinSolder"
+color = "#b0b0b0"
+
+[[group]]
+name = "SMA"
+bodies = ["SMA:connector_outer", "SMA:connector_outer_2", "SMA:connector_dielectric", "SMA:connector_wire", "SMA:Volumenkörper16"]
+
+[[transform]]
+name = "PlaceSMA"
+type = "move"
+offset = ["0.5", "edge + launch", "hd + t + pin_d/2"]
+axis = "Y Axis"
+angle = "90"
+targets = ["group:SMA"]

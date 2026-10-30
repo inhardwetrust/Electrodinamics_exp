@@ -51,3 +51,10 @@ The first project of this kind: it also proves the workflow.
 - 2026-10-30: the folder made; the connector in `parts/`. The tools get
   their part of the bridge first (customcst: `TASK_mycad_bridge.md`;
   myCad: `--set` in its CLI). Then the prompt (`prompt.md`) and the run.
+- 2026-10-30: the patch at 5.75 GHz done (notes/log.md has every round):
+  `model/patch.part.toml` (pl 11.7, pw 16, inset 3.9 / gap 0.7, the launch
+  pad_w 1.1 / gap 0.5 / taper 0.4, top ground pads with 6 vias), the final
+  project `sim/patch_final` (Run 2: S11 -41.1 dB at 5.756 GHz, -34.3 at
+  5.75, -10 dB 5.650-5.869; D 8.05, G 5.63 dBi, beam 11 deg toward the
+  feed). The launch test bench: `model/launch.part.toml`, `sim/launch`,
+  `sweeps/launch_r*`. The part files are written by `model/build_*.py`.

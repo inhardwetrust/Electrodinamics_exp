@@ -1,0 +1,105 @@
+# customcst project for v3.step
+
+[simulation]
+f_min = 4.0   # GHz
+f_max = 7.5   # GHz
+padding = 5.0   # mm
+trim_pulse = false
+accuracy = "-40"   # dB
+excite = "SMA:Volumenkörper16"
+
+[mesh]
+cells_per_wavelength = 30.0
+cells_per_feature = 4.0
+max_ratio = 1.3
+min_step = 0.0   # mm
+slanted = true
+
+[farfield]
+frequencies = ""   # GHz
+
+[bodies.Ground]
+type = "pec"
+
+[bodies.LinePort]
+type = "waveport"
+
+[bodies.PinSolder]
+type = "pec"
+
+[bodies."SMA:Volumenkörper16"]
+type = "waveport"
+
+[bodies."SMA:connector_dielectric"]
+type = "dielectric"
+material = "Custom"
+eps_r = 2.1
+tan_d = 0.0002
+f_ref = 5.75   # GHz
+mu_r = 1.0
+
+[bodies."SMA:connector_outer"]
+type = "pec"
+
+[bodies."SMA:connector_outer_2"]
+type = "pec"
+
+[bodies."SMA:connector_wire"]
+type = "pec"
+
+[bodies.Substrate]
+type = "dielectric"
+material = "Custom"
+eps_r = 4.3
+tan_d = 0.02
+f_ref = 5.75   # GHz
+mu_r = 1.0
+
+[bodies.TopGround]
+type = "pec"
+
+[bodies.Trace]
+type = "pec"
+
+[bodies.Vias]
+type = "pec"
+
+[view]
+up = "z"
+edges = true
+xray = false
+ref_planes = true
+mesh = false
+materials = false
+section = false
+flip = false
+plane = "z"
+at = 3.3825   # mm
+hidden = []
+camera_center = [0.0, -19.75, 3.3825]   # mm
+camera_distance = 55.5869   # mm
+camera_rotation = [0.642788, -0.766044, 0.0, 0.694272, 0.582563, -0.422618, 0.323744, 0.271654, 0.906308]
+
+[z0path]
+axis = "z"
+at = 1.53   # mm
+half_width = 2.0   # mm
+points = []   # mm
+
+[materials.Default]
+eps_r = 1.0
+tan_d = 0.0
+f_ref = 10.0   # GHz
+mu_r = 1.0
+
+[materials.FR4]
+eps_r = 4.3
+tan_d = 0.02
+f_ref = 3.0   # GHz
+mu_r = 1.0
+
+[materials.PTFE]
+eps_r = 2.1
+tan_d = 0.0002
+f_ref = 10.0   # GHz
+mu_r = 1.0

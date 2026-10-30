@@ -57,7 +57,7 @@ def status():
 
 
 def sync_code():
-    files = subprocess.run(["git", "ls-files", "."], capture_output=True, text=True, check=True).stdout.split()
+    files = subprocess.run(["git", "ls-files", "."], capture_output=True, text=True, check=True).stdout.splitlines()
     files = [f for f in files if not f.startswith(CODE_EXCLUDE) and not f.endswith(".png")]
     stamp = time.strftime("%Y%m%d-%H%M%S")
     with sync.session(_config()) as r:

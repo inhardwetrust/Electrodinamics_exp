@@ -1,0 +1,291 @@
+format = "mycad-part"
+version = 1
+
+[[parameter]]
+name = "bw"
+formula = "50"
+comment = "the board's side (x and y)"
+
+[[parameter]]
+name = "h"
+formula = "1.6"
+comment = "the board's total thickness"
+
+[[parameter]]
+name = "t"
+formula = "0.035"
+comment = "copper (1 oz) on each side"
+
+[[parameter]]
+name = "hd"
+formula = "h - 2 * t"
+comment = "FR4 between the copper layers"
+
+[[parameter]]
+name = "w"
+formula = "4"
+comment = "the trace's width"
+
+[[parameter]]
+name = "pin_d"
+formula = "0.9"
+comment = "the connector's pin diameter where it lies on the board"
+
+[[parameter]]
+name = "launch"
+formula = "4"
+comment = "how far the pin and the legs reach over the board from its edge"
+
+[[parameter]]
+name = "taper"
+formula = "2"
+comment = "the trace's taper from w to pin_d, before the pin's tip"
+
+[[parameter]]
+name = "solder_in"
+formula = "0.3"
+comment = "the pin's solder: set back from both ends of the pin over the board"
+
+[[parameter]]
+name = "solder_h"
+formula = "pin_d / 2"
+comment = "the pin's solder: from the trace's top up to the pin's axis"
+
+[[feature]]
+name = "BoardSketch"
+type = "sketch"
+plane = "XY Plane"
+
+[[feature.point]]
+name = "P1"
+x = "-bw/2"
+y = "-bw/2"
+
+[[feature.point]]
+name = "P2"
+x = "bw/2"
+y = "-bw/2"
+
+[[feature.point]]
+name = "P3"
+x = "bw/2"
+y = "bw/2"
+
+[[feature.point]]
+name = "P4"
+x = "-bw/2"
+y = "bw/2"
+
+[[feature.line]]
+name = "L1"
+start = "P1"
+end = "P2"
+
+[[feature.line]]
+name = "L2"
+start = "P2"
+end = "P3"
+
+[[feature.line]]
+name = "L3"
+start = "P3"
+end = "P4"
+
+[[feature.line]]
+name = "L4"
+start = "P4"
+end = "P1"
+
+[[feature]]
+name = "SubstrateExt"
+type = "extrude"
+sketch = "BoardSketch"
+distance = "hd"
+operation = "new"
+body = "Substrate"
+profiles = [["L1", "L2", "L3", "L4"]]
+
+[[feature]]
+name = "GroundSketch"
+type = "sketch"
+plane = "SubstrateExt:start"
+
+[[feature.point]]
+name = "P1"
+x = "-bw/2"
+y = "-bw/2"
+
+[[feature.point]]
+name = "P2"
+x = "bw/2"
+y = "-bw/2"
+
+[[feature.point]]
+name = "P3"
+x = "bw/2"
+y = "bw/2"
+
+[[feature.point]]
+name = "P4"
+x = "-bw/2"
+y = "bw/2"
+
+[[feature.line]]
+name = "L1"
+start = "P1"
+end = "P2"
+
+[[feature.line]]
+name = "L2"
+start = "P2"
+end = "P3"
+
+[[feature.line]]
+name = "L3"
+start = "P3"
+end = "P4"
+
+[[feature.line]]
+name = "L4"
+start = "P4"
+end = "P1"
+
+[[feature]]
+name = "GroundExt"
+type = "extrude"
+sketch = "GroundSketch"
+distance = "t"
+operation = "new"
+body = "Ground"
+profiles = [["L1", "L2", "L3", "L4"]]
+
+[[feature]]
+name = "TraceSketch"
+type = "sketch"
+plane = "SubstrateExt:end"
+
+[[feature.point]]
+name = "F1"
+x = "0"
+y = "0"
+
+[[feature.point]]
+name = "F2"
+x = "0"
+y = "-bw/2 + launch + taper"
+
+[[feature.point]]
+name = "F3"
+x = "0"
+y = "-bw/2 + launch"
+
+[[feature.point]]
+name = "F4"
+x = "0"
+y = "-bw/2"
+
+[[feature.polyline]]
+name = "Trace"
+points = ["F1", "F2", "F3", "F4"]
+widths = ["w", "w", "pin_d", "pin_d"]
+width = "w"
+start = "flat"
+end = "flat"
+
+[[feature]]
+name = "TraceExt"
+type = "extrude"
+sketch = "TraceSketch"
+distance = "t"
+operation = "new"
+body = "Trace"
+profiles = [["Trace"]]
+
+[[feature]]
+name = "SMA"
+type = "import"
+file = "pcb_sma.files/realconnector.stp"
+sha256 = "b3ca3a28cd2ffd839aac35b41e640c4d4876db66c2ab465d82391ee13584e0fd"
+bodies = ["SMA:connector_outer", "SMA:connector_outer_2", "SMA:connector_dielectric", "SMA:connector_wire", "SMA:Volumenkörper16"]
+
+[[feature]]
+name = "PinSolderSketch"
+type = "sketch"
+plane = "TraceExt:end"
+
+[[feature.point]]
+name = "P1"
+x = "-pin_d/2"
+y = "-bw/2 + solder_in"
+
+[[feature.point]]
+name = "P2"
+x = "pin_d/2"
+y = "-bw/2 + solder_in"
+
+[[feature.point]]
+name = "P3"
+x = "pin_d/2"
+y = "-bw/2 + launch - solder_in"
+
+[[feature.point]]
+name = "P4"
+x = "-pin_d/2"
+y = "-bw/2 + launch - solder_in"
+
+[[feature.line]]
+name = "L1"
+start = "P1"
+end = "P2"
+
+[[feature.line]]
+name = "L2"
+start = "P2"
+end = "P3"
+
+[[feature.line]]
+name = "L3"
+start = "P3"
+end = "P4"
+
+[[feature.line]]
+name = "L4"
+start = "P4"
+end = "P1"
+
+[[feature]]
+name = "PinSolderExt"
+type = "extrude"
+sketch = "PinSolderSketch"
+distance = "solder_h"
+operation = "new"
+body = "PinSolder"
+profiles = [["L1", "L2", "L3", "L4"]]
+
+[[body]]
+name = "Substrate"
+color = "#2e7d32"
+
+[[body]]
+name = "Ground"
+color = "#d4a017"
+
+[[body]]
+name = "Trace"
+color = "#d4a017"
+
+[[body]]
+name = "PinSolder"
+color = "#b0b0b0"
+
+[[group]]
+name = "SMA"
+bodies = ["SMA:connector_outer", "SMA:connector_outer_2", "SMA:connector_dielectric", "SMA:connector_wire", "SMA:Volumenkörper16"]
+
+[[transform]]
+name = "PlaceSMA"
+type = "move"
+offset = ["0.5", "-bw/2 + launch", "hd + t + pin_d/2"]
+axis = "Y Axis"
+angle = "90"
+targets = ["group:SMA"]

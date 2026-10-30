@@ -1,0 +1,7 @@
+# runs stay out of git (as in customcst): each model's results and run status
+*.results/
+*.npz
+*.status.json
+*.tmp
+# a sweep's variant STEPs are made again from the part with --set (the .set files)
+sweeps/**/*.step
