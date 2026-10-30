@@ -21,6 +21,10 @@ Context for future Claude sessions. Read this first, then `ARCHITECTURE.md`.
   `checks/check_remote_run.py` adds an emulated shell running the real
   run.py. The user's server is real: never start, stop or delete there
   without being asked.
+- The user's open window can be driven with `tools/ui.py` (ARCHITECTURE
+  "Control by Claude"): `lock` with a message before acting, `unlock`
+  with what to look at when done. Changes are refused unless locked, and
+  the user may take control back at any time: stop then.
 - Antenna work (a model, sweeps on the server, the far field, a final run
   the user opens): the `antenna-design` skill,
   `.claude/skills/antenna-design/` (SKILL.md, scripts/sweep.py,

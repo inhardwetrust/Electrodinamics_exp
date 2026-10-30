@@ -167,28 +167,40 @@ README.md and CLAUDE.md): `model/` the part, `sim/` the customcst project,
 `variants/` the part as it was for each run, `notes/log.md`.
 
 One model, changed in place, each change a run (agreed with the user):
+The user's customcst window shows each step; Claude drives it through
+`tools/ui.py` (ARCHITECTURE "Control by Claude"):
 1. Talk over what changes in the geometry and why.
-2. Copy the part as it is now to `variants/runNN.part.toml` (NN: the run
+2. `ui.py lock "what I am doing"`: the user only looks now. Refused while
+   they edit something: ask them.
+3. Copy the part as it is now to `variants/runNN.part.toml` (NN: the run
    it will give) with its report beside it
    (`main.py PART --report --json > variants/runNN.mycad.json`), then edit
    the open part (the myCad window reloads it).
-3. Export over the project's STEP:
+4. Export over the project's STEP:
    `../.venv/Scripts/python.exe ../myinventor/main.py model/X.part.toml --export-step sim/X.step`.
    Only when the geometry changed (compare the report's parameter values
    and bodies with the last run's .mycad.json): every export changes the
    file's bytes (a time stamp, OCC's entity order), and the run
    fingerprint hashes the bytes, so an export of the same geometry would
    mark the last run outdated for nothing.
-4. The customcst window reloads the STEP and the .toml by itself
-   (`MainWindow.poll_disk`). The .toml keeps its types by body name. A new
-   body has none: assign it (type, material) in the .toml; a body gone is
-   listed as an orphan.
-5. Run on the server as the window does (`remote_tasks.py launch`,
-   `wait-run`, `fetch`; section 5). Do not export over the STEP while that
-   run goes on: its result would come back already outdated.
-6. Log the round in notes/log.md: Run N = variants/runNN, what changed,
+5. `ui.py reload`, `ui.py wait`, `ui.py status`: `unassigned` (new bodies:
+   assign them in the .toml, reload again), `orphans`, `problem` (must be
+   null), `shorts` (must be empty), `cells`. The .toml keeps its types by
+   body name.
+6. `ui.py run_server`, then `ui.py wait --server` (in the background: a
+   run takes long); the window fetches the finished run itself (else
+   `ui.py fetch`). Do not export over the STEP while that run goes on: its
+   result would come back already outdated.
+7. Read the figures from the run file (section 6), `ui.py show "Run N"
+   "Run N-1"`, `ui.py tab results` (or farfield), then
+   `ui.py unlock "look at Run N: ..."` and report.
+8. Log the round in notes/log.md: Run N = variants/runNN, what changed,
    the figures. Old runs stay in Results, marked outdated: they still show
    and compare.
+If an answer says "not in control", the user took the control back: stop
+and ask. No window open (`ui.py` exit code 2): the same steps work with
+scripts (`run.py --dry-run`, `remote_tasks.py launch / wait-run / fetch`);
+an open window without the lock reloads changed files by itself.
 
 The first time: export the STEP into `sim/`, write the .toml beside it
 (`Project.load(step)`, `set_type(body, ...)`, `set_material`, band, mesh,

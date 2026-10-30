@@ -4,6 +4,8 @@
 #                                             or an empty window if there is none
 #   python main.py path/to/file.step       -> any STEP file
 #   python main.py file.step --screenshot out.png   (render, save, quit)
+#   python main.py file.step --locked     -> opened under Claude's control (view/control.py):
+#                                             the user looks, a banner gives the control back
 
 import os
 import sys
@@ -33,6 +35,8 @@ def main(argv):
     from view.main_window import MainWindow
 
     window = MainWindow(path)
+    if "--locked" in argv:
+        window.set_locked(True, "started by Claude")
     if screenshot:
         window.show()                           # a fixed size for screenshots
     else:

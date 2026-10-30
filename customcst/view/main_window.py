@@ -18,7 +18,7 @@ import numpy as np
 from PySide6.QtCore import QRect, Qt, QTimer
 from PySide6.QtGui import QColor, QGuiApplication
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDockWidget, QFileDialog, QHBoxLayout,
+    QAbstractItemView, QCheckBox, QComboBox, QDockWidget, QFileDialog, QHBoxLayout, QSizePolicy,
     QApplication, QHeaderView, QLabel, QProgressBar, QPushButton, QToolButton,
     QMainWindow, QMenu, QMessageBox, QSlider, QTableWidget, QTableWidgetItem, QTabWidget,
     QToolBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
@@ -34,6 +34,7 @@ from project.materials import BUILTIN, CUSTOM, MATERIAL_PARAMS
 from project.object_types import OBJECT_TYPES
 from project.project_file import UP_AXES, Z0PATH_PARAMS, Project, ProjectError, project_path
 from project.settings import SECTIONS
+from view.control import ControlServer
 from view.farfield_panel import FarFieldPanel
 from view.geometry_view import GeometryView
 from view.profile_window import ProfileWindow
@@ -133,6 +134,7 @@ class MainWindow(QMainWindow):
         self._view_timer.timeout.connect(self._save_view)
         self._restoring = False
         self._project_mtime = None      # of the project file as last read or written here
+        self.locked = False             # Claude is in control (set_locked, view/control.py)
         # Another program (myCad exporting the STEP, Claude writing the
         # .toml) changes the model: the window reloads it by itself once
         # both files have stayed the same for one more look (they are often
@@ -187,13 +189,33 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage("Open a STEP file (Open STEP or Recent)")
         self._disk_timer.start()
+        self.control = ControlServer(self)      # Claude's commands (tools/ui.py)
+        if self.control.error:
+            self.statusBar().showMessage(f"control channel off: {self.control.error}", 10000)
 
     # =====================================================
     # UI
     # =====================================================
 
     def _build_toolbar(self):
-        bar = QToolBar("Main")
+        # While Claude is in control (set_locked): a banner over the toolbars.
+        self.lock_bar = bar = QToolBar("Control")
+        bar.setMovable(False)
+        bar.setStyleSheet("QToolBar { background: #f2c94c; } QLabel { color: #1a1a1a; font-weight: bold; }")
+        self.lock_label = QLabel()
+        bar.addWidget(self.lock_label)
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        bar.addWidget(spacer)
+        take = QPushButton("Take control back")
+        take.setToolTip("The window is yours again; Claude's next command that changes something is refused")
+        take.clicked.connect(lambda: self.set_locked(False))
+        bar.addWidget(take)
+        self.addToolBar(bar)
+        self.addToolBarBreak()
+        bar.setVisible(False)
+
+        self.main_bar = bar = QToolBar("Main")
         bar.setMovable(False)
         self.addToolBar(bar)
 
@@ -243,7 +265,7 @@ class MainWindow(QMainWindow):
 
         # A second row (one row did not fit): the plane, Z0 and the Z0 path.
         self.addToolBarBreak()
-        bar = QToolBar("Plane")
+        self.plane_bar = bar = QToolBar("Plane")
         bar.setMovable(False)
         self.addToolBar(bar)
 
@@ -428,7 +450,7 @@ class MainWindow(QMainWindow):
         self.side_tabs.addTab(self._build_materials_panel(), "Materials")
         self.side_tabs.addTab(self.remote_panel, "Remote")
 
-        dock = QDockWidget()
+        self.dock = dock = QDockWidget()
         dock.setTitleBarWidget(QWidget())       # the tabs are the title
         dock.setFeatures(QDockWidget.DockWidgetMovable)
         dock.setWidget(self.side_tabs)
@@ -812,6 +834,7 @@ class MainWindow(QMainWindow):
         self._save_view()
         self._cancel_discretize()           # the worker stops at its next step
         self._remote_timer.stop()
+        self.control.close()
         self.remote.wait()                  # a transfer cannot be cut off half way
         self.remote_watch.wait()
         self._mesh_pool.shutdown(wait=False, cancel_futures=True)
@@ -1018,28 +1041,63 @@ class MainWindow(QMainWindow):
         if now != self._disk_pending:
             self._disk_pending = now        # changed: wait one more look (the other file may follow)
             return
-        if (self.runner.running or self.remote.running or self.mesh_busy()
-                or self.tree.state() == QAbstractItemView.EditingState
-                or QApplication.activeModalWidget() is not None):
-            return                          # later: the pending state stays, the next look retries
+        if self.locked or self.runner.running or self.remote.running or self.mesh_busy() or self.user_busy():
+            return                          # later (locked: Claude reloads by command)
         self._reload_from_disk(path, now)
 
     def _reload_from_disk(self, path, now):
         """Like Reload, without dialogs: a file that does not read leaves the window as it was."""
         name = os.path.basename(path)
+        error = self.load_quiet(path, keep_camera=True)
+        if error:                           # half written, or not ours to fix: say it, keep the model
+            self._disk_failed = now
+            self._disk_pending = None
+            self.statusBar().showMessage(f"{name} changed on disk but {error}, not reloaded", 15000)
+            return
+        self.statusBar().showMessage(f"{name} changed on disk: reloaded", 5000)
+
+    def load_quiet(self, path, keep_camera=False):
+        """
+        Like load() without dialogs (the disk watch, the control channel):
+        returns why the files do not read (the window stays as it was), or
+        None. keep_camera: the user's camera stays (a reload of the same
+        model), not the file's [view] one.
+        """
+        if not keep_camera:
+            self._save_view()               # the display of the file being left
+        stats = self._disk_state(path)
         try:
             geometry = read_step(path)
             project = Project.load(path)
-        except Exception as error:          # half written, or not ours to fix: say it, keep the model
-            self._disk_failed = now
-            self._disk_pending = None
-            self.statusBar().showMessage(f"{name} changed on disk but does not read, not reloaded: {error}", 15000)
-            return
-        camera = self.view.view.camera.state()  # the user's view stays (not the file's [view] camera)
+        except Exception as error:
+            return f"does not read: {error}"
+        camera = self.view.view.camera.state()
         self._view_timer.stop()             # the display is not written over the file read here
-        self._show_loaded(path, geometry, project, now)
-        self.view.view.camera.set_state(camera["center"], camera["distance"], camera["rotation"])
-        self.statusBar().showMessage(f"{name} changed on disk: reloaded", 5000)
+        self._show_loaded(path, geometry, project, stats)
+        if keep_camera:
+            self.view.view.camera.set_state(camera["center"], camera["distance"], camera["rotation"])
+        return None
+
+    def user_busy(self):
+        """The user is in the middle of something: an edit in the tree, or a dialog."""
+        return self.tree.state() == QAbstractItemView.EditingState or QApplication.activeModalWidget() is not None
+
+    # =====================================================
+    # Control by Claude (view/control.py): locked, the user only looks
+    # =====================================================
+
+    def set_locked(self, locked, message=""):
+        """
+        Locked: the toolbars and the side panel are off (the 3D view, the
+        tabs and the results still work for looking); a banner says who is
+        in control, its button gives the control back to the user.
+        """
+        self.locked = locked
+        if locked:
+            self.lock_label.setText(f"  Claude is in control: {message}" if message else "  Claude is in control")
+        for widget in (self.main_bar, self.plane_bar, self.dock):
+            widget.setEnabled(not locked)
+        self.lock_bar.setVisible(locked)
 
     def _restore_switches(self, view):
         """

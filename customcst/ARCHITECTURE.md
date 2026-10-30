@@ -328,6 +328,33 @@ model, in a JSON file: `%APPDATA%\customcst\settings.json`, or
   entry is simply forgotten. Unknown keys are kept on save.
 - Checks: `checks/check_app_settings.py`.
 
+## Control by Claude (the window's control channel)
+
+Claude drives the user's open window, so the user sees each step: open,
+reload, run on the server, fetch, show the runs and the tab.
+- `view/control.py` `ControlServer`: a QTcpServer on 127.0.0.1, a free
+  port, a random token; both go to `control.json` beside the app settings
+  (`CUSTOMCST_CONTROL` overrides; tests move it with `CUSTOMCST_SETTINGS`).
+  One JSON line per request and per answer, handled in the GUI thread.
+  The last window opened owns the file; closing removes it if still its.
+- `tools/ui.py` is the client (`ui.py status`, `lock`, `open`, `reload`,
+  `tab`, `show`, `screenshot`, `run_server`, `fetch`, `wait`; from Python
+  `send(command, **args)`).
+- Two modes. Normal: the user works; Claude can read (`status`,
+  `screenshot`) but every command that changes something is refused.
+  Locked (`lock`, or `main.py --locked`): a yellow banner over the
+  toolbars, the toolbars and the side panel off; the 3D view, the tabs,
+  the results and the far field stay for looking. "Take control back"
+  unlocks at once; Claude's next change is then refused, so it never acts
+  under the user's hands. `lock` is refused while the user edits a tree
+  field or a dialog is open.
+- Locked, the disk watch does not reload: Claude reloads by command.
+  Commands never open dialogs: a file that does not read, a model that
+  cannot run, shorts on the mesh come back as the error text.
+- Long work (meshing, a transfer, the server's run) goes on after the
+  answer; `status` shows it, `ui.py wait [--server]` waits for it.
+- Check: `checks/check_control.py`.
+
 ## Material library
 
 `project/materials.py` holds the dielectric presets.
