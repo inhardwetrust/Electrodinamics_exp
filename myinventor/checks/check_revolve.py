@@ -13,6 +13,12 @@
 #     axis to r 50 (XZ plane), turned all the way round: its volume by
 #     Pappus (2 pi area x centroid) within the fit tolerance; STEP keeps it;
 #   - join and cut: a disc joined under it; a groove cut into a cylinder;
+#   - its planar faces: the 90 degree ring's start (its sketch's plane,
+#     out +z), end (turned: x = -1, out -x), disc.L1 / disc.L3 (the flat
+#     rings of the lines across the axis, out -y / +y); none of start / end
+#     all the way round; a sketch on end and one on disc.L3, extruded out by
+#     1 and joined: a 3 x 4 box beyond x = -1, a cylinder r 3 on top (+9 pi);
+#     the window: a click on the top ring's face names it R:disc.L3;
 #   - the file: a TOML round trip; the report's line;
 #   - the window: Revolve takes the only profile and asks for the axis
 #     (Axis on), a click on the line takes it (profiles again), the
@@ -190,6 +196,44 @@ def check_operations():
           and math.isclose(v, 60 * math.pi, rel_tol=1e-9), f"{can} {v} {result.feature_errors}")
 
 
+def check_faces():
+    part, _ = rect_part()
+    v, result = revolved(part, "L5", "90")
+    planes = result.outputs["R"].face_planes()
+    want = {"start": ((0, 0, 0), (0, 0, 1)), "end": ((-1, 0, -1), (-1, 0, 0)),
+            "disc.L1": ((-1, 0, 0), (0, -1, 0)), "disc.L3": ((-1, 4, 0), (0, 1, 0))}
+    check("a quarter ring's planar faces: start, end (turned), the two flat rings, out of the material",
+          set(planes) == set(want) and all(np.allclose(np.asarray(planes[r][0]) / 1e-3, o, atol=1e-9)
+                                           and np.allclose(planes[r][1], n, atol=1e-9)
+                                           for r, (o, n) in want.items()), f"{planes}")
+    full, _ = rect_part()
+    _, result = revolved(full, "L5")
+    check("  all the way round: no start or end", set(result.outputs["R"].face_planes()) == {"disc.L1", "disc.L3"})
+
+    end = part.add_feature(Sketch("OnEnd", plane="R:end"))
+    # On end: the profile turned, its x as it was (1..4), its y mirrored (-4..0): the face's normal is outward.
+    q = [end.add_point(x, y) for x, y in (("1", "-4"), ("4", "-4"), ("4", "0"), ("1", "0"))]
+    for a, b in zip(q, q[1:] + q[:1]):
+        end.add_line(a, b)
+    part.add_feature(Extrude("Box", profiles=[RECT], sketch="OnEnd", distance="1", operation="join", body="B"))
+    top = part.add_feature(Sketch("OnTop", plane="R:disc.L3"))
+    top.add_circle(top.add_point("0", "0"), "3")
+    part.add_feature(Extrude("Boss", profiles=[("C1",)], sketch="OnTop", distance="1", operation="join", body="B"))
+    result = rebuild(part)
+    total = kernel.volume(result.shapes["B"]) if "B" in result.shapes else None
+    lo, hi = kernel.bounds(result.outputs["Box"].shape)            # the box alone, and the boss alone
+    hi[1] = kernel.bounds(result.outputs["Boss"].shape)[1][1]
+    from geometry.kernel import solid_count
+
+    check("a sketch on end (x as the profile's, y mirrored) and on disc.L3, each extruded out by 1 and joined: "
+          "+ 12 + 9 pi, one solid, out of x = -1 and y = 4",
+          not result.feature_errors and total is not None and solid_count(result.shapes["B"]) == 1
+          and math.isclose(total, 21 * math.pi + 12 + 9 * math.pi, rel_tol=1e-9)
+          and math.isclose(lo[0], -2, abs_tol=1e-6) and math.isclose(hi[0], -1, abs_tol=1e-6)
+          and math.isclose(hi[1], 5, abs_tol=1e-6),
+          f"{total} {lo} {hi} {result.feature_errors}")
+
+
 def check_file():
     part, _ = rect_part()
     part.add_feature(Revolve("R", profiles=[RECT], sketch="S", axis="L5", angle="270", body="B"))
@@ -278,6 +322,14 @@ def check_window():
     v = kernel.volume(window.result.shapes[feature["body"]])
     check("  Apply: around Y Axis, 60 pi", feature["axis"] == "Y Axis" and math.isclose(v, 60 * math.pi, rel_tol=1e-9),
           f"{feature['axis']} {v}")
+    body = feature["body"]
+    named = {}
+    for index in range(view._bodies[body].body.face_count):
+        reference, _ = window.face_reference(("face", body, index))
+        if reference is not None:
+            named[reference] = index
+    check("a click on its top ring's face names it (Start 2D Sketch can sit there)",
+          set(named) == {"Revolution1:disc.L1", "Revolution1:disc.L3"}, f"{named}")
     check("no error dialogs", not errors, f"{errors}")
     window.close()
     check("no errors in VisPy callbacks", not vispy_errors, f"{vispy_errors[:3]}")
@@ -288,6 +340,7 @@ def main():
     check_refused()
     check_reflector()
     check_operations()
+    check_faces()
     check_file()
     if "--no-window" not in sys.argv:
         check_window()

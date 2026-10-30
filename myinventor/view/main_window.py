@@ -824,7 +824,7 @@ class MainWindow(QMainWindow):
     def face_reference(self, key):
         """
         A body face (("face", body, CAD face index)) as a sketch plane by
-        meaning: "Extrusion1:end", "Extrusion2:side.L3"... the first feature
+        meaning: "Extrusion1:end", "Extrusion2:side.L3", "Revolution1:disc.L3"... the first feature
         (in history order) whose named face lies on that face's plane with the
         same outward normal. Returns (reference, None) or (None, why not).
         """
@@ -846,7 +846,8 @@ class MainWindow(QMainWindow):
                 if np.allclose(outward, normal, atol=FACE_TOLERANCE) \
                         and abs(float(np.dot(points[0] - origin, outward))) < FACE_TOLERANCE:
                     return f"{feature.name}:{role}", None
-        return None, "this face is not a cap or a wall of an extrusion (not supported yet)"
+        return None, ("this face is not a cap or a wall of an extrusion, nor a start / end face or a flat ring "
+                      "of a revolution (not supported yet)")
 
     def _escape(self):
         """Esc in the 3D view: cancels the Extrude command or picking a plane (True: used)."""

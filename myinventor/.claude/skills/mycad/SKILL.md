@@ -122,6 +122,9 @@ them when you need more than the example shows.
 | `"Ext:end"` (the cap at the distance) | as Ext's sketch | as Ext's sketch | out of the body |
 | `"Ext:start"` (the cap on Ext's plane) | as Ext's sketch | **mirrored** | out of the body |
 | `"Ext:side.L3"` (the wall line L3 swept) | along L3 from its start point | out of the wall × x | out of the body |
+| `"Rev:start"` (a revolution under 360°: its sketch's plane) | as Rev's sketch | as Rev's sketch, or mirrored | out of the body |
+| `"Rev:end"` (that plane turned by the angle) | Rev's sketch x turned | its y turned, **mirrored** | out of the body |
+| `"Rev:disc.L3"` (the flat ring a profile line across the axis sweeps) | along L3 from its start | out of the ring × x | out along the axis; the origin on the axis |
 
 A sketch on `Ext:end` keeps Ext's origin and axes, moved to the cap: draw a
 patch on a substrate's top with the substrate's own x, y. Check positions in

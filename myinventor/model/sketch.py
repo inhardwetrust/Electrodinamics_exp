@@ -10,7 +10,8 @@
 #   name = "Sketch1"
 #   type = "sketch"
 #   plane = "XY Plane"        # an origin plane, or a planar face of a feature by meaning:
-#                             # "Extrusion1:end", "Extrusion1:start", "Extrusion1:side.L3"
+#                             # "Extrusion1:end", "Extrusion1:start", "Extrusion1:side.L3",
+#                             # "Revolution1:start", "Revolution1:end", "Revolution1:disc.L3"
 #
 #   [[feature.point]]
 #   name = "P1"

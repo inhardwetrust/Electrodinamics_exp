@@ -18,7 +18,10 @@
 # The axis lies in the sketch's plane and no profile reaches across it (one
 # may touch it: a reflector's profile starts on its axis). The sweep comes
 # from ctx.kernel.revolve (geometry/kernel.py); this module stays
-# numpy-only. Its faces are not named yet (no sketch on them).
+# numpy-only. Its planar faces have names a sketch can sit on
+# (RevolveResult.face_frame): "start" / "end" (the profile's plane, and it
+# turned by the angle: under 360 degrees only) and "disc.L3" (the flat ring
+# a profile line across the axis sweeps).
 
 from dataclasses import dataclass
 
@@ -26,6 +29,7 @@ import numpy as np
 
 from model.extrude import OPERATIONS, apply_to_body, chosen_regions
 from model.features import Feature, FeatureError, Field, feature_type
+from model.sketch import SketchFrame
 
 MM = 1e-3
 ORIGIN_AXES = ("X Axis", "Y Axis", "Z Axis")
@@ -40,6 +44,105 @@ class RevolveResult:
     angle: float = 360.0    # degrees, signed
     operation: str = "new"
     axis: tuple = None      # (point (3,) mm, direction (3,)) in the world
+
+    # ---- its planar faces, named by meaning (a sketch can sit on one) ----
+    #   "start"     the profile's own plane (under 360 degrees)
+    #   "end"       that plane turned by the angle (under 360 degrees)
+    #   "disc.L3"   the flat ring (or disc) a profile line across the axis sweeps
+    # Each comes with its outward normal: out of the material that is left
+    # (for a cut: into the pocket), as an extrusion's.
+
+    @property
+    def full(self):
+        return abs(abs(self.angle) - 360.0) < 1e-9
+
+    def face_roles(self):
+        roles = [] if self.full else ["start", "end"]
+        for region in self.regions:
+            for loop in [region.outer] + region.holes:
+                for edge in loop.edges:
+                    role = f"disc.{edge[3]}" if edge[0] == "line" and len(edge) > 3 else None
+                    if role is not None and role not in roles and self._across(edge):
+                        roles.append(role)
+        return roles
+
+    def face_frame(self, role):
+        """The SketchFrame of a sketch on face `role`: on its plane, its normal outward."""
+        f = self.frame
+        added = self.operation != "cut"
+        if role in ("start", "end"):
+            if self.full:
+                raise ValueError("a revolution all the way round has no start or end face")
+            sweep = self._sweep()                       # the way the start plane moves off
+            if role == "start":
+                outward = -sweep if added else sweep
+                return SketchFrame(f.origin.copy(), np.asarray(f.u, float), np.cross(outward, f.u), outward)
+            turn = lambda v: _rotate(v, self.axis[1], self.angle)        # noqa: E731
+            point = np.asarray(self.axis[0]) * MM
+            origin = point + turn(np.asarray(f.origin) - point)
+            u = turn(np.asarray(f.u, float))
+            outward = turn(sweep) if added else -turn(sweep)
+            return SketchFrame(origin, u, np.cross(outward, u), outward)
+        if role.startswith("disc."):
+            name = role[5:]
+            for region in self.regions:
+                for loop in [region.outer] + region.holes:
+                    for edge in loop.edges:
+                        if edge[0] == "line" and len(edge) > 3 and edge[3] == name and self._across(edge):
+                            return self._disc_frame(region, edge[1], edge[2], added)
+        raise ValueError(f"no face {role!r}")
+
+    def face_planes(self):
+        """{role: (point (3,) m, outward normal (3,))} of its planar faces."""
+        planes = {}
+        for role in self.face_roles():
+            frame = self.face_frame(role)
+            planes[role] = (frame.origin, frame.normal)
+        return planes
+
+    def _axis2(self):
+        """The axis in the sketch: (point (2,) mm, unit direction (2,))."""
+        f = self.frame
+        point = f.to_sketch(np.asarray(self.axis[0])[None] * MM)[0] / MM
+        d = np.array([float(self.axis[1] @ f.u), float(self.axis[1] @ f.v)])
+        return point, d / np.linalg.norm(d)
+
+    def _across(self, edge):
+        """A profile line square to the axis (it sweeps a flat ring)."""
+        along = np.asarray(edge[2], float) - np.asarray(edge[1], float)
+        length = float(np.linalg.norm(along))
+        return length > 1e-9 and abs(float(along @ self._axis2()[1])) <= 1e-9 * max(1.0, length)
+
+    def _sweep(self):
+        """The way the profiles leave the start plane: the axis x (toward the profiles), signed by the angle."""
+        point, d = self._axis2()
+        middle = np.mean([r.outer.polygon.mean(axis=0) for r in self.regions], axis=0)
+        side2 = (middle - point) - float((middle - point) @ d) * d
+        side = side2[0] * np.asarray(self.frame.u) + side2[1] * np.asarray(self.frame.v)
+        sweep = np.cross(np.asarray(self.axis[1], float), side)
+        return np.sign(self.angle) * sweep / np.linalg.norm(sweep)
+
+    def _disc_frame(self, region, a, b, added):
+        """The flat ring line a-b sweeps: centred on the axis, its normal along the axis out of the material."""
+        f = self.frame
+        point, d = self._axis2()
+        middle = 0.5 * (np.asarray(a) + np.asarray(b))
+        probe = middle + d * 1e-3 * max(1.0, float(np.linalg.norm(np.asarray(b) - np.asarray(a))))
+        axis = np.asarray(self.axis[1], float)
+        outward = -axis if region.contains(probe) == added else axis     # away from the material (into a pocket)
+        center2 = point + float((middle - point) @ d) * d
+        origin = f.to_world(center2[None] * MM)[0]
+        u = np.asarray(f.u, float) * (b - a)[0] + np.asarray(f.v, float) * (b - a)[1]
+        u = u / np.linalg.norm(u)
+        return SketchFrame(origin, u, np.cross(outward, u), outward)
+
+
+def _rotate(v, axis, degrees):
+    """v (3,) turned by `degrees` around the unit `axis` (the right hand way: Rodrigues)."""
+    k = np.asarray(axis, float) / np.linalg.norm(axis)
+    v = np.asarray(v, float)
+    c, s = np.cos(np.radians(degrees)), np.sin(np.radians(degrees))
+    return v * c + np.cross(k, v) * s + k * float(k @ v) * (1 - c)
 
 
 def axis_of(sketch_result, axis, part, outputs):
