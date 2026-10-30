@@ -64,7 +64,9 @@ Compatibility with Inventor or any other CAD is not a goal.
   `checks/check_revolve.py`, `checks/check_workplane.py`, `checks/check_import.py`,
   `checks/check_groups.py`, `checks/check_move.py`, `checks/check_mirror.py`,
   `checks/check_import_faces.py`, `checks/check_feature_highlight.py`,
-  `checks/check_arc.py`, `checks/check_control.py`.
+  `checks/check_arc.py`, `checks/check_control.py`, `checks/check_probe.py`.
+- `tools/probe.py FILE bodies | slice y=-2 | contacts` measures a part or a
+  STEP file without the window (`geometry/probe.py`; REFERENCE.md 16).
 - Without the window: `main.py name.part.toml --report [--json]
   [--export-step out.step]` (`cli.py`: rebuild, report, STEP; no Qt).
   The skill `.claude/skills/mycad/SKILL.md` teaches an AI to draw by

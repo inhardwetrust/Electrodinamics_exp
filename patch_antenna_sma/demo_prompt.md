@@ -47,7 +47,8 @@ above the pin and the other far out to one side). In myCad that is
 `axis = "Y Axis"`, `angle = "90"` (around the origin's Y, which moves the
 coax axis to x -0.5, z 0), then
 `offset = ["0.5", "-bw/2 + launch", "hd + t + pin_d/2"]`. Check it:
-slice the placed `SMA:connector_outer_2` over the board (y -24..-22). The
+slice the placed connector over the board
+(`../myinventor/tools/probe.py demo/pcb_sma.part.toml slice y=-23 "SMA:*"`). The
 legs must be at x ±(2.1..3.0): the lower pair at z -0.985..-0.005 (0.03 mm
 into the ground copper), the other pair at the pin's level.
 
@@ -58,7 +59,10 @@ into the connector part:
   y 0.3 mm in from both ends of the pin over the board, from the trace's
   top up to the pin's axis (`PinSolder`);
 - a leg that ends up in the copper needs none.
-Measure the overlaps (`BRepAlgoAPI_Common` volumes); do not guess them.
+Measure every contact and overlap with `../myinventor/tools/probe.py
+demo/pcb_sma.part.toml contacts` (and `slice` where it matters); do not
+guess them. (The connector's small `connector_outer` plate already
+overlaps the trace under the pin: say so, keep `PinSolder` anyway.)
 
 **Names and colors.** `Substrate` (green), `Ground`, `Trace` (copper
 color), `PinSolder` (grey); the connector keeps its own.

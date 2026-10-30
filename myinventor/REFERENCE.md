@@ -459,9 +459,9 @@ the geometry changed. customcst's `read_step` is the reader that counts:
 The runs of 2026-10-30 (a cube with a rod and a triangle plate; a PCB with
 the SMA connector, `tests/pcb_sma.part.toml`) settled this:
 
-1. **Understand the inputs first, numerically.** For an imported STEP,
-   list its bodies with bounds and volumes, then slice them (section 16)
-   to find axes, pins, legs, gaps. Write down the frame (for the SMA: the
+1. **Understand the inputs first, numerically.** For an imported STEP:
+   `tools/probe.py FILE bodies`, then `slice` across it (section 16) to
+   find axes, pins, legs, gaps. Write down the frame (for the SMA: the
    coax axis along y at x 0, z −0.5; the pin 0.9 mm where it lies on the
    board; legs ±(2.1..3.0) after the turn).
 2. **Plan the parameters and the steps.** Every size that matters a
@@ -471,7 +471,8 @@ the SMA connector, `tests/pcb_sma.part.toml`) settled this:
    each), atomically (temp file + `os.replace`). Keep it: the file's
    comments do not survive a Save, the script does.
 4. **Dry run headless**: build the last step, `--report`, compare every
-   volume and bound with your own figures, measure contacts. Fix until
+   volume and bound with your own figures, measure contacts
+   (`tools/probe.py PART contacts`, `slice` where it matters). Fix until
    right. Then write step 0.
 5. **Show it**: open the window locked (`main.py PART --locked`, in the
    background; wait until `status` answers with the file) or `lock` the
@@ -496,16 +497,42 @@ goes around an origin axis through the origin, before the offset.
    bottom copper, the other beside the pin; −90 the other way round).
 3. Compensate in the offset: `offset = ["0.5", "-bw/2 + launch",
    "hd + t + pin_d/2"]`.
-4. Verify by slicing the placed bodies.
+4. Verify by slicing the placed bodies (`tools/probe.py PART slice y=-23 "SMA:*"`).
 
 **Contacts** (customcst merges touching conductors, but a round pin on a
 flat trace touches along a line only): where a conductor does not touch,
 add a block (a rectangle extruded from the copper's face) that overlaps
-it; measure every overlap as a `Common` volume, never guess.
+it; measure every overlap (`tools/probe.py PART contacts`), never guess.
 
-## 16. Measuring: recipes
+## 16. Measuring: tools/probe.py, then recipes
 
-Rebuild a part and look at its shapes (run with the venv's Python, the
+`tools/probe.py` (the geometry in `geometry/probe.py`) measures a part
+file (rebuilt, placed) or a STEP file, without the window:
+
+    ../.venv/Scripts/python.exe tools/probe.py FILE bodies [BODY ...]
+    ../.venv/Scripts/python.exe tools/probe.py FILE slice y=-2 [BODY ...]
+    ../.venv/Scripts/python.exe tools/probe.py FILE contacts [BODY ...] [--near 1]
+
+- `bodies`: volume, solids, bounds, size (each solid when several).
+- `slice`: the cut by the plane x, y or z = value; per body its pieces,
+  each with its exact area and its extent in the other two coordinates.
+  This is how you find a connector's pin (a round piece: area pi r²),
+  its legs and the gap between them.
+- `contacts`: each pair closer than `--near` mm: `touching`, `gap`, or
+  `overlap` (shared volume).
+- BODY: a name or a pattern (`"SMA:*"`); none: all. `--unplaced`: a
+  part's bodies before the transforms. `--json`. Exit 2: the file does
+  not read or build, or a name matches nothing.
+
+The SMA connector as received, cut at y = -2 (in its legs):
+
+    connector_outer_2:
+        x 2.02..3  z -3.5..-2.6  area 0.882 mm2       (four legs)
+        ...
+    connector_wire:
+        x -0.45..0.45  z -0.95..-0.05  area 0.636173 mm2   (pi 0.45²: a round pin of 0.9)
+
+For what the tool does not cover, rebuild a part and look at its shapes (run with the venv's Python, the
 folder `myinventor/` on `sys.path`):
 
     from model.part_file import load

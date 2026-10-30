@@ -235,6 +235,11 @@ Next, in this order:
 1. Manual primitives: poly-arc, Bézier (the arc is done: from its center or
    through three points); copy / paste of generators and arcs.
 
+Measuring: `tools/probe.py` (bodies, slices, contacts) for Claude; the
+same geometry (`geometry/probe.py`) is meant for a section tool in the
+window for the user (a plane x / y / z = value: the cut drawn, its pieces'
+areas and extents).
+
 Later: patterns, fillets; RF primitives (a board with a layer stack, a
 line or CPW, a via fence, an SMA template); measure (picking and the A-B
 distance, done in customcst); integration into customcst (a parameter

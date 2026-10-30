@@ -29,8 +29,9 @@ All paths below are relative to `myinventor/`; the Python is
   convention (say which you chose). Examples:
   - a "1.6 mm board" is 1.6 in total: FR4 1.53 + 35 µm copper on each side;
   - "a trace to the connector": say where it starts.
-- An imported part (a connector): measure it first, numerically (its
-  bodies, bounds, slices: REFERENCE 16). Find its axis, pin, legs and
+- An imported part (a connector): measure it first, numerically:
+  `../.venv/Scripts/python.exe tools/probe.py FILE.stp bodies`, then
+  `slice x|y|z=VALUE` across it (REFERENCE 16). Find its axis, pin, legs and
   gaps, and how it must be turned and moved (REFERENCE 15, "Placing a
   part by turning it").
 - Ask only what changes the result and has no sensible default.
@@ -68,8 +69,9 @@ and read the report:
 - **Compare every number with your own:** volumes (exact), bounds, sizes;
   profile and piece areas (from polygons, ~1e-3 relative). Pieces: take
   the keys from the report (`pieces`), the larger part is the larger area.
-- Contacts and overlaps: measure them as `Common` volumes of the rebuilt
-  shapes (REFERENCE 16). Never call it done by looking only.
+- Contacts and overlaps: `tools/probe.py PART contacts` (touching, gap,
+  overlap volume per pair), `slice` where a placement matters. Never call
+  it done by looking only.
 
 ## 4. Show it in the window (when the user watches)
 
