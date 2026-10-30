@@ -2,7 +2,8 @@
 #
 # The window's control channel (view/control.py, tools/ui.py), on a model
 # written into a temp folder (settings, remote and control files there):
-#   - control.json: the port and a token; a wrong token, a bad line, an
+#   - control.json: the port and a token; describe: the app, protocol 1,
+#     each command with its lock flag and help; a wrong token, a bad line, an
 #     unknown command: refused;
 #   - unlocked: status and screenshot work, a command that changes
 #     something is refused ("not in control");
@@ -120,6 +121,8 @@ def main():
                 thread.join(0.01)
             return out["answer"]
 
+        check("the client finds the same file (ui.control_file)", ui.control_file("customcst") == path,
+              ui.control_file("customcst"))
         answer = raw(json.dumps({"token": "0" * 32, "command": "status"}).encode())
         check("a wrong token: refused", not answer["ok"] and "token" in answer["error"], str(answer))
         answer = raw(b"not json")
@@ -127,6 +130,11 @@ def main():
         ok, text = call("dance")
         check("an unknown command: refused, the known ones listed", not ok and "status" in text, text)
 
+        ok, desc = call("describe")
+        check("describe: app, protocol 1, commands with lock flag and help", ok and desc["app"] == "customcst"
+              and desc["protocol"] == 1 and desc["commands"]["open"]["changes"]
+              and not desc["commands"]["status"]["changes"]
+              and all(c["help"] for c in desc["commands"].values()), str(desc)[:200])
         ok, state = call("status")
         check("status: the model, unlocked, the patch unassigned, two current runs", ok
               and state["model"] == step and not state["locked"] and state["unassigned"] == ["patch"]
@@ -153,6 +161,14 @@ def main():
 
         ok, _ = call("tab", name="results")
         check("tab results", ok and window.tabs.currentWidget() is window.results)
+        codes = []
+        thread = threading.Thread(target=lambda: codes.append(ui.main(["--app", "customcst", "tab", "farfield"])))
+        thread.start()
+        while thread.is_alive():
+            app.processEvents()
+            thread.join(0.01)
+        check("the command line: ui.py --app customcst tab farfield", codes == [0]
+              and window.tabs.currentWidget() is window.farfield_panel, str(codes))
         ok, text = call("tab", name="nowhere")
         check("an unknown tab: an error", not ok, text)
 

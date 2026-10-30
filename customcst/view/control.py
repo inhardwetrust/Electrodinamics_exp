@@ -19,6 +19,8 @@
 # under the user's hands. Reading (status, screenshot) works always.
 #
 # Commands (see COMMANDS):
+#   describe                     the app, the protocol version, each command
+#                                (does it need the lock, its help line)
 #   status                       model, lock, busy work, bodies, runs, ...
 #   lock [message]               take control (refused while the user edits)
 #   unlock [message]             give it back; message in the status bar
@@ -42,6 +44,8 @@ from PySide6.QtNetwork import QHostAddress, QTcpServer
 from app_settings import settings_path
 
 MAX_LINE = 1 << 20
+APP = "customcst"
+PROTOCOL = 1                    # the request / answer format and the lock rules (see the top)
 
 
 def control_path():
@@ -138,12 +142,21 @@ class ControlServer(QObject):
 # Commands: function(window, **args) -> JSON-able result
 # =====================================================
 
+def describe(window):
+    """The app, the protocol version, each command: does it need the lock, its help line."""
+    return {"app": APP, "protocol": PROTOCOL,
+            "commands": {name: {"changes": changes, "help": (function.__doc__ or "").strip()}
+                         for name, (function, changes) in COMMANDS.items()}}
+
+
 def status(window):
+    """Model, lock, busy work, bodies (types), unassigned, orphans, problem, shorts, cells, runs."""
     project, geometry = window.project, window.geometry
     bodies = [b.name for b in geometry.bodies] if geometry else []
     types = {name: project.get(name).type for name in bodies if project and project.get(name)}
     current = window._current_fingerprint() if project else None
     return {
+        "app": APP,
         "model": geometry.source if geometry else None,
         "locked": window.locked,
         "busy": {"mesh": window.mesh_busy(), "local_run": window.runner.running,
@@ -164,6 +177,7 @@ def status(window):
 
 
 def lock(window, message="Claude is working: look only"):
+    """Take control (message on the banner); refused while the user edits."""
     if window.locked:
         window.set_locked(True, message)
         return "locked"
@@ -174,6 +188,7 @@ def lock(window, message="Claude is working: look only"):
 
 
 def unlock(window, message=""):
+    """Give control back; message in the status bar."""
     window.set_locked(False)
     if message:
         window.statusBar().showMessage(message)
@@ -181,6 +196,7 @@ def unlock(window, message=""):
 
 
 def open_model(window, path):
+    """Read the model at path (no dialog: a file that does not read is the error)."""
     path = os.path.abspath(path)
     error = window.load_quiet(path)
     if error:
@@ -189,6 +205,7 @@ def open_model(window, path):
 
 
 def reload(window):
+    """Read the open model again, the camera kept."""
     if window.geometry is None:
         raise CommandError("no model open")
     error = window.load_quiet(window.geometry.source, keep_camera=True)
@@ -201,6 +218,7 @@ TAB_NAMES = ("3d", "results", "farfield")
 
 
 def tab(window, name):
+    """Show a tab: 3d | results | farfield."""
     if name not in TAB_NAMES:
         raise CommandError(f"tab must be one of {TAB_NAMES}")
     window.tabs.setCurrentIndex(TAB_NAMES.index(name))
@@ -208,6 +226,7 @@ def tab(window, name):
 
 
 def show(window, runs):
+    """Tick these runs (by name) in Results, the others off."""
     by_name = {r.name: r for r in window.runs}
     missing = [name for name in runs if name not in by_name]
     if missing:
@@ -217,6 +236,7 @@ def show(window, runs):
 
 
 def screenshot(window, path):
+    """window.grab() into a PNG at path."""
     path = os.path.abspath(path)
     if not window.grab().save(path):
         raise CommandError(f"cannot write {path}")
@@ -245,15 +265,18 @@ def _remote(window, operation):
 
 
 def run_server(window):
+    """The Remote tab's Run on server (a model that can run, no shorts)."""
     return _remote(window, "launch")
 
 
 def fetch(window):
+    """The Remote tab's Fetch."""
     return _remote(window, "fetch")
 
 
 # name: (function, changes the window: needs the lock)
 COMMANDS = {
+    "describe": (describe, False),
     "status": (status, False),
     "screenshot": (screenshot, False),
     "lock": (lock, False),

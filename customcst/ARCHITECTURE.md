@@ -337,9 +337,15 @@ reload, run on the server, fetch, show the runs and the tab.
   (`CUSTOMCST_CONTROL` overrides; tests move it with `CUSTOMCST_SETTINGS`).
   One JSON line per request and per answer, handled in the GUI thread.
   The last window opened owns the file; closing removes it if still its.
-- `tools/ui.py` is the client (`ui.py status`, `lock`, `open`, `reload`,
-  `tab`, `show`, `screenshot`, `run_server`, `fetch`, `wait`; from Python
-  `send(command, **args)`).
+- `tools/ui.py` is the client (`ui.py describe`, `status`, `lock`,
+  `open`, `reload`, `tab`, `show`, `screenshot`, `run_server`, `fetch`,
+  `wait`; from Python `send(command, **args)`). It imports nothing of
+  customcst and takes `--app NAME`: one client for every app speaking the
+  protocol (myCad next: `../myinventor/TASK_control_channel.md`). The
+  protocol: control.json beside the app's settings (`<APP>_CONTROL`, else
+  the folder of `<APP>_SETTINGS`, else `%APPDATA%/<app>/`), the JSON
+  lines, `describe` (app, protocol 1, each command's lock flag and help),
+  `status` with `busy`, and the lock rules below.
 - Two modes. Normal: the user works; Claude can read (`status`,
   `screenshot`) but every command that changes something is refused.
   Locked (`lock`, or `main.py --locked`): a yellow banner over the
