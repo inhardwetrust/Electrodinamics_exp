@@ -172,6 +172,16 @@ Geometry (each is a `[[feature.<kind>]]` table under the sketch):
   points like a line. Its points drag; in the kernel and STEP it is one
   exact B-spline. Use it for a free smooth shape the user will shape
   by hand; for a shape with a formula use a generator.
+- `offset`: the Offset modifier of a line, circle, spline or curve: `of`
+  (its name), `left`, `right` (mm to each side along it from its start to
+  its end; a circle runs counter-clockwise, its left is inside), `start`,
+  `end` = `"flat"` | `"round"` (caps of an open one). The entity becomes a
+  spine (in no profile itself); the band is a profile, key
+  `["<name>.offset"]`; a closed one's inner loop `["<name>.offset.inner"]`
+  (the band's hole, and a profile itself). A side of 0 is the entity
+  exactly (a reflector's parabola stays exact); a side past the radius of a
+  bend fails, naming it. Use it for a thick curve (a reflector's shell, a
+  curved strip, a ring).
 - `construction = true` on a line, circle, curve or spline: a helper, never a profile.
 
 A loop inside another one is a hole of the outer profile (a rectangle with

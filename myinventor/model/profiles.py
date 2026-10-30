@@ -14,6 +14,9 @@
 #   points, a spline one between its first and last points, like a line (a
 #   closed one is a loop on its own); edges are ordered around a point by
 #   the way they leave it (a curve: its tangent).
+# - An entity with an Offset (model/offsets.py) is a spine: in no loop
+#   itself; its band's loops are loops on their own ("L1.offset", and a
+#   closed one's "C1.offset.inner").
 # - Regions: a loop minus the loops directly inside it (holes). A circle in
 #   a rectangle gives two regions: the rectangle with a round hole, and the
 #   disc (as Inventor does).
@@ -70,7 +73,7 @@ class Region:
 
 def find_regions(result):
     """The regions of a SketchResult, largest first."""
-    loops = _line_loops(result) + _circle_loops(result) + _polyline_loops(result)
+    loops = _line_loops(result) + _circle_loops(result) + _polyline_loops(result) + _offset_loops(result)
     regions = []
     for loop in loops:
         inside = [other for other in loops if other is not loop and other.area < loop.area
@@ -100,10 +103,17 @@ def _polyline_loops(result):
     return loops
 
 
+def _offset_loops(result):
+    """The loops of the entities' offsets (model/offsets.py), each keyed by itself."""
+    return [Loop((key,), polygon, list(edges))
+            for built in getattr(result, "offsets", {}).values() for key, edges, polygon in built]
+
+
 def _circle_loops(result):
     loops = []
+    spines = getattr(result, "spines", set())
     for circle in result.circles:
-        if circle.construction:
+        if circle.construction or circle.name in spines:
             continue
         center, radius = result.points[circle.center], result.radii[circle.name]
         t = np.linspace(0.0, 2.0 * np.pi, CIRCLE_SAMPLES, endpoint=False)
@@ -127,12 +137,13 @@ def _line_loops(result):
     generated curves (each an edge between its two end points; a closed
     curve is a loop on its own).
     """
-    lines = [line for line in result.lines if not line.construction]
+    spines = getattr(result, "spines", set())
+    lines = [line for line in result.lines if not line.construction and line.name not in spines]
     # Generated curves run between their end points, splines between their first and last points.
     curves = [(c.name, *end_points(c.name)) for c in getattr(result, "curves", [])
-              if not c.construction and c.name in result.shapes]
+              if not c.construction and c.name in result.shapes and c.name not in spines]
     curves += [(w.name, w.points[0], w.points[-1]) for w in getattr(result, "splines", [])
-               if not w.construction and w.name in result.shapes]
+               if not w.construction and w.name in result.shapes and w.name not in spines]
     if not lines and not curves:
         return []
     # Nodes: points merged by place.

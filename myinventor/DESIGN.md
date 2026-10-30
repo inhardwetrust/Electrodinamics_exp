@@ -177,9 +177,11 @@ disk, Deparametrize, generators (`[[feature.curve]]`: `parabola`,
 the interpolating spline (Sketch > Spline), true B-splines in the kernel,
 generators in the browser (show / hide, Convert / Copy as Spline).
 
+Done since: the Offset modifier (`[[feature.offset]]`, model/offsets.py):
+a band left / right of a line, circle, spline or curve, caps flat or round.
+
 Next, in this order:
-1. Thickness for curves (one side or both): a closed profile.
-2. Revolve.
+1. Revolve.
 3. Manual primitives: arc, poly-arc, Bézier; copy / paste of generators.
 
 Later: patterns, fillets; RF primitives (a board with a layer stack, a

@@ -57,6 +57,16 @@
 #   x0 = "0"                  # optional arguments take their defaults
 #   visible = false           # optional: hidden (not drawn, not in profiles; its ends stay)
 #
+#   [[feature.offset]]        # the Offset modifier of a line, circle, spline or curve (model/offsets.py)
+#   of = "Spline1"
+#   left = "1"                # mm (formulas, >= 0) to each side, along it from its start to its end
+#   right = "0.5"
+#   start = "round"           # caps of an open one: "flat" | "round"
+#   end = "flat"
+#
+# An entity with an offset is its spine: it closes no profile itself; its band is a profile of its own, key "<entity>.offset" (a closed
+# one's inner loop: "<entity>.offset.inner").
+#
 # A curve's ends are points "Parabola1.start" / "Parabola1.end" that lines,
 # circles and polylines may use (they are not entities of their own: the
 # curve sets them; deleting the curve takes what uses them). A curve can be
@@ -84,6 +94,7 @@ import numpy as np
 
 from model.features import Feature, FeatureError, Field, PartialBuild, feature_type
 from model.curves import KINDS, CurveError, end_points, spline_points, spline_shape
+from model.offsets import CAPS, OffsetError, offset_loops
 from model.traces import BENDS, TraceError, outline
 
 MM = 1e-3
@@ -173,7 +184,18 @@ class SketchCurve:
     visible: bool = True    # hidden: not drawn, not in profiles (its ends stay points)
 
 
+@dataclass
+class SketchOffset:
+    """The Offset modifier of an entity: a band reaching left / right of it (model/offsets.py)."""
+    of: str                 # a line, circle, spline or generated curve
+    left: str = "1"         # formulas, mm
+    right: str = "0"
+    start: str = "flat"     # caps: "flat" | "round" (an open entity's)
+    end: str = "flat"
+
+
 ENDS = ("flat", "round")
+OFFSET_KINDS = ("line", "circle", "spline", "curve")
 
 
 @dataclass
@@ -190,6 +212,16 @@ class SketchResult:
     shapes: dict = field(default_factory=dict)      # curve or spline name -> model.curves.CurveShape (built)
     splines: list = field(default_factory=list)     # SketchSpline
     hidden: set = field(default_factory=set)        # ends of hidden curves nothing uses: not drawn, not picked
+    offsets: dict = field(default_factory=dict)     # entity -> [(key, edges, polygon)] of its offset (built)
+    spines: set = field(default_factory=set)        # entities with an offset: dashed, in no profile themselves
+
+    def offset_segments_mm(self, name):
+        """(K, 2, 3) the outlines of an entity's offset (closed rings) in the scene (mm); none if it failed."""
+        rings = []
+        for _, _, polygon in self.offsets.get(name, []):
+            ring = self.frame.to_world(np.vstack([polygon, polygon[:1]]) * MM) / MM
+            rings.append(np.stack([ring[:-1], ring[1:]], axis=1))
+        return np.concatenate(rings) if rings else np.zeros((0, 2, 3))
 
     def shown_points(self):
         """{name: (2,) mm} of the points drawn, picked and snapped to (not the hidden curves' unused ends)."""
@@ -245,7 +277,8 @@ class Sketch(Feature):
         Field("plane", "ref", doc="the plane the sketch lies on: a datum, or 'Feature:face'"),
     )
 
-    def __init__(self, name, points=(), lines=(), circles=(), polylines=(), curves=(), splines=(), **values):
+    def __init__(self, name, points=(), lines=(), circles=(), polylines=(), curves=(), splines=(), offsets=(),
+                 **values):
         super().__init__(name, **values)
         self.points = list(points)
         self.lines = list(lines)
@@ -253,6 +286,7 @@ class Sketch(Feature):
         self.polylines = list(polylines)
         self.curves = list(curves)
         self.splines = list(splines)
+        self.offsets = list(offsets)
         names = [p.name for p in self.points] + [e.name for e in self.lines + self.circles + self.polylines
                                                  + self.curves + self.splines]
         duplicates = sorted({n for n in names if names.count(n) > 1})
@@ -275,6 +309,15 @@ class Sketch(Feature):
             if len(w.points) < 2 or len(set(body)) != len(body):
                 raise FeatureError(f"{name}: spline {w.name} needs two points or more, each once "
                                    "(the last may be the first: closed, then three or more)")
+        seen = set()
+        for o in self.offsets:
+            if o.of in seen:
+                raise FeatureError(f"{name}: {o.of} has two offsets")
+            seen.add(o.of)
+            if o.of not in {e.name for e in self.lines + self.circles + self.splines + self.curves}:
+                raise FeatureError(f"{name}: offset of {o.of!r}: no line, circle, spline or curve of that name")
+            if o.start not in CAPS or o.end not in CAPS:
+                raise FeatureError(f"{name}: offset of {o.of}: a cap is one of {', '.join(CAPS)}")
         for line in self.lines:
             for end in (line.start, line.end):
                 if end not in points:
@@ -315,8 +358,10 @@ class Sketch(Feature):
         curves = [_curve(name, i, row) for i, row in enumerate(_rows(name, data.pop("curve", []), "curve"), 1)]
         splines = [_spline(name, i, row)
                    for i, row in enumerate(_rows(name, data.pop("spline", []), "spline"), 1)]
+        offsets = [_offset(name, i, row)
+                   for i, row in enumerate(_rows(name, data.pop("offset", []), "offset"), 1)]
         return cls(name, points=points, lines=lines, circles=circles, polylines=polylines, curves=curves,
-                   splines=splines, **data)
+                   splines=splines, offsets=offsets, **data)
 
     def to_dict(self):
         data = super().to_dict()
@@ -338,6 +383,9 @@ class Sketch(Feature):
                               **({} if c.visible else {"visible": False})} for c in self.curves]
         if self.splines:
             data["spline"] = [{"name": w.name, "points": list(w.points), **_construction(w)} for w in self.splines]
+        if self.offsets:
+            data["offset"] = [{"of": o.of, "left": o.left, "right": o.right, "start": o.start, "end": o.end}
+                              for o in self.offsets]
         return data
 
     def references(self):
@@ -575,6 +623,23 @@ class Sketch(Feature):
         self.curves.append(SketchCurve(name, kind, values, construction))
         return name
 
+    def offset(self, name):
+        """The offset of entity `name` (SketchOffset), or None."""
+        return next((o for o in self.offsets if o.of == name), None)
+
+    def add_offset(self, name, left="1", right="0", start="flat", end="flat"):
+        """An Offset of a line, circle, spline or curve (none yet); returns it."""
+        if self.kind_of(name) not in OFFSET_KINDS:
+            raise FeatureError(f"{self.name}: no offset of a {self.kind_of(name)} ({name})")
+        if self.offset(name) is not None:
+            raise FeatureError(f"{self.name}: {name} has an offset already")
+        offset = SketchOffset(name, str(left), str(right), start, end)
+        self.offsets.append(offset)
+        return offset
+
+    def remove_offset(self, name):
+        self.offsets = [o for o in self.offsets if o.of != name]
+
     def curve_to_spline(self, name, shape, tolerance, keep):
         """
         A spline in place of generated curve `name` (shape: its built
@@ -598,6 +663,9 @@ class Sketch(Feature):
             c.center = moved.get(c.center, c.center)
         for w in self.polylines + self.splines[:-1]:
             w.points = [moved.get(p, p) for p in w.points]
+        for o in self.offsets:                  # its offset goes with the spline
+            if o.of == name:
+                o.of = spline
         if keep:
             curve.visible = False
         else:
@@ -659,6 +727,12 @@ class Sketch(Feature):
                 | {p for w in self.polylines + self.splines for p in w.points})
 
     def delete(self, name):
+        """Deletes an entity (_delete), and the offsets of what is gone with it."""
+        self._delete(name)
+        alive = {e.name for e in self.lines + self.circles + self.splines + self.curves}
+        self.offsets = [o for o in self.offsets if o.of in alive]
+
+    def _delete(self, name):
         """
         Deletes a point (with the lines and circles that use it; out of a
         polyline, whose pieces then join), a line, a circle or a polyline
@@ -794,6 +868,23 @@ class Sketch(Feature):
                               circles, radii, polylines, outlines, [c for c in self.curves if c.visible], shapes,
                               splines)
         result.hidden = hidden
+        bases = {line.name: ("line", points[line.start], points[line.end]) for line in lines if not line.construction}
+        bases.update({c.name: ("circle", points[c.center], radii[c.name]) for c in circles if not c.construction})
+        bases.update({w.name: ("curve", shapes[w.name]) for w in splines if not w.construction})
+        bases.update({c.name: ("curve", shapes[c.name]) for c in self.curves
+                      if c.visible and not c.construction and c.name in shapes})
+        for o in self.offsets:
+            if o.of not in bases:
+                continue                        # a construction or hidden entity, or one that failed
+            result.spines.add(o.of)
+            try:
+                left = ctx.evaluate(o.left, f"offset of {o.of}: left")
+                right = ctx.evaluate(o.right, f"offset of {o.of}: right")
+                result.offsets[o.of] = offset_loops(o.of, bases[o.of], left, right, o.start, o.end)
+            except OffsetError as error:
+                broken.append(f"offset of {o.of}: {error}")
+            except ValueError as error:
+                broken.append(str(error))
         if broken:
             raise PartialBuild("; ".join(broken), result)
         return result
@@ -905,6 +996,19 @@ def _spline(owner, i, row):
     if not isinstance(points, list) or not all(isinstance(p, str) for p in points):
         raise FeatureError(f"{owner}: {where}: points must be a list of point names")
     return SketchSpline(_text(owner, where, row, "name"), list(points), _flag(owner, where, row, "construction"))
+
+
+def _offset(owner, i, row):
+    where = f"offset {i}" + (f" (of {row['of']})" if isinstance(row.get("of"), str) else "")
+    _keys(owner, where, row, ("of", "left", "right", "start", "end"))
+    if "left" not in row and "right" not in row:
+        raise FeatureError(f"{owner}: {where}: left or right (mm) is needed")
+    caps = [row.get(k, "flat") for k in ("start", "end")]
+    if any(c not in CAPS for c in caps):
+        raise FeatureError(f"{owner}: {where}: start and end are one of {', '.join(CAPS)}")
+    return SketchOffset(_text(owner, where, row, "of"),
+                        _text(owner, where, row, "left", True) if "left" in row else "0",
+                        _text(owner, where, row, "right", True) if "right" in row else "0", *caps)
 
 
 def _curve(owner, i, row):

@@ -115,7 +115,8 @@ from model.rebuild import rebuild
 from model.extrude import Extrude
 from model.profiles import find_regions
 from model.expressions import evaluate
-from model.sketch import Sketch, SketchPolyline, SketchSpline
+from model.offsets import CAPS, offset_key
+from model.sketch import OFFSET_KINDS, Sketch, SketchPolyline, SketchSpline
 from model.curves import KINDS, CurveError
 from model.traces import BENDS
 
@@ -205,6 +206,16 @@ def _group_item(parent, text):
     if parent is not None:
         parent.addChild(item)
     return item
+
+
+def _later(apply):
+    """
+    Runs `apply` once the event being handled is done. An edit in the
+    properties rebuilds them: done inside the signal of one of their widgets
+    (a field losing focus to a click on the next one), it deleted the widget
+    Qt was still delivering to (an access violation).
+    """
+    QTimer.singleShot(0, apply)
 
 
 def _checkable(parent, text, key, tooltip, checked=True):
@@ -1783,6 +1794,8 @@ class MainWindow(QMainWindow):
         while self.props_form.rowCount():
             self.props_form.removeRow(0)
         self._add_deparametrize(key)
+        if key is not None and key[0] == "entity" and len(self.view.selection) > 1:
+            self._add_offset_rows(key[1], [k[2] for k in self.view.selection if k[0] == "entity" and k[1] == key[1]])
         if key is None or key[0] != "entity" or len(self.view.selection) != 1:
             return
         sketch_name, name = key[1], key[2]
@@ -1806,6 +1819,7 @@ class MainWindow(QMainWindow):
                     field.setPlaceholderText(a.default)
                 self.props_form.addRow(f"{a.name}:", field)
             self._add_spline_buttons(sketch_name, curve.name)
+            self._add_offset_rows(sketch_name, [name])
             return
         if kind in ("polyline", "segment"):
             w = sketch.polyline(name.rpartition(".")[0] if kind == "segment" else name)
@@ -1817,7 +1831,7 @@ class MainWindow(QMainWindow):
                 combo.addItems(["flat", "round"])
                 combo.setCurrentText(getattr(w, end))
                 combo.currentTextChanged.connect(
-                    lambda text, w=w.name, end=end: self._set_polyline(sketch_name, w, **{end: text}))
+                    lambda text, w=w.name, end=end: _later(lambda: self._set_polyline(sketch_name, w, **{end: text})))
                 self.props_form.addRow(label, combo)
         elif kind == "point":
             for w, i in sketch.polyline_widths(name):
@@ -1832,7 +1846,7 @@ class MainWindow(QMainWindow):
                                      "chamfer: the center line is cut straight, both sides cut, the width stays\n"
                                      "miter: only the outer corner is cut (the circle of the radius around the point)")
                     combo.currentTextChanged.connect(
-                        lambda text, w=w.name, i=i: self._set_polyline(sketch_name, w, bend=(i, text)))
+                        lambda text, w=w.name, i=i: _later(lambda: self._set_polyline(sketch_name, w, bend=(i, text))))
                     self.props_form.addRow(f"Bend on {w.name}:", combo)
                     if w.bends[i] in BEND_PARAMETER:
                         label, default = BEND_PARAMETER[w.bends[i]]
@@ -1842,6 +1856,84 @@ class MainWindow(QMainWindow):
                             empty=True)
                         radius.setPlaceholderText(default)
                         self.props_form.addRow(f"{label} on {w.name}:", radius)
+        self._add_offset_rows(sketch_name, [name])
+
+    def _add_offset_rows(self, sketch_name, names):
+        """
+        The Offset of the selected lines, circles, splines and curves: one
+        with an offset: its fields (left, right, the caps of an open one) and
+        Remove Offset; else Offset / Remove Offset buttons for them all.
+        """
+        sketch = self.part.feature(sketch_name)
+
+        def able(n):
+            try:
+                return sketch.kind_of(n) in OFFSET_KINDS and not sketch.curve(n).construction
+            except (KeyError, StopIteration):
+                return False
+
+        names = [n for n in names if able(n)]
+        have = [n for n in names if sketch.offset(n) is not None]
+        free = [n for n in names if n not in have]
+        if len(names) == 1 and have:
+            name, offset = names[0], sketch.offset(names[0])
+            title = QLabel("<b>Offset</b>")
+            title.setToolTip("A band along it: left / right of it, from its start to its end (a circle: left is "
+                             "inside); a profile of its own")
+            self.props_form.addRow(title)
+            for side in ("left", "right"):
+                field = self._formula_field(getattr(offset, side),
+                                            lambda text, side=side: self._set_offset(sketch_name, name, side, text),
+                                            empty=True)
+                field.setPlaceholderText("0")
+                self.props_form.addRow(f"Offset {side}:", field)
+            built = self.result.outputs[sketch_name].shapes.get(name) if sketch_name in self.result.outputs else None
+            closed = sketch.kind_of(name) == "circle" or (built is not None and built.closed)
+            if not closed:
+                for label, end in (("Start cap:", "start"), ("End cap:", "end")):
+                    combo = QComboBox()
+                    combo.addItems(list(CAPS))
+                    combo.setCurrentText(getattr(offset, end))
+                    combo.currentTextChanged.connect(
+                        lambda text, end=end: _later(lambda: self._set_offset(sketch_name, name, end, text)))
+                    self.props_form.addRow(label, combo)
+            remove = QPushButton("Remove Offset")
+            remove.clicked.connect(lambda: _later(lambda: self.remove_offsets(sketch_name, [name])))
+            self.props_form.addRow(remove)
+            return
+        if free:
+            button = QPushButton("Offset" if len(names) == 1 else f"Offset ({len(free)})")
+            button.setToolTip("A band along it (a ring around a closed one): its own profile; set its sides and "
+                              "caps here then")
+            button.clicked.connect(lambda: _later(lambda: self.add_offsets(sketch_name, free)))
+            self.props_form.addRow(button)
+        if have:
+            button = QPushButton(f"Remove Offset ({len(have)})")
+            button.clicked.connect(lambda: _later(lambda: self.remove_offsets(sketch_name, have)))
+            self.props_form.addRow(button)
+
+    def add_offsets(self, sketch_name, names):
+        """An Offset (1 mm to the left) of each of these entities; one undo step."""
+        sketch = self.part.feature(sketch_name)
+        for name in names:
+            if sketch.offset(name) is None:
+                sketch.add_offset(name)
+        self._commit()
+        self.statusBar().showMessage(f"Offset of {', '.join(names)}: 1 mm to the left (its fields in the "
+                                     "properties)", 8000)
+
+    def remove_offsets(self, sketch_name, names):
+        """These entities' offsets removed; one undo step."""
+        sketch = self.part.feature(sketch_name)
+        for name in names:
+            sketch.remove_offset(name)
+        self._commit()
+
+    def _set_offset(self, sketch_name, name, key, text):
+        """An offset's left / right (empty: 0) or cap changed; one undo step."""
+        offset = self.part.feature(sketch_name).offset(name)
+        setattr(offset, key, text or "0")
+        self._commit()
 
     def add_curve(self, kind):
         """A generated curve of `kind` in the edited sketch, with starter arguments, selected: one undo step."""
@@ -1864,10 +1956,10 @@ class MainWindow(QMainWindow):
         convert = QPushButton("Convert to Spline")
         convert.setToolTip("Replace the curve by a spline through points on it (plain numbers: drag them); "
                            "what used its ends uses the spline's")
-        convert.clicked.connect(lambda: self.curve_to_spline(sketch_name, name, keep=False))
+        convert.clicked.connect(lambda: _later(lambda: self.curve_to_spline(sketch_name, name, keep=False)))
         copy = QPushButton("Copy as Spline")
         copy.setToolTip("The same spline, and the curve stays, hidden (tick its browser row to show it)")
-        copy.clicked.connect(lambda: self.curve_to_spline(sketch_name, name, keep=True))
+        copy.clicked.connect(lambda: _later(lambda: self.curve_to_spline(sketch_name, name, keep=True)))
         self.props_form.addRow(convert)
         self.props_form.addRow(copy)
 
@@ -1906,6 +1998,8 @@ class MainWindow(QMainWindow):
             self.show_error(f"{name}: no spline: {error}")
             return None
         self.part.replace_in_profiles(sketch_name, name, spline)
+        for inner in (False, True):             # its offset went with it
+            self.part.replace_in_profiles(sketch_name, offset_key(name, inner), offset_key(spline, inner))
         self._commit()
         count = len(dict.fromkeys(self.part.feature(sketch_name).spline(spline).points))
         self.statusBar().showMessage(f"{spline}: {count} points on {name}, within {self.spline_tolerance} µm"
@@ -1953,7 +2047,7 @@ class MainWindow(QMainWindow):
         button.setToolTip(f"Replace the formulas of {what} by their values now: the geometry stays, it no "
                           "longer follows the parameters, and it can be dragged.\n"
                           + ", ".join(labels[:12]) + (f" and {len(labels) - 12} more" if len(labels) > 12 else ""))
-        button.clicked.connect(lambda: self.deparametrize(sketch_name, names))
+        button.clicked.connect(lambda: _later(lambda: self.deparametrize(sketch_name, names)))
         self.props_form.addRow(button)
 
     def deparametrize(self, sketch_name, names=None):
@@ -1974,8 +2068,12 @@ class MainWindow(QMainWindow):
         """A formula field applying on Enter / leaving it, when changed (empty allowed only if `empty`)."""
         field = QLineEdit(text)
         field.setToolTip("mm: a number or a formula of the parameters (Enter applies)")
-        field.editingFinished.connect(
-            lambda: field.text().strip() != text and (empty or field.text().strip()) and apply(field.text().strip()))
+        def finished():
+            value = field.text().strip()
+            if value != text and (empty or value):
+                _later(lambda: apply(value))
+
+        field.editingFinished.connect(finished)
         return field
 
     def _set_polyline(self, sketch_name, name, width=None, start=None, end=None, at=None, bend=None, radius=None):

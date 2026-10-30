@@ -54,6 +54,8 @@ def report(part, result):
                                **({"spans": len(out.shapes[w.name].edges[0][2]) - 1}
                                   if out is not None and w.name in out.shapes else {})}
                               for w in feature.splines]
+            row["offsets"] = [{"of": o.of, "left": o.left, "right": o.right, "start": o.start, "end": o.end}
+                              for o in feature.offsets]
             if out is not None:
                 row["profiles"] = [{"key": list(r.key), "area": round(r.area, 6), "holes": len(r.holes)}
                                    for r in find_regions(out)]
@@ -95,6 +97,9 @@ def text(data):
                 args = ", ".join(f"{k} = {v}" for k, v in c["args"].items())
                 lines.append(f"    curve {c['name']}{'' if c['visible'] else ' (hidden)'} ({c['kind']}: {args}): {ends}; "
                              f"its ends {c['name']}.start / {c['name']}.end")
+            for o in f["offsets"]:
+                lines.append(f"    offset of {o['of']}: left {o['left']}, right {o['right']}, caps {o['start']} / "
+                             f"{o['end']}; its profile {o['of']}.offset")
             for w in f["splines"]:
                 built = f"a B-spline of {w['spans']} span(s)" if "spans" in w else "not built"
                 lines.append(f"    spline {w['name']}{' (construction)' if w['construction'] else ''} through "

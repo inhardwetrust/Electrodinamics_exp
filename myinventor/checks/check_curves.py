@@ -422,7 +422,7 @@ def check_window_tree(window, settle):
     labels = [b.widget().text() for b in buttons if b is not None and isinstance(b.widget(), QPushButton)]
     check("  selected: its arguments, Convert / Copy as Spline; the used sketch shows",
           view_selected(window) == key and "parabola curve" in window.info.text()
-          and labels == ["Convert to Spline", "Copy as Spline"] and "S" in window.view._sketch_geometry,
+          and labels == ["Convert to Spline", "Copy as Spline", "Offset"] and "S" in window.view._sketch_geometry,
           f"{labels}")
     steps = len(window.doc._undo)
     row.setCheckState(0, Qt.Unchecked)

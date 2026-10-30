@@ -480,6 +480,10 @@ class _SketchVisual:
             pieces = result.curve_segments_mm(w.name)
             blocks.append(pieces)
             self.seg_owner += [w.name] * len(pieces)
+        for name in getattr(result, "offsets", {}):     # offset bands, owned by their entity (a click picks it)
+            pieces = result.offset_segments_mm(name)
+            blocks.append(pieces)
+            self.seg_owner += [name] * len(pieces)
         self.segments = np.concatenate(blocks) if blocks else np.zeros((0, 2, 3))     # (K, 2, 3) mm
         # Dashed: construction lines, circles, curves and splines, and the polylines' center lines.
         self.construction = {e.name for e in result.lines + result.circles + curves + splines

@@ -56,7 +56,7 @@ Compatibility with Inventor or any other CAD is not a goal.
   reader, in a subprocess: both projects have a `geometry` package),
   `checks/check_sketch_polyline.py`, `checks/check_cli.py`,
   `checks/check_deparametrize.py`, `checks/check_curves.py`,
-  `checks/check_sketch_mode_3d.py`.
+  `checks/check_sketch_mode_3d.py`, `checks/check_offset.py`.
 - Without the window: `main.py name.part.toml --report [--json]
   [--export-step out.step]` (`cli.py`: rebuild, report, STEP; no Qt).
   The skill `.claude/skills/mycad/SKILL.md` teaches an AI to draw by
@@ -198,3 +198,8 @@ Compatibility with Inventor or any other CAD is not a goal.
   (processEvents during work) crashed the app.
 - `MainWindow.geometry` as an attribute hides `QWidget.geometry()`. Pick
   another name for the model.
+- An edit made from a properties widget rebuilds the properties. Done
+  inside that widget's signal (a field's editingFinished when a click on
+  the next field takes the focus) it deletes a widget Qt is still
+  delivering to: an access violation. Apply through `main_window._later`
+  (QTimer 0).
