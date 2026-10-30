@@ -117,6 +117,7 @@ from model.extrude import Extrude
 from model.revolve import Revolve, axis_of, check_side, onto_axis
 from model.workplane import WorkPlane
 from model.importstep import Import, body_names
+from model.transforms import GROUP, Move, expand
 from model.profiles import find_regions, named_regions, whole_regions
 from model.expressions import evaluate
 from model.offsets import CAPS, offset_key
@@ -138,6 +139,7 @@ BEND_PARAMETER = {
 }
 from view.extrude_panel import ExtrudePanel
 from view.workplane_panel import WorkPlanePanel
+from view.move_panel import MovePanel
 from view.sketch_tools import (
     ALIGN_PX, CURVE_SNAP_PX, SNAP_PX, CircleTool, LineTool, PasteTool, PointTool, SplineTool, TraceTool, align,
     curve_snap,
@@ -254,7 +256,10 @@ class MainWindow(QMainWindow):
         self.workplane_panel = None  # the Work Plane command's panel while it runs
         self._workplane = None      # that command: {"edit": name or None, "base": plane name}
         self._plane_purpose = "sketch"  # what a picked plane is for: "sketch" | "workplane"
-        self._axis_for_workplane = False    # the view picks the work plane's axis
+        self._picking_axis = False    # the view picks an axis (a work plane's, a move's)
+        self.move_panel = None      # the Move / Rotate command's panel while it runs
+        self._moving = None         # that command: {"edit": name or None, "targets": [...]}
+        self._selected_group = None  # the group whose browser row is selected (a Move's target)
         self._extruding = None      # the extrusion being edited by it, or None (a new one)
         self._sweep = "extrude"     # the command the panel runs: "extrude" | "revolve"
         self._rolled_back = False   # the view shows the bodies from before the edited extrusion
@@ -357,6 +362,13 @@ class MainWindow(QMainWindow):
                                              tip="A work plane: offset from a plane or flat face, or turned around "
                                                  "an axis in it (select the plane first, or click it next)")
         group.add_action(self.workplane_action)
+        group = model.add_group("Placement")
+        self.move_action = self._action("Move", lambda: self.start_move(), tip=(
+            "Move the selected bodies or group (placement: after all the features, on the bodies as built)"))
+        group.add_action(self.move_action)
+        self.rotate_action = self._action("Rotate", lambda: self.start_move(rotate=True), tip=(
+            "Turn the selected bodies or group around an axis (and move them): the same transform as Move"))
+        group.add_action(self.rotate_action)
         group = model.add_group("Inspect")
         self.measure_action = self._action("Measure", self._set_measure, checkable=True,
                                            tip="Measure: click picks point A, Shift + click point B")
@@ -1504,7 +1516,7 @@ class MainWindow(QMainWindow):
         wanted = {self.editing} | {k[1] for k in (self.view.hovered, self.view.selected)
                                    if k is not None and k[0] in ("feature", "entity")}
         wanted |= {name for name in used if self._failed_users(name)}
-        if (self.extrude_panel is not None and self._sweep == "revolve") or self._axis_for_workplane:
+        if (self.extrude_panel is not None and self._sweep == "revolve") or self._picking_axis:
             wanted |= set(used)                 # an axis may be in any of them
         shown = [(f.name, outputs[f.name]) for f in self.part.features
                  if f.TYPE == "sketch" and f.name in outputs and (f.name not in used or f.name in wanted)]
@@ -1524,6 +1536,219 @@ class MainWindow(QMainWindow):
             if feature.TYPE in ("extrude", "revolve"):
                 used.setdefault(feature["sketch"], feature.name)
         return used
+
+    def _selection_targets(self):
+        """What Move takes: the group selected in the browser, else the selected bodies."""
+        if self._selected_group is not None:
+            return [GROUP + self._selected_group]
+        return list(dict.fromkeys(k[1] for k in self.view.selection if k[0] == "body"))
+
+    def start_move(self, edit=None, rotate=False):
+        """
+        Placement > Move / Rotate: a panel for a transform of the selected
+        bodies or group (offset; an axis and an angle), a preview of them
+        moved; Apply adds it to the placement (a body of a group before its
+        group). edit: a transform to change.
+        """
+        if self.move_panel is not None:
+            self.move_panel.raise_()
+            return
+        self.finish_sketch()
+        if edit is not None:
+            t = self.part.transform(edit)
+            targets, offset, axis, angle = list(t.targets), t["offset"], t["axis"] or None, t["angle"]
+        else:
+            targets, offset, axis, angle = self._selection_targets(), ["0", "0", "0"], None, "90" if rotate else "0"
+        self._moving = {"edit": edit, "targets": targets}
+        panel = MovePanel(self, self.result.values, targets, offset=offset, axis=axis,
+                          axis_label=self._work_axis_label(axis) if axis else None, angle=angle,
+                          title=f"Edit {edit}" if edit else ("Rotate" if rotate else "Move"))
+        panel.applied.connect(self._apply_move)
+        panel.cancelled.connect(self._end_move)
+        panel.changed.connect(self._preview_move)
+        panel.pick_axis.connect(self._pick_move_axis)
+        panel.cleared.connect(lambda: self._set_move_targets([]))
+        self.move_panel = panel
+        self.move_action.setEnabled(False)
+        self.rotate_action.setEnabled(False)
+        self._set_move_targets(targets)
+        panel.show()
+        self.statusBar().showMessage("Move: click bodies or groups under Solid Bodies (or bodies in 3D) to take or "
+                                     "drop them · Apply · Esc: cancel")
+        if rotate and edit is None:
+            self._pick_move_axis()
+
+    def _toggle_move_target(self, key):
+        """
+        A click on a body or a group while Move runs: takes it or drops it.
+        A group takes the place of its bodies; a body of a group drops the
+        group. A body of a group placed above an edited transform is refused
+        (a body of a group is placed before its group).
+        """
+        targets = list(self._moving["targets"])
+        if key[0] == "group":
+            target = GROUP + key[1]
+            if target in targets:
+                targets.remove(target)
+            else:
+                members = set(self.part.group(key[1]).bodies)
+                targets = [t for t in targets if t not in members] + [target]
+        else:
+            body = key[1]
+            group = self.part.group_of(body)
+            if body in targets:
+                targets.remove(body)
+            else:
+                if group is not None:
+                    above = self._group_moved_above(group.name)
+                    if above is not None:
+                        self.statusBar().showMessage(
+                            f"{body} is in group {group.name}, placed by {above} above this transform: place a "
+                            "body of a group before its group (a new Move goes there by itself)", 10000)
+                        self._set_move_targets(targets)
+                        return
+                    targets = [t for t in targets if t != GROUP + group.name]
+                targets.append(body)
+        self._set_move_targets(targets)
+
+    def _group_moved_above(self, group):
+        """The transform above the one being edited that places `group`, or None (a new one goes before it)."""
+        edit = self._moving["edit"]
+        if edit is None:
+            return None
+        for t in self.part.transforms:
+            if t.name == edit:
+                return None
+            if GROUP + group in t.targets:
+                return t.name
+        return None
+
+    def _set_move_targets(self, targets):
+        """The Move's targets: shown in its panel (with where a new one goes), highlighted, previewed."""
+        self._moving["targets"] = list(targets)
+        placed = ""
+        if self._moving["edit"] is None and targets:
+            trial = Part.from_dict(self.part.to_dict())
+            at = trial.add_transform(Move(trial.free_feature_name("Move"), targets=targets))
+            if at < len(self.part.transforms):
+                placed = f"goes before {self.part.transforms[at].name} (it places a group of these bodies)"
+        self.move_panel.set_targets(targets, placed)
+        try:
+            bodies = expand(targets, self.part, self.result.shapes)
+        except ValueError:
+            bodies = []
+        self.view.select_keys([("body", b) for b in bodies])
+        self._preview_move()
+
+    def _move_transform(self):
+        """The transform the panel describes (FeatureError if it cannot be one)."""
+        panel, state = self.move_panel, self._moving
+        name = state["edit"] or self.part.free_feature_name("Move")
+        return Move(name, targets=state["targets"], offset=[e.text().strip() for e in panel.offset],
+                    axis=panel.axis or "", angle=panel.angle.text().strip() if panel.axis else "0")
+
+    def _preview_move(self):
+        """The targets as the transform leaves them, see-through; the panel told why if it cannot."""
+        panel = self.move_panel
+        if panel is None:
+            return
+        from model.features import FeatureError
+
+        if not self._moving["targets"]:         # nothing to show (applied so, it fails: being set up)
+            panel.set_error(None)
+            self.view.set_preview(None)
+            return
+        try:
+            transform = self._move_transform()
+            trial = Part.from_dict(self.part.to_dict())
+            if self._moving["edit"]:
+                at = [t.name for t in trial.transforms].index(transform.name)
+                trial.transforms[at] = transform
+            else:
+                at = trial.add_transform(transform)
+            trial.transforms = trial.transforms[:at + 1]
+            built = rebuild(trial, folder=self._folder(), tessellate=False)
+            if transform.name in built.feature_errors:
+                raise ValueError(built.feature_errors[transform.name])
+            shapes = [built.shapes[b] for b in expand(transform.targets, trial, built.shapes)]
+            panel.set_error(None)
+        except (ValueError, KeyError, FeatureError) as error:
+            panel.set_error(str(error))
+            self.view.set_preview(None)
+            return
+        from OCP.BRep import BRep_Builder
+        from OCP.TopoDS import TopoDS_Compound
+
+        compound, builder = TopoDS_Compound(), BRep_Builder()
+        builder.MakeCompound(compound)
+        for shape in shapes:
+            builder.Add(compound, shape)
+        self.view.set_preview(body_from_shape("preview", compound))
+
+    def _pick_move_axis(self):
+        """Pick: a click in the view takes the axis (a straight sketch line or an origin axis)."""
+        self._picking_axis = True
+        self.view.set_profile_mode([])
+        self.view.set_axis_mode(True)
+        self.view.on_axis = self._move_axis_picked
+        self._show_sketches()
+        self.statusBar().showMessage("Move: click the axis to turn around: a straight line of a sketch or an "
+                                     "origin axis")
+
+    def _move_axis_picked(self, key):
+        axis = key[1] if key[0] == "datum" else f"{key[1]}:{key[2]}"
+        self._end_axis_pick()
+        if self.move_panel is not None:
+            self.move_panel.set_axis(axis, self._work_axis_label(axis))
+
+    def _apply_move(self):
+        from model.features import FeatureError
+
+        try:
+            transform = self._move_transform()
+        except (ValueError, FeatureError) as error:
+            self.show_error(f"Move: {error}")
+            return
+        edit = self._moving["edit"]
+        self._end_move()
+        if edit:
+            at = [t.name for t in self.part.transforms].index(edit)
+            self.part.transforms[at] = transform
+        else:
+            self.part.add_transform(transform)
+        self._commit()
+        error = self.result.feature_errors.get(transform.name)
+        if error and not transform.targets:     # left to be set up: red, no dialog
+            self.statusBar().showMessage(f"{transform.name}: no targets yet (red): Edit it to pick them", 10000)
+        elif error:
+            self.show_error(f"{transform.name} failed: {error}")
+
+    def _end_move(self):
+        panel, self.move_panel = self.move_panel, None
+        if panel is not None:
+            for signal in (panel.applied, panel.cancelled, panel.changed, panel.pick_axis, panel.cleared):
+                signal.disconnect()
+            panel.close()
+        self._end_axis_pick()
+        self._moving = None
+        self.view.select(None)
+        self.view.set_preview(None)
+        self.move_action.setEnabled(True)
+        self.rotate_action.setEnabled(True)
+
+    def reorder_transform(self, name, step):
+        """Move Up / Move Down in the placement (refused if a body of a group would come after its group)."""
+        try:
+            self.part.move_transform(name, step)
+        except PartError as error:
+            self.statusBar().showMessage(f"{name}: {error}", 8000)
+            return False
+        self._commit()
+        return True
+
+    def delete_transform(self, name):
+        self.part.delete_transform(name)
+        self._commit()
 
     def start_work_plane(self, edit=None):
         """
@@ -1616,7 +1841,7 @@ class MainWindow(QMainWindow):
 
     def _pick_work_axis(self):
         """Pick (Angle): a click in the view takes a straight sketch line or an origin axis."""
-        self._axis_for_workplane = True
+        self._picking_axis = True
         self.view.set_profile_mode([])
         self.view.set_axis_mode(True)
         self.view.on_axis = self._work_axis_picked
@@ -1630,8 +1855,8 @@ class MainWindow(QMainWindow):
             self.workplane_panel.set_axis(axis, self._work_axis_label(axis))
 
     def _end_axis_pick(self):
-        if self._axis_for_workplane:
-            self._axis_for_workplane = False
+        if self._picking_axis:
+            self._picking_axis = False
             self.view.set_profile_mode(None)
             self.view.on_axis = None
             self._show_sketches()
@@ -1927,6 +2152,10 @@ class MainWindow(QMainWindow):
             return actions
         if kind == "group":
             return [("Rename...", lambda: self.rename_group_dialog(name)), ("Ungroup", lambda: self.ungroup(name))]
+        if kind == "transform":
+            return [("Edit", lambda: self.start_move(edit=name)), ("Move Up", lambda: self.reorder_transform(name, -1)),
+                    ("Move Down", lambda: self.reorder_transform(name, 1)),
+                    ("Delete", lambda: self.delete_transform(name))]
         if kind == "body_color":
             return [("Pick a color...", lambda: self.pick_body_color(name)),
                     ("Default color", lambda: self.set_body_color(name, None))]
@@ -1961,6 +2190,9 @@ class MainWindow(QMainWindow):
 
     def _row_clicked(self, item):
         key = self._key_of(item)
+        if key is not None and key[0] in ("body", "group") and self.move_panel is not None:
+            self._toggle_move_target(key)       # Move runs: the row takes or drops a target
+            return
         if key is not None and key[0] == "body_color":
             self.pick_body_color(key[1])
 
@@ -2085,6 +2317,9 @@ class MainWindow(QMainWindow):
         if key is not None and key[0] == "group":
             _later(lambda: self.rename_group_dialog(key[1]))
             return
+        if key is not None and key[0] == "transform":
+            _later(lambda: self.start_move(edit=key[1]))
+            return
         if key is not None and key[0] == "datum" and self._is_workplane(key[1]):
             _later(lambda: self.start_work_plane(edit=key[1]))
             return
@@ -2200,6 +2435,22 @@ class MainWindow(QMainWindow):
                     self._rows[row_key] = _checkable(
                         item, c.name, row_key, f"{c.kind} curve: {KINDS[c.kind].DOC}\nTick: shown (hidden: not drawn, "
                         "not in profiles). Select: its arguments. Right click: Convert / Copy as Spline.", c.visible)
+        if self.part.transforms:                # the placement, after the features
+            placement = _group_item(root, "Placement")
+            placement.setToolTip(0, "Transforms of the bodies as built, in order (a body of a group before "
+                                    "its group). Right click: Edit, Move Up / Down, Delete")
+            for t in self.part.transforms:
+                key = ("transform", t.name)
+                row = QTreeWidgetItem([t.name])
+                row.setData(0, Qt.UserRole, key)
+                tip = f"{t.TYPE} {', '.join(t.targets)}: offset ({', '.join(t['offset'])}) mm" + (
+                    f", turned {t['angle']} deg around {t['axis']}" if t["axis"] else "")
+                if t.name in errors:
+                    row.setForeground(0, QBrush(ERROR_COLOR))
+                    tip += f"\nerror: {errors[t.name]}"
+                row.setToolTip(0, tip)
+                placement.addChild(row)
+                self._rows[key] = row
         bodies = self.result.bodies if self.result is not None else []
         if bodies:
             folder = _group_item(None, f"Solid Bodies ({len(bodies)})")
@@ -2283,8 +2534,14 @@ class MainWindow(QMainWindow):
 
     def _item_selected(self, item):
         key = self._key_of(item)
+        self._selected_group = key[1] if key is not None and key[0] == "group" else None
         if key is not None and key[0] == "group":
             self.view.select_keys([("body", b) for b in self._group_members(key[1])])
+            self._show_info(key)
+            return
+        if key is not None and key[0] == "transform":
+            moved = self.result.outputs.get(key[1])
+            self.view.select_keys([("body", b) for b in (moved.bodies if moved is not None else [])])
             self._show_info(key)
             return
         if self._plane_picked(key):
@@ -2303,6 +2560,10 @@ class MainWindow(QMainWindow):
         if self.picking_plane:
             self._plane_picked(key)
             return
+        if self.move_panel is not None and key is not None and key[0] == "body":
+            self._toggle_move_target(key)       # Move runs: a click on a body takes or drops it
+            return
+        self._selected_group = None
         self._sync_construction()
         self._show_sketches()
         self.tree.blockSignals(True)
@@ -2334,6 +2595,16 @@ class MainWindow(QMainWindow):
             self.info.setText("")
         elif key[0] == "face":
             self.info.setText(self._face_info(key))
+        elif key[0] == "transform":
+            t = self.part.transform(key[1])
+            lines = [f"<b>{t.name}</b> ({t.TYPE}, placement)", f"of {', '.join(t.targets)}",
+                     f"offset ({', '.join(t['offset'])}) mm"]
+            if t["axis"]:
+                lines.append(f"turned {t['angle']} deg around {t['axis']} first")
+            error = self.result.feature_errors.get(t.name)
+            if error:
+                lines.append(f"<span style='color:#c81e1e'>error: {error}</span>")
+            self.info.setText("<br>".join(lines))
         elif key[0] == "group":
             members = self._group_members(key[1])
             volume = sum(b.volume for b in self.result.bodies if b.name in members and b.kind == "solid")

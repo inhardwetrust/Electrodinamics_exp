@@ -206,6 +206,23 @@ def file_sha256(path):
     return sha(path)
 
 
+def transform(shape, point, direction, angle, offset):
+    """
+    A shape (mm) turned by `angle` degrees around the axis through `point`
+    (3,) mm along `direction` (the right hand way), then moved by `offset`
+    (3,) mm: a copy.
+    """
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.gp import gp_Trsf
+
+    turn = gp_Trsf()
+    if abs(angle) > 0:
+        turn.SetRotation(gp_Ax1(gp_Pnt(*map(float, point)), gp_Dir(*map(float, direction))), float(np.radians(angle)))
+    move = gp_Trsf()
+    move.SetTranslation(gp_Vec(*map(float, offset)))
+    return BRepBuilderAPI_Transform(shape, move.Multiplied(turn), True).Shape()
+
+
 def body(name, shape, color=None):
     """A Body (meters, tessellated) of an OCP shape in mm."""
     return body_from_shape(name, shape, color=color)

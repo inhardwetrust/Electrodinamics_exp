@@ -105,6 +105,7 @@ tables, in order:
     [[body]]        name, color = "#rrggbb" (optional, per body)
     [[group]]       name, bodies = [...]: bodies that move / hide together (flat: a body in one
                     group at most; an import makes one of its bodies)
+    [[transform]]   placement, after all the features: the bodies as built, moved (below)
 
 Reading is strict: an unknown key, a wrong type or a missing reference is an
 error naming the place (exit 2). The full format with every key is in the
@@ -256,6 +257,25 @@ side exact), a construction line on the axis, revolved 360:
     angle = "360"
     operation = "new"
     body = "Reflector"
+
+### Placement (`[[transform]]`, after the features)
+
+Transforms move the bodies as the features built them (an imported
+connector onto the board's edge), in their order; nothing of the features
+sees them (a hole where a placed part goes: draw it from the same
+parameters). `type = "move"`: `targets` (bodies, and groups as
+`"group:SMA"`), `offset = ["x", "y", "z"]` (formulas, mm), optionally
+`axis` (an origin axis or a sketch line `"Sketch1:L3"`) and `angle`
+(degrees, the right hand way): turned first, then moved. A body of a group
+is placed before its group (local, then global); the other way round fails.
+
+    [[transform]]
+    name = "PlaceSMA"
+    type = "move"
+    targets = ["group:SMA"]
+    axis = "Z Axis"
+    angle = "90"
+    offset = ["board_w / 2", "0", "h"]
 
 ## Conventions for RF structures
 

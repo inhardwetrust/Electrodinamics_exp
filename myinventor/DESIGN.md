@@ -189,7 +189,7 @@ planar faces; work planes (model/workplane.py: Offset, Angle); STEP import
 (model/importstep.py: the file copied into <part>.files, its bodies named
 in the part, kept per content); groups of bodies ([[group]], flat).
 
-Decided (next): transforms (move / rotate / mirror) are post-features, a
+Done: Move (with its turn: Rotate). Decided, Mirror next: transforms are post-features, a
 section after the features ([[transform]]), applied to the bodies as built
 (as an imported STEP's), in order, a body or a group each; a body of a
 group is moved before the group (local, then global). Modeling never sees

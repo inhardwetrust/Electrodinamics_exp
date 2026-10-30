@@ -87,7 +87,15 @@ def report(part, result):
                            "size": [round(float(v), 6) for v in hi - lo],
                            "color": part.body_color(name)})
     groups = [{"name": g.name, "bodies": list(g.bodies)} for g in part.groups]
+    transforms = []
+    for t in part.transforms:
+        row = {"name": t.name, "type": t.TYPE, "targets": list(t.targets), "offset": list(t["offset"]),
+               "axis": t["axis"], "angle": t["angle"]}
+        if t.name in result.feature_errors:
+            row["error"] = result.feature_errors[t.name]
+        transforms.append(row)
     return {"parameters": parameters, "features": features, "bodies": bodies, "groups": groups,
+            "transforms": transforms,
             "ok": not result.errors and not result.feature_errors}
 
 
@@ -145,6 +153,10 @@ def text(data):
                      + (f", color {b['color']}" if b["color"] else ""))
     for g in data["groups"]:
         lines.append(f"group {g['name']}: {', '.join(g['bodies'])}")
+    for t in data["transforms"]:
+        turn = f", turned {t['angle']} deg around {t['axis']} first" if t["axis"] else ""
+        lines.append(f"placement {t['name']} ({t['type']} {', '.join(t['targets'])}): offset "
+                     f"({', '.join(t['offset'])}) mm{turn}" + (f": FAILED: {t['error']}" if "error" in t else ""))
     lines.append("ok" if data["ok"] else "NOT OK: see the errors above")
     return "\n".join(lines)
 

@@ -17,6 +17,8 @@
 #                    [[group]]
 #                    name = "SMA"
 #                    bodies = ["SMA:Shell", "SMA:Pin"]
+#   transforms   [Move...] (model/transforms.py): the placement of the bodies
+#                as built, after all the features, in order ([[transform]])
 # The bodies come from the rebuild (model/rebuild.py), not from here.
 #
 # Names: parameters have their own namespace (formulas see only them);
@@ -36,6 +38,7 @@ import numpy as np
 from model.expressions import ExpressionError, name_error, names, rename
 from model.features import FEATURE_TYPES, FeatureError
 from model import extrude, importstep, revolve, sketch, workplane  # noqa: F401  (register the feature types)
+from model.transforms import GROUP, TRANSFORM_TYPES, order_error
 
 DATUM_KINDS = ("plane", "axis", "point")
 COLOR = re.compile(r"#[0-9a-fA-F]{6}\Z")
@@ -119,6 +122,7 @@ class Part:
     features: list = field(default_factory=list)        # [Feature]
     bodies: dict = field(default_factory=dict)          # body name -> {"color": "#rrggbb"}
     groups: list = field(default_factory=list)          # [Group]
+    transforms: list = field(default_factory=list)      # [Move...]: after the features, in order
 
     # =====================================================
     # Lookup
@@ -143,8 +147,8 @@ class Part:
         raise KeyError(name)
 
     def object_names(self):
-        """Datums and features: the namespace references point into."""
-        return [d.name for d in self.origin] + [f.name for f in self.features]
+        """Datums, features and transforms: the namespace references point into (names unique in it)."""
+        return [d.name for d in self.origin] + [f.name for f in self.features] + [t.name for t in self.transforms]
 
     # =====================================================
     # Features
@@ -187,6 +191,8 @@ class Part:
                 f.values["body"] = new
             if hasattr(f, "rename_body"):
                 f.rename_body(old, new)
+        for t in self.transforms:
+            t.rename_target(old, new)
         if old in self.bodies:
             self.bodies[new] = self.bodies.pop(old)
         for g in self.groups:
@@ -241,10 +247,54 @@ class Part:
         if any(g.name == new for g in self.groups):
             raise PartError(f"a group {new!r} already exists")
         self.group(old).name = new
+        for t in self.transforms:
+            t.rename_target(GROUP + old, GROUP + new)
 
     def ungroup(self, name):
         """The group goes; its bodies stay."""
         self.groups = [g for g in self.groups if g.name != name]
+
+    # =====================================================
+    # Transforms (placement)
+    # =====================================================
+
+    def transform(self, name):
+        for t in self.transforms:
+            if t.name == name:
+                return t
+        raise KeyError(name)
+
+    def add_transform(self, transform):
+        """
+        A transform into the placement: before the first one of a group one
+        of its bodies is in (a body of a group is placed before its group),
+        else last. Returns its index.
+        """
+        if transform.name in self.object_names():
+            raise PartError(f"the name {transform.name!r} is taken")
+        groups = {g.name for t in transform.targets if not t.startswith(GROUP)
+                  for g in [self.group_of(t)] if g is not None}
+        at = next((i for i, t in enumerate(self.transforms)
+                   if any(x.startswith(GROUP) and x[len(GROUP):] in groups for x in t.targets)), len(self.transforms))
+        self.transforms.insert(at, transform)
+        return at
+
+    def move_transform(self, name, step):
+        """A transform one up (step -1) or down (+1); PartError if that breaks the order of groups."""
+        i = [t.name for t in self.transforms].index(name)
+        j = i + step
+        if not 0 <= j < len(self.transforms):
+            return
+        order = list(self.transforms)
+        order[i], order[j] = order[j], order[i]
+        for k in (min(i, j), max(i, j)):
+            error = order_error(order, self, k)
+            if error:
+                raise PartError(error)
+        self.transforms = order
+
+    def delete_transform(self, name):
+        self.transforms = [t for t in self.transforms if t.name != name]
 
     def free_feature_name(self, stem):
         """Sketch1, Sketch2...: the first one not taken (as Inventor names them)."""
@@ -306,7 +356,7 @@ class Part:
         parameter.name = new
         for p in self.parameters:
             p.formula = rename(p.formula, old, new)
-        for f in self.features:
+        for f in self.features + self.transforms:
             f.rename_formulas(lambda text: rename(text, old, new))
 
     def parameter_users(self, name):
@@ -315,7 +365,7 @@ class Part:
         for p in self.parameters:
             if p.name != name and name in _names_or_empty(p.formula):
                 users.append(p.name)
-        for f in self.features:
+        for f in self.features + self.transforms:
             if any(name in _names_or_empty(text) for _, text in f.formulas()):
                 users.append(f.name)
         return users
@@ -353,6 +403,8 @@ class Part:
             data["body"] = rows
         if self.groups:
             data["group"] = [{"name": g.name, "bodies": list(g.bodies)} for g in self.groups]
+        if self.transforms:
+            data["transform"] = [t.to_dict() for t in self.transforms]
         return data
 
     # =====================================================
@@ -380,7 +432,7 @@ class Part:
     @classmethod
     def from_dict(cls, data):
         """A validated part from plain data; PartError names what is wrong and where."""
-        _keys(data, "the file", allowed={"origin", "parameter", "feature", "body", "group"})
+        _keys(data, "the file", allowed={"origin", "parameter", "feature", "body", "group", "transform"})
         part = cls()
 
         origin = data.get("origin", {})
@@ -481,6 +533,30 @@ class Part:
                     raise PartError(f"{where}: {b!r} is in {other.name if other else 'it'} already "
                                     "(a body is in one group at most)")
             part.groups.append(Group(name, list(bodies)))
+
+        rows = data.get("transform", [])
+        if not isinstance(rows, list):
+            raise PartError("transform must be an array of tables ([[transform]])")
+        for i, row in enumerate(rows, 1):
+            if not isinstance(row, dict):
+                raise PartError(f"transform {i} must be a table")
+            name = row.get("name")
+            where = f"transform {i}" + (f" ({name})" if isinstance(name, str) else "")
+            if not isinstance(name, str) or not name.strip():
+                raise PartError(f"{where}: name must be a non-empty string")
+            kind = row.get("type")
+            if kind not in TRANSFORM_TYPES:
+                raise PartError(f"{where}: unknown type {kind!r} (one of {', '.join(TRANSFORM_TYPES)})")
+            if name in part.object_names():
+                raise PartError(f"{where}: the name {name!r} is taken")
+            try:
+                transform = TRANSFORM_TYPES[kind].from_dict(row)
+            except FeatureError as error:
+                raise PartError(f"{where}: {error}") from None
+            for ref in transform.references():
+                if ref not in part.object_names():
+                    raise PartError(f"{where}: {ref!r} is not a feature")
+            part.transforms.append(transform)        # in the file's order (a wrong order fails it, named)
         return part
 
 
