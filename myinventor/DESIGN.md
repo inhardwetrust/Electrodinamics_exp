@@ -202,7 +202,8 @@ the placement (a hole where a placed part will be: from the same
 parameters; "jumps in time" later if needed).
 
 Next, in this order:
-1. Manual primitives: arc, poly-arc, Bézier; copy / paste of generators.
+1. Manual primitives: poly-arc, Bézier (the arc is done: from its center or
+   through three points); copy / paste of generators and arcs.
 
 Later: patterns, fillets; RF primitives (a board with a layer stack, a
 line or CPW, a via fence, an SMA template); measure (picking and the A-B

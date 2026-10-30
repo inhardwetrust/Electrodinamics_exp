@@ -81,6 +81,11 @@
 # ("entity", sketch, line) or ("datum", name); it hovers green, the one
 # taken (axis_key) blue. Bodies do not hide lines meanwhile.
 #
+# Point (set_point_mode, within profile mode): a click takes a point: a
+# sketch point of any sketch shown (("entity", sketch, point)), the
+# origin's center (("datum", name)), or a body's corner (("xyz", (3,) mm));
+# a marker shows the one under the cursor; on_point(key).
+#
 # Preview (set_preview): what a feature command would add (see-through
 # amber) or cut away (red), until it is applied or cancelled.
 #
@@ -484,8 +489,8 @@ class _SketchVisual:
             pieces = result.curve_segments_mm(c.name)
             blocks.append(pieces)
             self.seg_owner += [c.name] * len(pieces)
-        splines = [w for w in getattr(result, "splines", []) if w.name in result.shapes]
-        for w in splines:                               # splines, the same way
+        splines = [w for w in getattr(result, "splines", []) + getattr(result, "arcs", []) if w.name in result.shapes]
+        for w in splines:                               # splines and arcs, the same way
             pieces = result.curve_segments_mm(w.name)
             blocks.append(pieces)
             self.seg_owner += [w.name] * len(pieces)
@@ -794,6 +799,8 @@ class GeometryView:
         self.axis_key = None            # the axis taken: ("entity", sketch, line) or ("datum", name)
         self.on_axis = None             # callback(key) after a click took an axis
         self.on_context = None          # callback(key or None, canvas pos) on a right click (not a drag)
+        self.point_mode = False         # profile mode picks a point instead (set_point_mode)
+        self.on_point = None            # callback(key) after a click took a point
         self._right_press = None
         self.shown_profiles = {}        # key -> "hover" | "selected" | None, as drawn
         self.preview_body = None        # the Body shown as a feature's preview, or None
@@ -821,6 +828,10 @@ class GeometryView:
         self.highlight_edges.order = 11
         self.highlight_edges.visible = False
         self.highlight_body = None      # the Body shown so (for the checks)
+        self.point_marker = scene.visuals.Markers(parent=self.root)
+        self.point_marker.set_gl_state("translucent", depth_test=False)
+        self.point_marker.order = 31
+        self.point_marker.visible = False
 
         self._picker = None
         self.picks = [None, None]       # points A and B: Pick or None
@@ -912,6 +923,10 @@ class GeometryView:
         event.handled = True
 
     def _mouse_move(self, event):
+        if self.profile_mode and event.button is None and not event.is_dragging and self.point_mode:
+            hit = self.point_at(event.pos)
+            self._show_point_marker(hit)
+            return
         if self.profile_mode and event.button is None and not event.is_dragging:
             key = self.axis_at(event.pos) if self.axis_mode else self.profile_at(event.pos)
             if key != self.hovered:
@@ -1020,6 +1035,11 @@ class GeometryView:
             return
         if np.linalg.norm(np.array(event.pos[:2], float) - press) >= CLICK_PX:
             return                      # a drag: rotated or panned
+        if self.profile_mode and self.point_mode:
+            hit = self.point_at(event.pos)
+            if hit is not None and self.on_point is not None:
+                self.on_point(hit[0])
+            return
         if self.profile_mode and self.axis_mode:
             key = self.axis_at(event.pos)
             if key is not None:
@@ -1231,6 +1251,46 @@ class GeometryView:
             return None
         hit = pick_datum(self._transform(), pos, rows, np.inf)
         return hit[0] if hit is not None else None
+
+    def point_at(self, pos):
+        """
+        (key, (3,) mm) of the point under `pos`: a sketch point of a shown
+        sketch, an origin point, else a body's corner ("xyz", its place); or None.
+        """
+        rows = [(("datum", d.name), "point", d.origin / SCENE_UNIT, np.zeros(3), np.zeros(3), np.zeros(3), 0.0)
+                for d in self._datum_list if d.kind == "point"]
+        where = {row[0]: row[2] for row in rows}
+        for visual in self._sketch_geometry.values():
+            for name, at in zip(visual.point_names, visual.point_pos):
+                key = ("entity", visual.name, name)
+                rows.append((key, "point", at, np.zeros(3), np.zeros(3), np.zeros(3), 0.0))
+                where[key] = at
+        hit = pick_datum(self._transform(), pos, rows, np.inf) if rows else None
+        if hit is not None:
+            return hit[0], where[hit[0]] * SCENE_UNIT / 1e-3
+        pick = self.pick_at(pos)
+        if pick is not None and pick.kind == "vertex":
+            point = np.asarray(pick.point, float)
+            return ("xyz", tuple(float(c) for c in point)), point
+        return None
+
+    def _show_point_marker(self, hit):
+        if hit is None:
+            self.point_marker.visible = False
+        else:
+            at = np.asarray(hit[1], float)[None] * 1e-3 / SCENE_UNIT
+            self.point_marker.set_data(at.astype(np.float32), size=12, edge_width=1.5,
+                                       face_color=(0.25, 1.0, 0.35, 1.0), edge_color=(0, 0, 0, 1))
+            self.point_marker.visible = True
+        self.canvas.update()
+
+    def set_point_mode(self, on):
+        """Profile mode picks a point (the origin's points shown meanwhile), or profiles again."""
+        self.point_mode = bool(on)
+        self._forced = {d.name for d in self._datum_list if d.kind == "point"} if on else set()
+        self.hovered = None
+        self._show_point_marker(None)
+        self._restyle()
 
     def set_axis_mode(self, on):
         """Profile mode picks an axis (origin axes shown meanwhile), or profiles again."""
@@ -1515,8 +1575,10 @@ class GeometryView:
         self.profile_mode = items is not None
         self.profile_selection = []
         self.hovered = None
-        if items is None:                       # leaving: no axis either
+        if items is None:                       # leaving: no axis, no point either
             self.axis_mode, self.axis_key, self._forced = False, None, set()
+            self.point_mode = False
+            self._show_point_marker(None)
             self.selection = []
         for key, frame, region, vertices, triangles in items or []:
             mesh = scene.visuals.Mesh(vertices=np.asarray(vertices, np.float32), faces=np.asarray(triangles),

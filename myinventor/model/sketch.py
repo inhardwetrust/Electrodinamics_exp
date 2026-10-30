@@ -50,6 +50,21 @@
 #   points = ["P1", "P2", "P3"]     # the last one = the first: closed (smooth all around)
 #   construction = true       # optional
 #
+#   [[feature.arc]]           # a circular arc, from its center (its ends: points "A1.start" / "A1.end")
+#   name = "A1"
+#   kind = "center"
+#   center = "P1"
+#   radius = "r"              # formulas: mm, and degrees from the sketch's x, counter-clockwise
+#   from = "0"                # from `from` to `to`
+#   to = "90"
+#
+#   [[feature.arc]]           # ... or through three points: from start through `through` to end
+#   name = "A2"
+#   kind = "three"
+#   start = "P2"
+#   end = "P3"
+#   through = "P4"
+#
 #   [[feature.curve]]         # a generator (model/curves.py): a kind and its arguments
 #   name = "Parabola1"
 #   kind = "parabola"
@@ -177,6 +192,33 @@ class SketchSpline:
 
 
 @dataclass
+class SketchArc:
+    """
+    A circular arc. kind "center": its center (a point), radius and the
+    angles it runs between (formulas; degrees, counter-clockwise), its ends
+    derived points ("A1.start" / "A1.end"); kind "three": from point start
+    through point through to point end.
+    """
+    name: str
+    kind: str = "center"
+    center: str = ""
+    radius: str = ""
+    start_angle: str = "0"
+    end_angle: str = "90"
+    start: str = ""
+    end: str = ""
+    through: str = ""
+    construction: bool = False
+
+    def points(self):
+        """The sketch points it is drawn from (its center, or its three)."""
+        return [self.center] if self.kind == "center" else [self.start, self.end, self.through]
+
+
+ARC_KINDS = ("center", "three")
+
+
+@dataclass
 class SketchCurve:
     """A generator (model/curves.py): its kind and one formula per argument of that kind."""
     name: str
@@ -197,7 +239,7 @@ class SketchOffset:
 
 
 ENDS = ("flat", "round")
-OFFSET_KINDS = ("line", "circle", "spline", "curve")
+OFFSET_KINDS = ("line", "circle", "spline", "curve", "arc")
 
 
 @dataclass
@@ -213,6 +255,7 @@ class SketchResult:
     curves: list = field(default_factory=list)      # SketchCurve, the visible ones
     shapes: dict = field(default_factory=dict)      # curve or spline name -> model.curves.CurveShape (built)
     splines: list = field(default_factory=list)     # SketchSpline
+    arcs: list = field(default_factory=list)        # SketchArc (built)
     hidden: set = field(default_factory=set)        # ends of hidden curves nothing uses: not drawn, not picked
     offsets: dict = field(default_factory=dict)     # entity -> [(key, edges, polygon)] of its offset (built)
     spines: set = field(default_factory=set)        # entities with an offset: dashed, in no profile themselves
@@ -280,7 +323,7 @@ class Sketch(Feature):
     )
 
     def __init__(self, name, points=(), lines=(), circles=(), polylines=(), curves=(), splines=(), offsets=(),
-                 **values):
+                 arcs=(), **values):
         super().__init__(name, **values)
         self.points = list(points)
         self.lines = list(lines)
@@ -289,8 +332,9 @@ class Sketch(Feature):
         self.curves = list(curves)
         self.splines = list(splines)
         self.offsets = list(offsets)
+        self.arcs = list(arcs)
         names = [p.name for p in self.points] + [e.name for e in self.lines + self.circles + self.polylines
-                                                 + self.curves + self.splines]
+                                                 + self.curves + self.splines + self.arcs]
         duplicates = sorted({n for n in names if names.count(n) > 1})
         if duplicates:
             raise FeatureError(f"{name}: duplicate sketch names {duplicates}")
@@ -302,6 +346,16 @@ class Sketch(Feature):
             if set(c.args) != wanted:
                 raise FeatureError(f"{name}: curve {c.name} ({c.kind}) takes {', '.join(a.name for a in kind.ARGS)}")
         points = self.point_names()
+        for a in self.arcs:
+            if a.kind not in ARC_KINDS:
+                raise FeatureError(f"{name}: arc {a.name}: kind is one of {', '.join(ARC_KINDS)}")
+            missing = [p for p in a.points() if p not in points]
+            if missing:
+                raise FeatureError(f"{name}: arc {a.name}: no point {missing[0]!r}")
+            if a.kind == "three" and len(set(a.points())) != 3:
+                raise FeatureError(f"{name}: arc {a.name}: three different points")
+            if a.kind == "center" and a.center in end_points(a.name):
+                raise FeatureError(f"{name}: arc {a.name}: centered on its own end")
         for w in self.splines:
             missing = [p for p in w.points if p not in points]
             if missing:
@@ -316,7 +370,7 @@ class Sketch(Feature):
             if o.of in seen:
                 raise FeatureError(f"{name}: {o.of} has two offsets")
             seen.add(o.of)
-            if o.of not in {e.name for e in self.lines + self.circles + self.splines + self.curves}:
+            if o.of not in {e.name for e in self.lines + self.circles + self.splines + self.curves + self.arcs}:
                 raise FeatureError(f"{name}: offset of {o.of!r}: no line, circle, spline or curve of that name")
             if o.start not in CAPS or o.end not in CAPS:
                 raise FeatureError(f"{name}: offset of {o.of}: a cap is one of {', '.join(CAPS)}")
@@ -362,8 +416,9 @@ class Sketch(Feature):
                    for i, row in enumerate(_rows(name, data.pop("spline", []), "spline"), 1)]
         offsets = [_offset(name, i, row)
                    for i, row in enumerate(_rows(name, data.pop("offset", []), "offset"), 1)]
+        arcs = [_arc_row(name, i, row) for i, row in enumerate(_rows(name, data.pop("arc", []), "arc"), 1)]
         return cls(name, points=points, lines=lines, circles=circles, polylines=polylines, curves=curves,
-                   splines=splines, offsets=offsets, **data)
+                   splines=splines, offsets=offsets, arcs=arcs, **data)
 
     def to_dict(self):
         data = super().to_dict()
@@ -385,6 +440,11 @@ class Sketch(Feature):
                               **({} if c.visible else {"visible": False})} for c in self.curves]
         if self.splines:
             data["spline"] = [{"name": w.name, "points": list(w.points), **_construction(w)} for w in self.splines]
+        if self.arcs:
+            data["arc"] = [{"name": a.name, "kind": a.kind,
+                            **({"center": a.center, "radius": a.radius, "from": a.start_angle, "to": a.end_angle}
+                               if a.kind == "center" else {"start": a.start, "end": a.end, "through": a.through}),
+                            **_construction(a)} for a in self.arcs]
         if self.offsets:
             data["offset"] = [{"of": o.of, "left": o.left, "right": o.right, "start": o.start, "end": o.end}
                               for o in self.offsets]
@@ -404,6 +464,9 @@ class Sketch(Feature):
         for p in self.points:
             rows += [(f"{p.name}.x", p.x), (f"{p.name}.y", p.y)]
         rows += [(f"{c.name}.radius", c.radius) for c in self.circles]
+        for a in self.arcs:
+            if a.kind == "center":
+                rows += [(f"{a.name}.radius", a.radius), (f"{a.name}.from", a.start_angle), (f"{a.name}.to", a.end_angle)]
         for w in self.polylines:
             rows += [(f"{w.name}.width", w.width)] + [(f"{w.name}.width[{p}]", t) for p, t in zip(w.points, w.widths)]
             rows += [(f"{w.name}.radius[{p}]", t) for p, t in zip(w.points, w.radii) if t]
@@ -422,6 +485,9 @@ class Sketch(Feature):
             p.x, p.y = rename(p.x), rename(p.y)
         for c in self.circles:
             c.radius = rename(c.radius)
+        for a in self.arcs:
+            if a.kind == "center":
+                a.radius, a.start_angle, a.end_angle = rename(a.radius), rename(a.start_angle), rename(a.end_angle)
         for w in self.polylines:
             w.width = rename(w.width)
             w.widths = [rename(t) for t in w.widths]
@@ -440,7 +506,7 @@ class Sketch(Feature):
     def free_name(self, prefix):
         """P1, P2..., L1..., C1..., W1...: the first one not taken in this sketch."""
         taken = {p.name for p in self.points} | {e.name for e in self.lines + self.circles + self.polylines
-                                                 + self.curves + self.splines}
+                                                 + self.curves + self.splines + self.arcs}
         n = 1
         while f"{prefix}{n}" in taken:
             n += 1
@@ -453,7 +519,8 @@ class Sketch(Feature):
         KeyError if there is none (a curve's end point is not an entity).
         """
         for kind, items in (("point", self.points), ("line", self.lines), ("circle", self.circles),
-                            ("polyline", self.polylines), ("curve", self.curves), ("spline", self.splines)):
+                            ("polyline", self.polylines), ("curve", self.curves), ("spline", self.splines),
+                            ("arc", self.arcs)):
             if any(item.name == name for item in items):
                 return kind
         owner, _, index = name.rpartition(".")
@@ -495,6 +562,13 @@ class Sketch(Feature):
                 points += [line.start, line.end]
             elif kind == "spline":
                 points += list(self.spline(name).points)
+            elif kind == "arc":
+                arc = self.arc(name)
+                points += arc.points()
+                if arc.kind == "center":
+                    for label, key in (("radius", "radius"), ("from", "start_angle"), ("to", "end_angle")):
+                        add(f"{arc.name}.{label}", lambda a=arc, k=key: getattr(a, k),
+                            lambda v, a=arc, k=key: setattr(a, k, v))
             elif kind == "circle":
                 circle = self.circle(name)
                 points.append(circle.center)
@@ -598,7 +672,8 @@ class Sketch(Feature):
 
     def point_names(self):
         """Every point a line, circle or polyline may use: the sketch's points and the curves' ends."""
-        return {p.name for p in self.points} | {e for c in self.curves for e in end_points(c.name)}
+        return ({p.name for p in self.points} | {e for c in self.curves for e in end_points(c.name)}
+                | {e for a in self.arcs if a.kind == "center" for e in end_points(a.name)})
 
     def _check_point(self, name):
         if name not in self.point_names():
@@ -701,8 +776,21 @@ class Sketch(Feature):
         return name
 
     def curve(self, name):
-        """A line, a circle or a generated curve by name (what may be construction)."""
-        return next(e for e in self.lines + self.circles + self.curves + self.splines if e.name == name)
+        """A line, a circle, an arc or a generated curve by name (what may be construction)."""
+        return next(e for e in self.lines + self.circles + self.curves + self.splines + self.arcs if e.name == name)
+
+    def arc(self, name):
+        return next(a for a in self.arcs if a.name == name)
+
+    def add_arc(self, construction=False, **values):
+        """A new arc (A1...): kind "center" (center, radius, start_angle, end_angle) or "three" (start, end, through)."""
+        arc = SketchArc(self.free_name("A"), construction=construction, **values)
+        for p in arc.points():
+            self._check_point(p)
+        if arc.kind == "three" and len(set(arc.points())) != 3:
+            raise FeatureError(f"{self.name}: an arc needs three different points")
+        self.arcs.append(arc)
+        return arc.name
 
     def points_of(self, name):
         """The points an entity is made of: a point itself, a line's ends, a circle's center, a polyline's."""
@@ -722,16 +810,18 @@ class Sketch(Feature):
             return list(end_points(name))
         if kind == "spline":
             return list(dict.fromkeys(self.spline(name).points))
+        if kind == "arc":
+            return self.arc(name).points()
         return [self.circle(name).center]
 
     def _used_points(self):
         return ({e for line in self.lines for e in (line.start, line.end)} | {c.center for c in self.circles}
-                | {p for w in self.polylines + self.splines for p in w.points})
+                | {p for w in self.polylines + self.splines for p in w.points} | {p for a in self.arcs for p in a.points()})
 
     def delete(self, name):
         """Deletes an entity (_delete), and the offsets of what is gone with it."""
         self._delete(name)
-        alive = {e.name for e in self.lines + self.circles + self.splines + self.curves}
+        alive = {e.name for e in self.lines + self.circles + self.splines + self.curves + self.arcs}
         self.offsets = [o for o in self.offsets if o.of in alive]
 
     def _delete(self, name):
@@ -746,10 +836,12 @@ class Sketch(Feature):
         point deleted out of a spline: it runs through the others).
         """
         kind = self.kind_of(name)
-        if kind == "curve":
+        if kind == "arc" and self.arc(name).kind == "center" or kind == "curve":
             ends = set(end_points(name))
             gone = [line for line in self.lines if {line.start, line.end} & ends]
             others = {p for line in gone for p in (line.start, line.end)}
+            if kind == "arc":
+                others.add(self.arc(name).center)   # its center goes too if nothing else uses it
             self.lines = [line for line in self.lines if line not in gone]
             self.circles = [c for c in self.circles if c.center not in ends]
             for w in self.polylines:
@@ -758,6 +850,7 @@ class Sketch(Feature):
             self.polylines = [w for w in self.polylines if len(w.points) >= 2]
             others |= {p for w in self.splines for p in w.points}
             self._drop_from_splines(ends)
+            self.arcs = [a for a in self.arcs if a.name != name and not set(a.points()) & ends]
             self.curves = [c for c in self.curves if c.name != name]
             used = self._used_points()
             self.points = [p for p in self.points if p.explicit or p.name in used or p.name not in others]
@@ -769,6 +862,7 @@ class Sketch(Feature):
                 w.take([i for i, p in enumerate(w.points) if p != name])
             self.polylines = [w for w in self.polylines if len(w.points) >= 2]
             self._drop_from_splines({name})
+            self.arcs = [a for a in self.arcs if name not in a.points()]
             self.points = [p for p in self.points if p.name != name]
             return
         mine = self.points_of(name)
@@ -786,6 +880,7 @@ class Sketch(Feature):
         self.circles = [c for c in self.circles if c.name != name]
         self.polylines = [w for w in self.polylines if w.name != name]
         self.splines = [w for w in self.splines if w.name != name]
+        self.arcs = [a for a in self.arcs if a.name != name]
         used = self._used_points()
         self.points = [p for p in self.points if p.explicit or p.name in used or p.name not in mine]
 
@@ -800,6 +895,26 @@ class Sketch(Feature):
     # =====================================================
     # Build
     # =====================================================
+
+    def _arc_shape(self, a, points, ctx):
+        """The CurveShape of arc `a` (its exact kernel edge); ValueError if it cannot be one."""
+        if a.kind == "three":
+            s, m, e = (points[p] for p in (a.start, a.through, a.end))
+            cross = (m - s)[0] * (e - s)[1] - (m - s)[1] * (e - s)[0]
+            if abs(cross) <= 1e-9 * max(1.0, float(np.linalg.norm(e - s))) ** 2:
+                raise ValueError("its three points lie on one line")
+            return _arc_edge(s, m, e)
+        center = points[a.center]
+        radius = ctx.evaluate(a.radius, f"arc {a.name}: the radius")
+        if radius <= 0:
+            raise ValueError(f"the radius must be > 0, it is {radius:g} mm")
+        a0 = math.radians(ctx.evaluate(a.start_angle, f"arc {a.name}: from"))
+        sweep = math.radians(ctx.evaluate(a.end_angle, f"arc {a.name}: to")) - a0
+        sweep = sweep % (2 * math.pi)
+        if sweep < 1e-9:
+            raise ValueError("from and to are the same angle: no arc")
+        at = lambda t: center + radius * np.array([math.cos(t), math.sin(t)])      # noqa: E731
+        return _arc_edge(at(a0), at(a0 + sweep / 2), at(a0 + sweep))
 
     def _frame(self, ctx):
         """Where the sketch lies (plane_frame)."""
@@ -821,6 +936,19 @@ class Sketch(Feature):
             shapes[c.name] = shape
             start, end = end_points(c.name)
             points[start], points[end] = shape.start, shape.end
+        arcs = []
+        for a in self.arcs:
+            if not all(p in points for p in a.points()):
+                continue                        # on the end of something that failed
+            try:
+                shapes[a.name] = self._arc_shape(a, points, ctx)
+            except ValueError as error:
+                broken.append(f"arc {a.name}: {error}")
+                continue
+            arcs.append(a)
+            if a.kind == "center":
+                start, end = end_points(a.name)
+                points[start], points[end] = shapes[a.name].start, shapes[a.name].end
         # What uses the ends of a curve that failed is left out (the sketch fails, but shows the rest).
         lines = [line for line in self.lines if line.start in points and line.end in points]
         circles = [c for c in self.circles if c.center in points]
@@ -857,9 +985,10 @@ class Sketch(Feature):
                               circles, radii, polylines, outlines, [c for c in self.curves if c.visible], shapes,
                               splines)
         result.hidden = hidden
+        result.arcs = arcs
         bases = {line.name: ("line", points[line.start], points[line.end]) for line in lines if not line.construction}
         bases.update({c.name: ("circle", points[c.center], radii[c.name]) for c in circles if not c.construction})
-        bases.update({w.name: ("curve", shapes[w.name]) for w in splines if not w.construction})
+        bases.update({w.name: ("curve", shapes[w.name]) for w in splines + arcs if not w.construction})
         bases.update({c.name: ("curve", shapes[c.name]) for c in self.curves
                       if c.visible and not c.construction and c.name in shapes})
         for o in self.offsets:
@@ -877,6 +1006,16 @@ class Sketch(Feature):
         if broken:
             raise PartialBuild("; ".join(broken), result)
         return result
+
+
+def _arc_edge(a, m, b):
+    """CurveShape of the exact arc a -> m -> b ((2,) mm each)."""
+    from model.curves import CurveShape, edge_function
+
+    edge = ("arc", np.asarray(a, float), np.asarray(m, float), np.asarray(b, float))
+    at, t0, t1 = edge_function(edge)
+    samples = at(np.linspace(t0, t1, 97))
+    return CurveShape(samples, [edge], samples[0].copy(), samples[-1].copy())
 
 
 def plane_frame(ctx, name):
@@ -1022,6 +1161,24 @@ def _offset(owner, i, row):
     return SketchOffset(_text(owner, where, row, "of"),
                         _text(owner, where, row, "left", True) if "left" in row else "0",
                         _text(owner, where, row, "right", True) if "right" in row else "0", *caps)
+
+
+def _arc_row(owner, i, row):
+    where = _where("arc", i, row)
+    kind = row.get("kind", "center")
+    if kind not in ARC_KINDS:
+        raise FeatureError(f"{owner}: {where}: kind is one of {', '.join(ARC_KINDS)}")
+    if kind == "center":
+        _keys(owner, where, row, ("name", "kind", "center", "radius", "from", "to", "construction"))
+        return SketchArc(_text(owner, where, row, "name"), "center", center=_text(owner, where, row, "center"),
+                         radius=_text(owner, where, row, "radius", True),
+                         start_angle=_text(owner, where, row, "from", True) if "from" in row else "0",
+                         end_angle=_text(owner, where, row, "to", True) if "to" in row else "90",
+                         construction=_flag(owner, where, row, "construction"))
+    _keys(owner, where, row, ("name", "kind", "start", "end", "through", "construction"))
+    return SketchArc(_text(owner, where, row, "name"), "three", start=_text(owner, where, row, "start"),
+                     end=_text(owner, where, row, "end"), through=_text(owner, where, row, "through"),
+                     construction=_flag(owner, where, row, "construction"))
 
 
 def _curve(owner, i, row):

@@ -130,7 +130,8 @@ def curve_snap(xy, result, tolerance, exclude=()):
 
 def _snap_edges(result):
     """[(entity name, kernel edges)] of the curves drawn besides lines and circles."""
-    out = [(c.name, result.shapes[c.name].edges) for c in getattr(result, "curves", []) + getattr(result, "splines", [])
+    out = [(c.name, result.shapes[c.name].edges)
+           for c in getattr(result, "curves", []) + getattr(result, "splines", []) + getattr(result, "arcs", [])
            if c.name in result.shapes]
     out += [(name, [e for _, edges, _ in loops for e in edges]) for name, loops in getattr(result, "offsets", {}).items()]
     out += [(name, edges) for name, (edges, _) in getattr(result, "outlines", {}).items()]
@@ -591,3 +592,91 @@ class SplineTool(LineTool):
         xy = at(np.linspace(0.0, length, 32 * len(chain) + 1))
         self.line.set_data(pos=(frame.to_world(xy * MM) / MM).astype(np.float32))
         return hit
+
+
+class ArcTool(SketchTool):
+    """
+    Sketch > Arc. method "center" (as Inventor's Center Point Arc): a click
+    puts the center, a second one the start (the radius and where it begins),
+    the preview arc follows the cursor counter-clockwise, a third click its
+    end (the angle). method "three" (Three Point Arc): a click puts the
+    start, a second one the end, the preview arc runs through the cursor, a
+    third click a point on it. add_arc(method, anchors) (the window) makes
+    it: "center": (center, start, end) anchors; "three": (start, end,
+    through). Esc drops the clicks so far, then leaves the tool.
+    """
+
+    name = "Arc"
+
+    def __init__(self, view, sketch, sketch_result, add_arc, on_exit, method="center"):
+        super().__init__(view, sketch, sketch_result, on_exit)
+        self.add_arc = add_arc
+        self.method = method
+        self.anchors = []           # the clicks so far (anchors)
+
+    def _pending(self):
+        return [(a, np.asarray(a[1], float)) for a in self.anchors if a[0] == "xy"]
+
+    def _arc_points(self, cursor):
+        """(N, 2) mm: the preview arc with the cursor as the next click, or None."""
+        xy = [self._xy(a) for a in self.anchors]
+        if any(p is None for p in xy):
+            self.anchors = []                   # a point of it was undone
+            return None
+        if self.method == "center" and len(xy) == 2:
+            center, start = xy
+            radius = float(np.linalg.norm(start - center))
+            if radius < ROUND_MM:
+                return None
+            a0 = np.arctan2(*(start - center)[::-1])
+            sweep = (np.arctan2(*(cursor - center)[::-1]) - a0) % (2 * np.pi)
+            t = a0 + np.linspace(0.0, sweep, 65)
+            return center + radius * np.stack([np.cos(t), np.sin(t)], axis=1)
+        if self.method == "three" and len(xy) == 2:
+            from model.curves import edge_function
+
+            start, end = xy
+            cross = (cursor - start)[0] * (end - start)[1] - (cursor - start)[1] * (end - start)[0]
+            if abs(cross) < 1e-9:
+                return np.array([start, end])
+            at, t0, t1 = edge_function(("arc", start, cursor, end))
+            return at(np.linspace(t0, t1, 65))
+        if len(xy) == 1:
+            return np.array([xy[0], cursor])    # (a radius, or a chord)
+        return None
+
+    def move(self, pos):
+        hit = self._show(pos)
+        self.line.visible = False
+        if hit is None or not self.anchors:
+            self.view.canvas.update()
+            return
+        path = self._arc_points(hit[1])
+        if path is not None and len(path) > 1:
+            frame = self.sketch_result().frame
+            self.line.set_data(pos=(frame.to_world(path * MM) / MM).astype(np.float32))
+            self.line.visible = True
+        self.view.canvas.update()
+
+    def click(self, pos):
+        hit = self.snap(pos)
+        if hit is None:
+            return
+        xy = [self._xy(a) for a in self.anchors]
+        if any(np.linalg.norm(hit[1] - p) < ROUND_MM for p in xy if p is not None):
+            return                              # the same place twice: nothing
+        self.anchors.append(hit[0])
+        if len(self.anchors) == 3:
+            anchors, self.anchors = self.anchors, []
+            self.add_arc(self.method, anchors)
+            self.line.visible = False
+        self.move(pos)
+
+    def escape(self):
+        if self.anchors:
+            self.anchors = []
+            self.line.visible = False
+            self.view.canvas.update()
+        else:
+            self.on_exit()
+        return True

@@ -142,6 +142,12 @@ Geometry (each is a `[[feature.<kind>]]` table under the sketch):
   profile; its key is the sorted line names (`["L1", "L2", "L3", "L4"]`).
   A rectangle is four lines through four points.
 - `circle`: `name`, `center` (a point), `radius`. Its key: `["C1"]`.
+- `arc`: a circular arc, exact. `kind = "center"`: `center` (a point),
+  `radius`, `from`, `to` (formulas: mm, degrees from the sketch's x; it runs
+  counter-clockwise from `from` to `to`); its ends are points `A1.start` /
+  `A1.end` that lines use (as a curve's). `kind = "three"`: `start`, `end`,
+  `through` (points): from start through `through` to end. An arc and a line
+  on its ends close a profile (`["A1", "L1"]`).
 - `polyline`: a wide line (a microstrip, a trace): `points` (its center
   line), `widths` (one formula per point; it tapers linearly between),
   `width` (for points added later), `start` / `end` = `"flat"` | `"round"`,
@@ -235,7 +241,11 @@ plane, a planar face `"Ext:end"`, or a work plane above) and either
 `offset` (mm along the base's normal, a formula) or `axis` (an origin axis
 or a sketch line `"Sketch1:L3"`, lying in the base) with `angle` (degrees
 around it, the right hand way); `visible = false` hides it. A feed's plane
-at the focus of a reflector: `base = "XY Plane"`, `offset = "f"`.
+at the focus of a reflector: `base = "XY Plane"`, `offset = "f"`. Or, with
+no base, `points` = three points: a sketch point (`"Sketch1:P3"`: the plane
+follows it), an origin point (`"Center Point"`) or `["x", "y", "z"]`
+(formulas, mm): the origin at the first, x toward the second, the normal the
+right hand way round 1 -> 2 -> 3.
 
 ### Revolution (`type = "revolve"`)
 

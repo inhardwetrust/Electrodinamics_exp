@@ -46,6 +46,9 @@ def report(part, result):
             row["lines"] = [line.name + (" (construction)" if line.construction else "") for line in feature.lines]
             row["circles"] = [c.name + (" (construction)" if c.construction else "") for c in feature.circles]
             row["polylines"] = [w.name for w in feature.polylines]
+            row["arcs"] = [a.name + (f" (center {a.center}, r {a.radius}, {a.start_angle}..{a.end_angle} deg)"
+                                     if a.kind == "center" else f" ({a.start} through {a.through} to {a.end})")
+                           for a in feature.arcs]
             row["curves"] = [{"name": c.name, "kind": c.kind, "args": dict(c.args), "visible": c.visible,
                               **({"start": [round(float(v), 6) for v in out.points[c.name + ".start"]],
                                   "end": [round(float(v), 6) for v in out.points[c.name + ".end"]]}
@@ -70,7 +73,8 @@ def report(part, result):
         elif feature.TYPE == "import":
             row.update(file=feature["file"], bodies=list(feature.bodies))
         elif feature.TYPE == "workplane":
-            row.update(base=feature["base"], offset=feature["offset"], axis=feature["axis"], angle=feature["angle"])
+            row.update(base=feature["base"], offset=feature["offset"], axis=feature["axis"], angle=feature["angle"],
+                       points=feature.points)
         elif feature.TYPE == "revolve":
             row.update(sketch=feature["sketch"], profiles=[list(p) for p in feature.profiles], axis=feature["axis"],
                        angle=feature["angle"], operation=feature["operation"], body=feature["body"])
@@ -111,6 +115,8 @@ def text(data):
         if f["type"] == "sketch":
             lines.append(f"    on {f['plane']}; {f['points']} points; lines {', '.join(f['lines']) or '-'}; "
                          f"circles {', '.join(f['circles']) or '-'}; polylines {', '.join(f['polylines']) or '-'}")
+            for a in f.get("arcs", []):
+                lines.append(f"    arc {a}")
             for c in f["curves"]:
                 ends = (f"from ({', '.join(f'{v:g}' for v in c['start'])}) to "
                         f"({', '.join(f'{v:g}' for v in c['end'])})" if "start" in c else "not built")
@@ -138,8 +144,11 @@ def text(data):
         elif f["type"] == "import":
             lines.append(f"    {f['file']}: {', '.join(f['bodies'])}")
         elif f["type"] == "workplane":
-            how = f"turned {f['angle']} deg around {f['axis']}" if f["axis"] else f"offset {f['offset']} mm"
-            lines.append(f"    from {f['base']}, {how}")
+            if f.get("points"):
+                lines.append(f"    through {', '.join(p if isinstance(p, str) else '(' + ', '.join(p) + ')' for p in f['points'])}")
+            else:
+                how = f"turned {f['angle']} deg around {f['axis']}" if f["axis"] else f"offset {f['offset']} mm"
+                lines.append(f"    from {f['base']}, {how}")
         elif f["type"] == "revolve":
             lines.append(f"    {f['operation']} body {f['body']!r} from {f['sketch']} {f['profiles']}, "
                          f"around {f['axis']} by {f['angle']} deg")

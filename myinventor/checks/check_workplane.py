@@ -16,7 +16,14 @@
 #     (forced, shown at the offset), Offset 7, Apply: WorkPlane1 at z 7, a
 #     ticked browser row (unticking hides it, one undo step), New Sketch on
 #     it lies at z 7; Edit Work Plane: Angle, Pick, a click on Y Axis,
-#     30 degrees, Apply: turned 30 around Y.
+#     30 degrees, Apply: turned 30 around Y;
+#   - Three Points (model): Center Point, a sketch point (10, 0, 0), (0, 10,
+#     h): through them, normal (0, -h, 10) / |..|; the sketch point moved:
+#     the plane follows; three on a line: it fails; a TOML round trip;
+#   - the window: Work Plane with nothing selected: the panel at once, the
+#     base asked (a click on XZ Plane takes it); Three Points: Pick, three
+#     clicks (a sketch point, the origin's center, a body's corner): Apply:
+#     through them; Edit: the same panel, the points listed.
 #
 #   python checks/check_workplane.py [--no-window]
 
@@ -127,6 +134,88 @@ def check_refused():
         check("refused: an offset and an axis together", True, str(error))
 
 
+def check_points():
+    part = Part()
+    part.add_parameter("h", "5")
+    s = part.add_feature(Sketch("A", plane="XY Plane"))
+    s.add_point("10", "0", explicit=True)
+    part.add_feature(WorkPlane("WP", points=["Center Point", "A:P1", ["0", "10", "h"]]))
+    f = rebuild(part).outputs["WP"].plane_frame()
+    want = np.array([0, -5, 10]) / math.sqrt(125)
+    check("Three Points: through the center, A:P1 (10, 0, 0), (0, 10, h): x toward the second, normal (0, -h, 10)",
+          np.allclose(f.origin, 0) and np.allclose(f.u, [1, 0, 0]) and np.allclose(f.normal, want)
+          and "A" in part.feature("WP").references(), f"{f.normal}")
+    s.point("P1").y = "10"
+    f = rebuild(part).outputs["WP"].plane_frame()
+    check("  A:P1 moved to (10, 10): the plane follows (x along (1, 1, 0))",
+          np.allclose(f.u, np.array([1, 1, 0]) / math.sqrt(2)), f"{f.u}")
+    text = dumps(part)
+    check("  TOML round trip", from_data(tomllib.loads(text)).to_dict() == part.to_dict() and "points = [" in text)
+    part.feature("WP").points = ["Center Point", ["1", "0", "0"], ["2", "0", "0"]]
+    error = rebuild(part).feature_errors.get("WP", "")
+    check("  three on a line: it fails", "one line" in error, error)
+
+
+def check_points_window(window, settle):
+    from check_sketch_line import click, pixel
+    from model.sketch import SketchFrame
+
+    view, native = window.view, window.view.canvas.native
+    s = window.part.add_feature(Sketch("Pts", plane="XY Plane"))
+    s.add_point("10", "0", explicit=True)
+    from model.extrude import Extrude
+
+    q = [s.add_point(x, y) for x, y in (("0", "20"), ("4", "20"), ("4", "24"), ("0", "24"))]
+    for a, b in zip(q, q[1:] + q[:1]):
+        s.add_line(a, b)
+    window.part.add_feature(Extrude("Cube", profiles=[("L1", "L2", "L3", "L4")], sketch="Pts", distance="4",
+                                    body="Cube"))
+    window._commit()
+    settle()
+    view.select(None)
+    window._on_view_select(None)
+    window.workplane_action.trigger()
+    settle()
+    panel = window.workplane_panel
+    check("Work Plane with nothing selected: the panel at once, the base asked (picking)",
+          panel is not None and window.picking_plane and not panel.apply_button.isEnabled())
+    window._plane_picked(("datum", "XZ Plane"))
+    settle()
+    check("  a click on XZ Plane: the base", panel.base == "XZ Plane" and not window.picking_plane
+          and panel.apply_button.isEnabled(), f"{panel.base}")
+    panel.kind.setCurrentText("Three Points")
+    settle()
+    check("  Three Points: Apply off until three are picked", not panel.apply_button.isEnabled())
+    panel.pick_points.emit()
+    settle()
+    xy = SketchFrame(np.zeros(3), np.array([1.0, 0, 0]), np.array([0, 1.0, 0]), np.array([0, 0, 1.0]))
+    top = SketchFrame(np.array([0, 0, 0.004]), np.array([1.0, 0, 0]), np.array([0, 1.0, 0]), np.array([0, 0, 1.0]))
+    click(native, pixel(view, xy, (10, 0)))           # the sketch point Pts:P1
+    click(native, pixel(view, xy, (0, 0)))            # the origin's center
+    click(native, pixel(view, top, (4, 24)))          # the cube's top corner (4, 24, 4)
+    settle()
+    points = window._workplane["points"]
+    check("  three clicks: a sketch point, the center, a body's corner (by its place)",
+          len(points) == 3 and points[0] == "Pts:P1" and points[1] == "Center Point"
+          and isinstance(points[2], list) and np.allclose([float(c) for c in points[2]], [4, 24, 4], atol=1e-6)
+          and panel.apply_button.isEnabled(), f"{points}")
+    panel.apply_button.click()
+    settle()
+    name = [f.name for f in window.part.features if f.TYPE == "workplane"][-1]
+    f = window.result.outputs[name].plane_frame()
+    normal = np.cross([-10, 0, 0], [-6, 24, 4])
+    check("Apply: through them (origin at Pts:P1, x toward the center)",
+          np.allclose(f.origin / 1e-3, [10, 0, 0]) and np.allclose(f.u, [-1, 0, 0])
+          and np.allclose(f.normal, normal / np.linalg.norm(normal)), f"{f.origin} {f.normal}")
+    window.start_work_plane(edit=name)
+    settle()
+    panel = window.workplane_panel
+    check("Edit: the same panel, Three Points, the points listed", panel.is_points()
+          and "P1 (Pts)" in panel.points_label.text() and panel.apply_button.isEnabled(), panel.points_label.text())
+    panel.reject()
+    settle()
+
+
 def check_file():
     part = Part()
     part.add_feature(WorkPlane("WP", base="XY Plane", offset="3", visible=False))
@@ -205,7 +294,7 @@ def check_window():
     panel.kind.setCurrentText("Angle")
     settle()
     check("Edit Work Plane, Angle: Apply off until an axis is picked", not panel.apply_button.isEnabled())
-    panel.pick.click()
+    panel.pick_axis.emit()
     settle()
     xy = SketchFrame(np.zeros(3), np.array([1.0, 0, 0]), np.array([0, 1.0, 0]), np.array([0, 0, 1.0]))
     click(native, pixel(view, xy, (0, 5)))
@@ -221,6 +310,7 @@ def check_window():
           (feature["axis"], feature["angle"], feature["offset"]) == ("Y Axis", "30", "0")
           and np.allclose(normal, [math.sin(math.radians(30)), 0, math.cos(math.radians(30))]),
           f"{feature.to_dict()} {normal}")
+    check_points_window(window, settle)
     check("no error dialogs", not errors, f"{errors}")
     window.close()
     check("no errors in VisPy callbacks", not vispy_errors, f"{vispy_errors[:3]}")
@@ -230,6 +320,7 @@ def main():
     check_offsets()
     check_angles()
     check_refused()
+    check_points()
     check_file()
     if "--no-window" not in sys.argv:
         check_window()

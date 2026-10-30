@@ -127,7 +127,7 @@ def _items(result):
     spines = getattr(result, "spines", set())
     items = [(line.name, [("line", result.points[line.start].copy(), result.points[line.end].copy(), line.name)],
               False) for line in result.lines if not line.construction and line.name not in spines]
-    for c in getattr(result, "curves", []) + getattr(result, "splines", []):
+    for c in getattr(result, "curves", []) + getattr(result, "splines", []) + getattr(result, "arcs", []):
         if not c.construction and c.name not in spines and c.name in result.shapes:
             shape = result.shapes[c.name]
             items.append((c.name, list(shape.edges), shape.closed))

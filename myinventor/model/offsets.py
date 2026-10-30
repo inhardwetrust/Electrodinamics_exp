@@ -64,10 +64,11 @@ def offset_loops(name, base, left, right, start="flat", end="flat"):
     else:
         shape = base[1]
         edge = shape.edges[0]
-        if len(shape.edges) != 1 or edge[0] not in ("parabola", "bspline"):
+        if len(shape.edges) != 1 or edge[0] not in ("parabola", "bspline", "arc"):
             raise OffsetError(f"no offset of a curve made of {[e[0] for e in shape.edges]}")
         at, t0, t1 = edge_function(edge)
         path = _Path(lambda s: at(t0 + np.asarray(s, float) * (t1 - t0)), [edge], shape.closed, False)
+        path.arc = edge[0] == "arc"
     path.check(left, right)
     if path.closed:
         return _closed(name, path, left, right)
@@ -121,6 +122,9 @@ class _Path:
         if self.straight:
             ends = self.side(d)(np.array([0.0, 1.0]))
             return [("line", ends[0], ends[1])]
+        if getattr(self, "arc", False):         # an arc's side: the concentric arc, exact
+            p = self.side(d)(np.array([0.0, 0.5, 1.0]))
+            return [("arc", p[0], p[1], p[2])]
         try:
             return [fit_spline(self.side(d), 0.0, 1.0)]
         except CurveError as error:

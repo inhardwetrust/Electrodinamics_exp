@@ -141,7 +141,7 @@ from view.extrude_panel import ExtrudePanel
 from view.workplane_panel import WorkPlanePanel
 from view.move_panel import MirrorPanel, MovePanel
 from view.sketch_tools import (
-    ALIGN_PX, CURVE_SNAP_PX, SNAP_PX, CircleTool, LineTool, PasteTool, PointTool, SplineTool, TraceTool, align,
+    ALIGN_PX, CURVE_SNAP_PX, SNAP_PX, ArcTool, CircleTool, LineTool, PasteTool, PointTool, SplineTool, TraceTool, align,
     curve_snap,
     fmt_mm, radius_snap,
 )
@@ -164,6 +164,11 @@ TRACE_HINT = ("Polyline: click its center line point by point (the width beside 
 SPLINE_HINT = ("Spline: click the points it runs through; click the first point to close it (smooth all around), "
                "the last one to stop · Esc: end it, Esc again: leave Spline")
 POINT_HINT = "Point: click to put a point · Esc: leave Point"
+ARC_HINTS = {
+    "center": "Arc from its center: click the center, then its start (the radius), then its end (counter-clockwise) "
+              "· the method below left · Esc: drop the clicks, again: leave Arc",
+    "three": "Arc through three points: click its start, then its end, then a point on it · the method below left · "
+             "Esc: drop the clicks, again: leave Arc"}
 CIRCLE_HINT = "Circle: click the center, then a point on the circle · Esc: drop the center, again: leave Circle"
 PASTE_HINT = "Paste: click where the copy goes (it hangs on the cursor by its middle) · Esc: cancel"
 PICK_PLANE_HINT = "Start 2D Sketch: select a plane or a flat face of a body (in 3D or in the browser), Esc: cancel"
@@ -253,6 +258,7 @@ class MainWindow(QMainWindow):
         self.clipboard = None       # copied sketch geometry (see copy_selection), or None
         self._trace = None          # the polyline the Polyline tool is drawing
         self._spline = None         # the spline the Spline tool is drawing
+        self.arc_method = "center"  # how the Arc tool draws: "center" | "three"
         self.spline_tolerance = "50"    # µm: how far a spline made from a curve may be off it
         self.extrude_panel = None   # the Extrude command's panel while it runs
         self.workplane_panel = None  # the Work Plane command's panel while it runs
@@ -405,6 +411,10 @@ class MainWindow(QMainWindow):
                                           tip="Circles: click the center, then a point on the circle; "
                                               "Esc drops the center, again leaves the tool")
         group.add_action(self.circle_action)
+        self.arc_action = self._action("Arc", self._set_arc_tool, checkable=True,
+                                       tip="Arcs: from the center (center, start, end) or through three points "
+                                           "(start, end, a point on it): the method below left")
+        group.add_action(self.arc_action)
         self.trace_action = self._action("Polyline", self._set_trace_tool, checkable=True,
                                          tip="A wide polyline: click its center line point by point; each new "
                                              "point gets the width beside it, then its own (Properties)")
@@ -425,7 +435,8 @@ class MainWindow(QMainWindow):
                                          tip="A generated curve (a parabola; the arrow: other kinds), set by its "
                                              "arguments in the properties")
         group.add_action(self.curve_action, self.curve_menu)
-        self.tool_actions = (self.line_action, self.point_action, self.circle_action, self.trace_action,
+        self.tool_actions = (self.line_action, self.point_action, self.circle_action, self.arc_action,
+                             self.trace_action,
                              self.spline_action)
         group = sketch.add_group("Format")
         self.construction_action = self._action(
@@ -1238,6 +1249,55 @@ class MainWindow(QMainWindow):
             self.view.set_tool(None)
         self._on_pick(self.view.picks)
 
+    def _set_arc_tool(self, on):
+        self._set_tool(on, self.arc_action, lambda: ArcTool(
+            self.view, self.editing, self._edited_result, self._add_arc,
+            on_exit=lambda: self.arc_action.setChecked(False), method=self.arc_method))
+        self._fill_props(None)                  # the method below left
+
+    def set_arc_method(self, method):
+        """Arc's method (below left while the tool runs): "center" or "three"; the clicks so far dropped."""
+        self.arc_method = method
+        tool = self.view.tool
+        if isinstance(tool, ArcTool):
+            tool.method, tool.anchors = method, []
+            tool.line.visible = False
+        self._on_pick(self.view.picks)
+
+    def _add_arc(self, method, anchors):
+        """
+        The Arc tool's callback, one undo step. "center": the center (a point,
+        new or existing), the radius and the angles from the start and end
+        clicks (12 digits: its ends land on the points clicked); "three": its
+        start, end and through points (new or existing).
+        """
+        from model.sketch import _plain
+
+        sketch = self.part.feature(self.editing)
+        built = self.result.outputs[self.editing]
+
+        def point(anchor):
+            if anchor[0] == "point":
+                return anchor[1]
+            return sketch.add_point(fmt_mm(anchor[1][0]), fmt_mm(anchor[1][1]))
+
+        def xy(anchor):
+            return built.points[anchor[1]] if anchor[0] == "point" else np.asarray(anchor[1], float)
+
+        if method == "center":
+            center = xy(anchors[0])
+            start, end = xy(anchors[1]) - center, xy(anchors[2]) - center
+            name = sketch.add_arc(kind="center", center=point(anchors[0]), radius=_plain(float(np.linalg.norm(start))),
+                                  start_angle=_plain(float(np.degrees(np.arctan2(start[1], start[0])))),
+                                  end_angle=_plain(float(np.degrees(np.arctan2(end[1], end[0])))),
+                                  construction=self.construction_mode)
+        else:
+            start, end, through = (point(a) for a in anchors)
+            name = sketch.add_arc(kind="three", start=start, end=end, through=through,
+                                  construction=self.construction_mode)
+        self._commit()
+        return name
+
     def _add_circle(self, center, radius):
         """The Circle tool's callback: the center (a new point, or an existing one) and the circle; one undo step."""
         sketch = self.part.feature(self.editing)
@@ -1254,7 +1314,7 @@ class MainWindow(QMainWindow):
         if self.editing is None:
             return []
         sketch = self.part.feature(self.editing)
-        names = {e.name for e in sketch.lines + sketch.circles + sketch.curves + sketch.splines}
+        names = {e.name for e in sketch.lines + sketch.circles + sketch.curves + sketch.splines + sketch.arcs}
         return [k[2] for k in self.view.selection if k[0] == "entity" and k[1] == self.editing and k[2] in names]
 
     def _sync_construction(self):
@@ -1542,7 +1602,7 @@ class MainWindow(QMainWindow):
             for _, sketch_name, name in entities:
                 sketch = self.part.feature(sketch_name)
                 owner, _, end = name.rpartition(".")
-                if end in ("start", "end") and any(c.name == owner for c in sketch.curves):
+                if end in ("start", "end") and any(c.name == owner for c in sketch.curves + sketch.arcs):
                     ends.append(name)
                     continue
                 try:
@@ -1824,16 +1884,17 @@ class MainWindow(QMainWindow):
 
     def start_work_plane(self, edit=None):
         """
-        3D Model > Work Plane: from the selected plane or flat face (else a
-        click on one next), a panel: Offset or Angle (an axis picked in the
-        view), a preview; Apply makes it. edit: a work plane to change.
+        3D Model > Work Plane: a panel: Offset or Angle from a base (the
+        selected plane or flat face, or Pick: a click on one), or Three Points
+        (Pick: three clicks); a preview; Apply makes it. edit: a work plane to
+        change (the same panel).
         """
         if self.workplane_panel is not None:
             self.workplane_panel.raise_()
             return
         self.finish_sketch()
         if edit is not None:
-            self._open_work_plane(self.part.feature(edit)["base"], edit)
+            self._open_work_plane(self.part.feature(edit)["base"] or None, edit)
             return
         selected = self.view.selected
         if selected is not None and selected[0] == "datum" and self._datum(selected[1]).kind == "plane":
@@ -1848,32 +1909,36 @@ class MainWindow(QMainWindow):
                 self._open_work_plane(reference)
                 return
             self.statusBar().showMessage(why, 8000)
-        self._plane_purpose = "workplane"
-        self.picking_plane = True
-        self._show_modeling(True)
-        self.view.set_pick_filter({"plane", "face"}, forced=[d.name for d in self._datums() if d.kind == "plane"])
-        self.statusBar().showMessage("Work Plane: select its base, a plane or a flat face of a body (in 3D or in "
-                                     "the browser), Esc: cancel")
+        self._open_work_plane(None)
+        self._pick_work_base()                  # nothing selected: the base is clicked next (or Three Points)
 
     def _open_work_plane(self, base, edit=None):
+        if self.workplane_panel is not None:    # a base picked while the panel is open
+            self._workplane["base"] = base
+            self.workplane_panel.set_base(base)
+            return
         feature = self.part.feature(edit) if edit else None
-        self._workplane = {"edit": edit, "base": base}
+        points = list(feature.points) if feature is not None and feature.points is not None else []
+        self._workplane = {"edit": edit, "base": base, "points": points}
         axis = feature["axis"] if feature is not None and feature["axis"] else None
         panel = WorkPlanePanel(self, self.result.values, base,
                                offset=feature["offset"] if feature is not None else "10",
                                axis=axis, axis_label=self._work_axis_label(axis) if axis else None,
                                angle=feature["angle"] if axis else "30",
+                               points=[self._point_label(p) for p in points] or None,
                                title=f"Edit {edit}" if edit else "Work Plane")
         panel.applied.connect(self._apply_work_plane)
         panel.cancelled.connect(self._end_work_plane)
         panel.changed.connect(self._preview_work_plane)
+        panel.pick_base.connect(self._pick_work_base)
         panel.pick_axis.connect(self._pick_work_axis)
+        panel.pick_points.connect(self._pick_work_points)
         self.workplane_panel = panel
         self.workplane_action.setEnabled(False)
         self._show_modeling(True)
         self._preview_work_plane()
         panel.show()
-        self.statusBar().showMessage(f"Work Plane on {base}: Offset, or Angle around an axis (Pick) · Apply · "
+        self.statusBar().showMessage("Work Plane: Offset or Angle from a base, or Three Points (Pick) · Apply · "
                                      "Esc: cancel")
 
     @staticmethod
@@ -1881,18 +1946,30 @@ class MainWindow(QMainWindow):
         owner, sep, name = axis.rpartition(":")
         return f"{name} ({owner})" if sep else axis
 
+    @staticmethod
+    def _point_label(point):
+        """A work plane's point as shown: "P3 (Sketch1)", "Center Point", "(x, y, z)"."""
+        if isinstance(point, list):
+            return "(" + ", ".join(point) + ")"
+        owner, sep, name = point.rpartition(":")
+        return f"{name} ({owner})" if sep else point
+
     def _work_plane_feature(self):
         """The work plane the panel describes (FeatureError if it cannot be one)."""
         panel, state = self.workplane_panel, self._workplane
         name = state["edit"] or self.part.free_feature_name("WorkPlane")
         visible = self.part.feature(state["edit"])["visible"] if state["edit"] else True
+        if panel.is_points():
+            return WorkPlane(name, points=state["points"], visible=visible)
         if panel.is_angle():
-            return WorkPlane(name, base=state["base"], axis=panel.axis or "", angle=panel.angle.text().strip(),
-                             visible=visible)
-        return WorkPlane(name, base=state["base"], offset=panel.offset.text().strip(), visible=visible)
+            return WorkPlane(name, base=state["base"] or "", axis=panel.axis or "",
+                             angle=panel.angle.text().strip(), visible=visible)
+        return WorkPlane(name, base=state["base"] or "", offset=panel.offset.text().strip(), visible=visible)
 
     def _preview_work_plane(self):
         """The plane the panel makes, shown (forced) while it runs; the panel told why if it cannot be made."""
+        from model.features import FeatureError
+
         panel = self.workplane_panel
         if panel is None:
             return
@@ -1912,12 +1989,25 @@ class MainWindow(QMainWindow):
             datums = [d for d in datums if d.name != feature.name]
             datums.append(Datum(feature.name, "plane", f.origin, f.normal, f.u, f.v, True))
             panel.set_error(None)
-        except (ValueError, KeyError) as error:
-            panel.set_error(str(error))
+        except (ValueError, KeyError, FeatureError, PartError) as error:
+            text = str(error)
+            # (what the panel says already: the base or the points still to pick)
+            panel.set_error(None if "base plane" in text or "points must be three" in text else text)
         self.view.set_datums(datums)
+
+    def _pick_work_base(self):
+        """Pick (Base): a click on a plane, a flat face of a body or another work plane takes it."""
+        self._end_axis_pick()
+        self._plane_purpose = "workplane"
+        self.picking_plane = True
+        self.view.set_pick_filter({"plane", "face"}, forced=[d.name for d in self._datums() if d.kind == "plane"])
+        self.statusBar().showMessage("Work Plane: click its base, a plane or a flat face of a body (in 3D or in "
+                                     "the browser)")
 
     def _pick_work_axis(self):
         """Pick (Angle): a click in the view takes a straight sketch line or an origin axis."""
+        self._stop_picking_plane()
+        self._end_axis_pick()
         self._picking_axis = True
         self.view.set_profile_mode([])
         self.view.set_axis_mode(True)
@@ -1931,23 +2021,59 @@ class MainWindow(QMainWindow):
         if self.workplane_panel is not None:
             self.workplane_panel.set_axis(axis, self._work_axis_label(axis))
 
+    def _pick_work_points(self):
+        """Pick (Three Points): three clicks on sketch points, the origin's center or a body's corners."""
+        self._stop_picking_plane()
+        self._end_axis_pick()
+        self._workplane["points"] = []
+        self.workplane_panel.set_points([])
+        self._picking_axis = True               # (the view picks: all the sketches shown meanwhile)
+        self.view.set_profile_mode([])
+        self.view.set_point_mode(True)
+        self.view.on_point = self._work_point_picked
+        self._show_sketches()
+        self.statusBar().showMessage("Work Plane: click three points (sketch points, the origin's center, a body's "
+                                     "corners)")
+
+    def _work_point_picked(self, key):
+        """A point taken: a sketch point or an origin point by name (followed), a body's corner by its place."""
+        from model.sketch import _plain
+
+        if key[0] == "entity":
+            point = f"{key[1]}:{key[2]}"
+        elif key[0] == "datum":
+            point = key[1]
+        else:
+            point = [_plain(c) for c in key[1]]
+        points = self._workplane["points"] + [point]
+        self._workplane["points"] = points
+        if len(points) == 3:
+            self.view.on_point = None
+            self._end_axis_pick()
+        if self.workplane_panel is not None:
+            self.workplane_panel.set_points([self._point_label(p) for p in points])
+
     def _end_axis_pick(self):
         if self._picking_axis:
             self._picking_axis = False
             self.view.set_profile_mode(None)
             self.view.on_axis = None
+            self.view.on_point = None
             self._show_sketches()
 
     def _apply_work_plane(self):
+        from model.features import FeatureError
+
         try:
             feature = self._work_plane_feature()
-        except (ValueError, KeyError) as error:
+        except (ValueError, KeyError, FeatureError) as error:
             self.show_error(f"Work Plane: {error}")
             return
         edit = self._workplane["edit"]
         self._end_work_plane()
         if edit:
-            self.part.feature(edit).values.update(feature.values)
+            index = [f.name for f in self.part.features].index(edit)
+            self.part.features[index] = feature
         else:
             self.part.add_feature(feature)
         self._commit()
@@ -1958,9 +2084,11 @@ class MainWindow(QMainWindow):
     def _end_work_plane(self):
         panel, self.workplane_panel = self.workplane_panel, None
         if panel is not None:
-            for signal in (panel.applied, panel.cancelled, panel.changed, panel.pick_axis):
+            for signal in (panel.applied, panel.cancelled, panel.changed, panel.pick_base, panel.pick_axis,
+                           panel.pick_points):
                 signal.disconnect()
             panel.close()
+        self._stop_picking_plane()
         self._end_axis_pick()
         self._workplane = None
         self.workplane_action.setEnabled(True)
@@ -2855,6 +2983,17 @@ class MainWindow(QMainWindow):
         while self.props_form.rowCount():
             self.props_form.removeRow(0)
         self._add_deparametrize(key)
+        if key is None and isinstance(self.view.tool, ArcTool):     # the Arc tool's method, below left
+            combo = QComboBox()
+            combo.addItem("From the center", "center")
+            combo.addItem("Through three points", "three")
+            combo.setCurrentIndex(0 if self.arc_method == "center" else 1)
+            combo.setToolTip("Center: the center, its start (the radius), its end · Three points: its start, "
+                             "its end, a point on it")
+            combo.currentIndexChanged.connect(lambda i, c=combo: self.set_arc_method(c.itemData(i)))
+            self.props_form.addRow(QLabel("<b>Arc</b>"))
+            self.props_form.addRow("Method:", combo)
+            return
         if key is not None and key[0] == "entity" and len(self.view.selection) > 1:
             self._add_offset_rows(key[1], [k[2] for k in self.view.selection if k[0] == "entity" and k[1] == key[1]])
         if key is None or key[0] != "entity" or len(self.view.selection) != 1:
@@ -2880,6 +3019,20 @@ class MainWindow(QMainWindow):
                     field.setPlaceholderText(a.default)
                 self.props_form.addRow(f"{a.name}:", field)
             self._add_spline_buttons(sketch_name, curve.name)
+            self._add_offset_rows(sketch_name, [name])
+            return
+        if kind == "arc":
+            arc = sketch.arc(name)
+            self.props_form.addRow(QLabel(f"<b>{arc.name}</b>: arc " + ("from its center" if arc.kind == "center"
+                                                                      else "through three points")))
+            if arc.kind == "center":
+                for label, attr, unit in (("Radius:", "radius", "mm"), ("From:", "start_angle", "degrees"),
+                                          ("To:", "end_angle", "degrees")):
+                    field = self._formula_field(getattr(arc, attr),
+                                                lambda text, attr=attr: self._set_arc(sketch_name, name, attr, text))
+                    field.setToolTip(f"{unit}: a number or a formula of the parameters" + (
+                        " (counter-clockwise from the sketch's x)" if unit == "degrees" else ""))
+                    self.props_form.addRow(label, field)
             self._add_offset_rows(sketch_name, [name])
             return
         if kind in ("polyline", "segment"):
@@ -2918,6 +3071,11 @@ class MainWindow(QMainWindow):
                         radius.setPlaceholderText(default)
                         self.props_form.addRow(f"{label} on {w.name}:", radius)
         self._add_offset_rows(sketch_name, [name])
+
+    def _set_arc(self, sketch_name, name, attr, text):
+        """An arc's radius or angle changed in the properties; one undo step."""
+        setattr(self.part.feature(sketch_name).arc(name), attr, text)
+        self._commit()
 
     def _add_offset_rows(self, sketch_name, names):
         """
@@ -3199,7 +3357,7 @@ class MainWindow(QMainWindow):
             kind = "sketch point" if p.explicit else "point"
             return f"<b>{name}</b> ({kind} of {sketch_name})<br>x = {p.x}, y = {p.y} mm<br>{where(name)}"
         owner, _, end = name.rpartition(".")
-        if end in ("start", "end") and any(c.name == owner for c in sketch.curves):
+        if end in ("start", "end") and any(c.name == owner for c in sketch.curves + sketch.arcs):
             return (f"<b>{name}</b> (the {end} of curve {owner})<br>{where(name) if name in points else 'not built'}"
                     "<br>set by the curve: lines may use it")
         if sketch.kind_of(name) == "curve":
@@ -3221,6 +3379,20 @@ class MainWindow(QMainWindow):
             return (f"<b>{name}</b> ({'closed ' if closed else ''}spline of {sketch_name})<br>through "
                     f"{len(w.points) - closed} points: {', '.join(w.points)}{shape}"
                     "<br>drag its points to bend it")
+        if sketch.kind_of(name) == "arc":
+            arc = sketch.arc(name)
+            built = self.result.outputs[sketch_name].shapes.get(name)
+            if arc.kind == "center":
+                text = (f"<b>{name}</b> (arc of {sketch_name}, from its center)<br>center {where(arc.center)}<br>"
+                        f"radius = {arc.radius} mm, from {arc.start_angle} to {arc.end_angle} deg<br>its ends "
+                        f"{name}.start / {name}.end (lines may use them)")
+            else:
+                text = (f"<b>{name}</b> (arc of {sketch_name}, through three points)<br>from {where(arc.start)}<br>"
+                        f"through {where(arc.through)}<br>to {where(arc.end)}<br>drag its points to bend it")
+            if built is not None:
+                length = float(np.linalg.norm(np.diff(built.points, axis=0), axis=1).sum())
+                text += f"<br>length {length:.6g} mm"
+            return text
         if sketch.kind_of(name) in ("polyline", "segment"):
             owner = name.rpartition(".")[0] if sketch.kind_of(name) == "segment" else name
             w = sketch.polyline(owner)
@@ -3302,6 +3474,7 @@ class MainWindow(QMainWindow):
         if self.editing is not None and not self.view.measure:
             tool = self.view.tool
             hints = {LineTool: LINE_HINT, PointTool: POINT_HINT, CircleTool: CIRCLE_HINT, PasteTool: PASTE_HINT,
+                     ArcTool: ARC_HINTS[self.arc_method],
                      TraceTool: TRACE_HINT, SplineTool: SPLINE_HINT}
             hint = f"{self.editing}: " + (hints[type(tool)] if tool is not None
                                           else "Finish Sketch to leave it · " + HINT)
