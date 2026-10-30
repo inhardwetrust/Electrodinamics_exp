@@ -286,6 +286,10 @@ def check_picking(window, settle):
     check("  then B (in G): G dropped, B taken", targets() == ["C", "B"], f"{targets()}")
     click(("body", "C"))
     check("  C again: dropped", targets() == ["B"])
+    window._on_view_select(("face", "C", 0))
+    check("  a click on one of C's faces in 3D: C taken", targets() == ["B", "C"], f"{targets()}")
+    window._on_view_select(("face", "C", 2))
+    check("  again: dropped", targets() == ["B"])
     check("  B is in G, moved by Move1: the panel says it goes before it", "before Move1" in panel.placed.text(),
           panel.placed.text())
     panel.cleared.emit()

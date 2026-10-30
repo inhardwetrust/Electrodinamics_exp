@@ -1021,7 +1021,7 @@ class GeometryView:
         if not self.measure:
             if not modifiers:
                 self._click_select(self.key_at(event.pos))
-            elif self.editing_sketch is not None:
+            else:
                 self._toggle(self.key_at(event.pos))
             return
         pick = self.pick_at(event.pos)
@@ -1037,8 +1037,13 @@ class GeometryView:
             self.on_select(self.selected)
 
     def _toggle(self, key):
-        """Shift + click: adds `key` (with its coincident points) or takes it out."""
-        if key is None or key[0] != "entity":
+        """
+        Shift + click: adds `key` (with its coincident points) or takes it
+        out; outside sketch mode a body (a click on one of its faces).
+        """
+        if key is not None and key[0] == "face" and self.editing_sketch is None:
+            key = ("body", key[1])
+        if key is None or key[0] not in ("entity", "body"):
             return
         group = self.coincident(key)
         if key in self.selection:

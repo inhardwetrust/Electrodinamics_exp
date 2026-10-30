@@ -10,8 +10,13 @@
 #   - the window: under Solid Bodies a folder per group with its bodies, the
 #     others beside; the group's tick hides / shows all its bodies (the view
 #     only, as a body's); selecting it selects them all and tells their
-#     volume; Group... moves a body into a new group (one undo step), Remove
-#     from Group, Rename..., Ungroup; an import makes a group of its bodies.
+#     volume; the Group submenu moves a body into a new group (named
+#     Group1, one undo step), Remove from Group, Rename..., Ungroup;
+#     several body rows selected (Shift / Ctrl) or Shift + clicks on bodies
+#     in 3D: all selected, the Group submenu groups them all (existing groups
+#     or New Group), the new group's row current; an import makes a group;
+#     a selected group renamed: Move takes its new name; ungrouped: Move
+#     takes no gone group (it did: group:<gone> in its targets).
 #
 #   python checks/check_groups.py [--no-window]
 
@@ -133,7 +138,7 @@ def check_window():
     check("  G's tick off: A and B hidden, C shown",
           window.view._visible.get("A") is False and window.view._visible.get("B") is False
           and window.view._visible.get("C", True) and rows[("body", "A")].checkState(0) == Qt.Unchecked)
-    rows[("group", "G")].setCheckState(0, Qt.Checked)
+    window._rows[("group", "G")].setCheckState(0, Qt.Checked)
     settle()
     check("  on again: shown", window.view._visible.get("A") and window.view._visible.get("B"))
     window.tree.setCurrentItem(window._rows[("group", "G")])
@@ -141,28 +146,77 @@ def check_window():
     check("  selecting G selects A and B, the info tells their volume (16)",
           sorted(window.view.selection) == [("body", "A"), ("body", "B")] and "16 mm" in window.info.text(),
           window.info.text())
+    window.tree.setCurrentItem(window._rows[("body", "B")])
     actions = dict(window.context_actions(window._rows[("body", "B")]))
-    check("a grouped body's menu: Rename..., Group..., Remove from Group",
-          list(actions) == ["Rename...", "Group...", "Remove from Group"], f"{list(actions)}")
+    submenu = dict(actions.get("Group", []))
+    check("a grouped body's menu: Rename..., Group (G, New Group), Remove from Group",
+          list(actions) == ["Rename...", "Group", "Remove from Group"] and list(submenu) == ["G", "New Group"],
+          f"{list(actions)} {list(submenu)}")
     steps = len(window.doc._undo)
-    answers.append("Pair")
-    actions["Group..."]()
+    submenu["New Group"]()
     settle()
-    check("  Group... 'Pair': B moves into a new group Pair (one undo step)",
-          [(g.name, g.bodies) for g in window.part.groups] == [("G", ["A"]), ("Pair", ["B"])]
-          and len(window.doc._undo) == steps + 1 and window._rows[("body", "B")].parent() is window._rows[("group", "Pair")])
+    check("  Group > New Group: B moves into Group1 (one undo step), its row current",
+          [(g.name, g.bodies) for g in window.part.groups] == [("G", ["A"]), ("Group1", ["B"])]
+          and len(window.doc._undo) == steps + 1
+          and window._rows[("body", "B")].parent() is window._rows[("group", "Group1")]
+          and window.tree.currentItem() is window._rows[("group", "Group1")])
     dict(window.context_actions(window._rows[("body", "B")]))["Remove from Group"]()
     settle()
-    check("  Remove from Group: Pair goes (empty)", [g.name for g in window.part.groups] == ["G"])
+    check("  Remove from Group: Group1 goes (empty)", [g.name for g in window.part.groups] == ["G"])
+
+    window.tree.clearSelection()
+    window.tree.setCurrentItem(window._rows[("body", "A")])
+    window._rows[("body", "C")].setSelected(True)
+    settle()
+    check("several rows selected (A, C): both selected in 3D", sorted(window.view.selection) ==
+          [("body", "A"), ("body", "C")], f"{window.view.selection}")
+    actions = dict(window.context_actions(window._rows[("body", "C")]))
+    check("  their menu: Group (G, New Group), Remove from Group (A is in G), no Rename",
+          list(actions) == ["Group", "Remove from Group"] and list(dict(actions["Group"])) == ["G", "New Group"])
+    dict(actions["Group"])["New Group"]()
+    settle()
+    check("  New Group: both in Group1 (A out of G, G gone: empty? no, B is out already)",
+          [(g.name, sorted(g.bodies)) for g in window.part.groups] == [("Group1", ["A", "C"])],
+          f"{[(g.name, g.bodies) for g in window.part.groups]}")
+    window.part.ungroup("Group1")
+    window._commit()
+    window.part.add_to_group("G", ["A", "B"])
+    window._commit()
+    settle()
+    view = window.view
+    view.select(None)
+    view._toggle(("face", "A", 0))
+    view._toggle(("face", "C", 0))
+    settle()
+    check("Shift + clicks on A and C in 3D: both bodies selected, their rows too",
+          sorted(view.selection) == [("body", "A"), ("body", "C")]
+          and window._rows[("body", "A")].isSelected() and window._rows[("body", "C")].isSelected(),
+          f"{view.selection}")
+    view._toggle(("face", "A", 1))
+    check("  A again: out", view.selection == [("body", "C")], f"{view.selection}")
+    window.tree.setCurrentItem(window._rows[("group", "G")])     # G selected, then renamed
+    settle()
     answers.append("Connector")
     dict(window.context_actions(window._rows[("group", "G")]))["Rename..."]()
     settle()
     check("a group's Rename...", [g.name for g in window.part.groups] == ["Connector"]
           and ("group", "Connector") in window._rows)
+    window.move_action.trigger()
+    settle()
+    check("  Move with the renamed group selected: it takes group:Connector",
+          window._moving["targets"] == ["group:Connector"], f"{window._moving['targets']}")
+    window.move_panel.reject()
+    settle()
     dict(window.context_actions(window._rows[("group", "Connector")]))["Ungroup"]()
     settle()
     check("  Ungroup: no group, the bodies stay", not window.part.groups and len(window.result.bodies) == 3
           and window._rows[("body", "A")].parent() is window._rows[("body", "C")].parent())
+    window.move_action.trigger()
+    settle()
+    check("  then Move: no target of the gone group (the bug: group:Connector kept)",
+          not any(t.startswith("group:") for t in window._moving["targets"]), f"{window._moving['targets']}")
+    window.move_panel.reject()
+    settle()
 
     from check_import import write_source
 

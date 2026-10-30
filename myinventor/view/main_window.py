@@ -100,7 +100,7 @@ import numpy as np
 from PySide6.QtCore import QEvent, QRect, Qt, QTimer
 from PySide6.QtGui import QAction, QBrush, QColor, QGuiApplication, QIcon, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
-    QCheckBox, QColorDialog, QComboBox, QDockWidget, QFileDialog, QFormLayout, QInputDialog, QLineEdit, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton, QTabWidget,
+    QAbstractItemView, QCheckBox, QColorDialog, QComboBox, QDockWidget, QFileDialog, QFormLayout, QInputDialog, QLineEdit, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton, QTabWidget,
     QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -451,6 +451,8 @@ class MainWindow(QMainWindow):
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
         self.tree.setMouseTracking(True)                  # itemEntered: hover
+        self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)     # Shift / Ctrl: several bodies
+        self.tree.itemSelectionChanged.connect(self._tree_selection_changed)
         self.tree.itemChanged.connect(self._item_changed)
         self.tree.currentItemChanged.connect(lambda item, _: self._item_selected(item))
         self.tree.itemEntered.connect(lambda item, _: self._row_hovered(item))
@@ -1539,7 +1541,7 @@ class MainWindow(QMainWindow):
 
     def _selection_targets(self):
         """What Move takes: the group selected in the browser, else the selected bodies."""
-        if self._selected_group is not None:
+        if self._selected_group is not None and any(g.name == self._selected_group for g in self.part.groups):
             return [GROUP + self._selected_group]
         return list(dict.fromkeys(k[1] for k in self.view.selection if k[0] == "body"))
 
@@ -1559,6 +1561,8 @@ class MainWindow(QMainWindow):
             targets, offset, axis, angle = list(t.targets), t["offset"], t["axis"] or None, t["angle"]
         else:
             targets, offset, axis, angle = self._selection_targets(), ["0", "0", "0"], None, "90" if rotate else "0"
+            groups = {g.name for g in self.part.groups}
+            targets = [t for t in targets if not t.startswith(GROUP) or t[len(GROUP):] in groups]
         self._moving = {"edit": edit, "targets": targets}
         panel = MovePanel(self, self.result.values, targets, offset=offset, axis=axis,
                           axis_label=self._work_axis_label(axis) if axis else None, angle=angle,
@@ -2146,9 +2150,12 @@ class MainWindow(QMainWindow):
                     ("Copy as Spline", lambda: self.curve_to_spline(sketch_name, curve, keep=True))]
         kind, name = key
         if kind == "body":
-            actions = [("Rename...", lambda: self.rename_body_dialog(name)), ("Group...", lambda: self.group_dialog(name))]
-            if self.part.group_of(name) is not None:
-                actions.append(("Remove from Group", lambda: self.remove_from_group(name)))
+            bodies = self._selected_bodies()
+            bodies = bodies if name in bodies else [name]       # the selection, if the row is in it
+            actions = [("Rename...", lambda: self.rename_body_dialog(name))] if len(bodies) == 1 else []
+            actions.append(("Group", self._group_menu(bodies)))
+            if any(self.part.group_of(b) is not None for b in bodies):
+                actions.append(("Remove from Group", lambda: self.remove_from_group(bodies)))
             return actions
         if kind == "group":
             return [("Rename...", lambda: self.rename_group_dialog(name)), ("Ungroup", lambda: self.ungroup(name))]
@@ -2185,7 +2192,12 @@ class MainWindow(QMainWindow):
             return
         menu = QMenu(self)
         for text, slot in actions:
-            menu.addAction(text).triggered.connect(lambda _=False, f=slot: f())
+            if isinstance(slot, list):          # a submenu: [(text, callable)]
+                sub = menu.addMenu(text)
+                for subtext, subslot in slot:
+                    sub.addAction(subtext).triggered.connect(lambda _=False, f=subslot: f())
+            else:
+                menu.addAction(text).triggered.connect(lambda _=False, f=slot: f())
         menu.exec(self.tree.viewport().mapToGlobal(pos))
 
     def _row_clicked(self, item):
@@ -2229,6 +2241,11 @@ class MainWindow(QMainWindow):
         except KeyError:
             return []
 
+    def _group_menu(self, bodies):
+        """[(text, callable)]: the existing groups, and a new one (named Group1...), for these bodies."""
+        rows = [(g.name, lambda g=g.name: self.group_bodies(g, bodies)) for g in self.part.groups]
+        return rows + [("New Group", lambda: self.group_bodies(self.part.free_group_name(), bodies))]
+
     def group_dialog(self, body):
         """Group... (a body's menu): asks which group (an existing one or a new name) it goes into."""
         current = self.part.group_of(body)
@@ -2246,11 +2263,14 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Group: {error}", 8000)
             return False
         self._commit()
-        self.statusBar().showMessage(f"{', '.join(bodies)} in group {name}", 5000)
+        row = self._rows.get(("group", name))
+        if row is not None:                     # the group's row current: F2 renames it
+            self.tree.setCurrentItem(row)
+        self.statusBar().showMessage(f"{', '.join(bodies)} in group {name} (F2: rename it)", 8000)
         return True
 
-    def remove_from_group(self, body):
-        self.part.remove_from_group([body])
+    def remove_from_group(self, bodies):
+        self.part.remove_from_group([bodies] if isinstance(bodies, str) else list(bodies))
         self._commit()
 
     def rename_group_dialog(self, name):
@@ -2262,6 +2282,8 @@ class MainWindow(QMainWindow):
         except PartError as error:
             self.statusBar().showMessage(f"Rename {name}: {error}", 8000)
             return
+        if self._selected_group == name:        # still the selected one, by its new name
+            self._selected_group = new.strip()
         self._commit()
 
     def ungroup(self, name):
@@ -2495,11 +2517,14 @@ class MainWindow(QMainWindow):
         for feature in self.part.features:      # sketches with curves: open, the curves' rows in sight
             if feature.TYPE == "sketch" and feature.curves:
                 self._rows[("feature", feature.name)].setExpanded(True)
-        selected = self._rows.get(self.view.selected)
+        group_row = self._rows.get(("group", self._selected_group))
+        selected = group_row if group_row is not None else self._rows.get(self.view.selected)
         if selected is not None:
             self.tree.setCurrentItem(selected)
         elif self.view.selected is not None and self.view.selected[0] != "entity":
             self.view.select(None)              # gone (sketch entities are not in the tree)
+        if group_row is None:                   # that group is gone (ungrouped, renamed, emptied)
+            self._selected_group = None
         self.tree.blockSignals(False)
         self._show_info(self.view.selected)
 
@@ -2532,7 +2557,25 @@ class MainWindow(QMainWindow):
         else:
             self.view.set_visible(key[1], on)
 
+    def _selected_bodies(self):
+        """The bodies whose rows are selected in the browser (Shift / Ctrl: several)."""
+        keys = [self._key_of(item) for item in self.tree.selectedItems()]
+        return [k[1] for k in keys if k is not None and k[0] == "body"]
+
+    def _tree_selection_changed(self):
+        """Several body rows selected (Shift / Ctrl): all of them selected in 3D."""
+        bodies = self._selected_bodies()
+        if len(bodies) < 2 or self.move_panel is not None:
+            return
+        self._selected_group = None
+        self.view.select_keys([("body", b) for b in bodies])
+        self.info.setText(f"<b>{len(bodies)} bodies selected</b><br>{', '.join(bodies)}<br>"
+                          "Right click: Group (an existing group or a new one)")
+
     def _item_selected(self, item):
+        if len(self._selected_bodies()) > 1:
+            self._tree_selection_changed()
+            return
         key = self._key_of(item)
         self._selected_group = key[1] if key is not None and key[0] == "group" else None
         if key is not None and key[0] == "group":
@@ -2560,8 +2603,8 @@ class MainWindow(QMainWindow):
         if self.picking_plane:
             self._plane_picked(key)
             return
-        if self.move_panel is not None and key is not None and key[0] == "body":
-            self._toggle_move_target(key)       # Move runs: a click on a body takes or drops it
+        if self.move_panel is not None and key is not None and key[0] in ("body", "face"):
+            self._toggle_move_target(("body", key[1]))      # Move runs: a click on a body (a face) takes or drops it
             return
         self._selected_group = None
         self._sync_construction()
@@ -2574,6 +2617,13 @@ class MainWindow(QMainWindow):
             self.tree.setCurrentItem(self._rows[key])
         self.tree.blockSignals(False)
         selection = self.view.selection
+        if len(selection) > 1 and all(k[0] == "body" for k in selection):     # Shift + clicks on bodies
+            self.tree.blockSignals(True)
+            self.tree.clearSelection()
+            for k in selection:
+                if k in self._rows:
+                    self._rows[k].setSelected(True)
+            self.tree.blockSignals(False)
         if len(selection) > 1:
             names = ", ".join(k[-1] for k in selection)
             self.info.setText(f"<b>{len(selection)} selected</b><br>{names}")
