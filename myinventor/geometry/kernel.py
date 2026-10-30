@@ -223,6 +223,16 @@ def transform(shape, point, direction, angle, offset):
     return BRepBuilderAPI_Transform(shape, move.Multiplied(turn), True).Shape()
 
 
+def mirror(shape, point, normal):
+    """A shape (mm) mirrored in the plane through `point` (3,) mm with `normal` (3,): a copy."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.gp import gp_Trsf
+
+    trsf = gp_Trsf()
+    trsf.SetMirror(gp_Ax2(gp_Pnt(*map(float, point)), gp_Dir(*map(float, normal))))
+    return BRepBuilderAPI_Transform(shape, trsf, True).Shape()
+
+
 def body(name, shape, color=None):
     """A Body (meters, tessellated) of an OCP shape in mm."""
     return body_from_shape(name, shape, color=color)
@@ -240,6 +250,18 @@ def volume(shape):
     props = GProp_GProps()
     BRepGProp.VolumeProperties_s(split.Result(), props)
     return props.Mass()
+
+
+def centroid(shape):
+    """(3,) mm: the center of mass of a solid (as volume() splits B-spline faces first)."""
+    split = ShapeUpgrade_ShapeDivideContinuity(shape)
+    for criterion in (split.SetBoundaryCriterion, split.SetPCurveCriterion, split.SetSurfaceCriterion):
+        criterion(GeomAbs_C3)
+    split.Perform()
+    props = GProp_GProps()
+    BRepGProp.VolumeProperties_s(split.Result(), props)
+    c = props.CentreOfMass()
+    return np.array([c.X(), c.Y(), c.Z()])
 
 
 def bounds(shape):

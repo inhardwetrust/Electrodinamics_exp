@@ -12,6 +12,13 @@
 #   axis = "Z Axis"                   # optional: turned first, around an origin axis or a sketch line
 #   angle = "90"                      #   ("Sketch1:L3"), by degrees (the right hand way)
 #
+#   [[transform]]
+#   name = "Mirror1"
+#   type = "mirror"
+#   targets = ["group:SMA"]
+#   plane = "YZ"                      # each target mirrored in place: in the plane parallel to YZ / XZ / XY
+#                                     # through its own center (a group's: of all its bodies)
+#
 # No targets: it fails (a transform being set up). A body of a group is
 # placed before its group (local, then global): a
 # transform of a body after one of its group fails, naming it; a new one is
@@ -69,22 +76,14 @@ def order_error(transforms, part, index):
     return None
 
 
-@transform_type
-class Move(Feature):
-    TYPE = "move"
-    FIELDS = (
-        Field("offset", "exprs", ["0", "0", "0"], doc="mm along X, Y, Z"),
-        Field("axis", "text", "", doc="turned first around it: an origin axis or a sketch line ('Sketch1:L3')"),
-        Field("angle", "expr", "0", doc="by degrees around the axis"),
-    )
+class _Placing(Feature):
+    """What the transforms share: their targets (bodies, "group:<name>"), in the file and through renames."""
 
     def __init__(self, name, targets=(), **values):
         super().__init__(name, **values)
         self.targets = list(targets)
         if not all(isinstance(t, str) and t.strip() for t in self.targets):
             raise FeatureError(f"{name}: targets must be the names of bodies or groups ('group:SMA')")
-        if len(self["offset"]) != 3:
-            raise FeatureError(f"{name}: offset must be three formulas (X, Y, Z)")
 
     @classmethod
     def from_dict(cls, data):
@@ -101,20 +100,43 @@ class Move(Feature):
         data["targets"] = list(self.targets)
         return data
 
+    def rename_target(self, old, new):
+        self.targets = [new if t == old else t for t in self.targets]
+
+    def _bodies(self, ctx):
+        if not self.targets:
+            raise ValueError(f"no targets: pick the bodies or groups it {self.VERB}")
+        return expand(self.targets, ctx.part, ctx.shapes)
+
+
+@transform_type
+class Move(_Placing):
+    TYPE = "move"
+    VERB = "moves"
+    FIELDS = (
+        Field("offset", "exprs", ["0", "0", "0"], doc="mm along X, Y, Z"),
+        Field("axis", "text", "", doc="turned first around it: an origin axis or a sketch line ('Sketch1:L3')"),
+        Field("angle", "expr", "0", doc="by degrees around the axis"),
+    )
+
+    def __init__(self, name, targets=(), **values):
+        super().__init__(name, targets, **values)
+        if len(self["offset"]) != 3:
+            raise FeatureError(f"{name}: offset must be three formulas (X, Y, Z)")
+
     def references(self):
         owner = self["axis"].rpartition(":")[0]
         return [owner] if owner else []
 
-    def rename_target(self, old, new):
-        self.targets = [new if t == old else t for t in self.targets]
+    def describe(self):
+        turn = f", turned {self['angle']} deg around {self['axis']} first" if self["axis"] else ""
+        return f"offset ({', '.join(self['offset'])}) mm{turn}"
 
     def apply(self, ctx):
         """Moves its bodies in ctx.shapes; ValueError if it cannot."""
         from model.revolve import axis_line
 
-        if not self.targets:
-            raise ValueError("no targets: pick the bodies or groups it moves")
-        bodies = expand(self.targets, ctx.part, ctx.shapes)
+        bodies = self._bodies(ctx)
         offset = np.array([ctx.evaluate(text, f"offset {axis}") for text, axis in zip(self["offset"], "XYZ")])
         point, direction, angle = np.zeros(3), np.array([0.0, 0.0, 1.0]), 0.0
         if self["axis"].strip():
@@ -123,3 +145,40 @@ class Move(Feature):
         for body in bodies:
             ctx.shapes[body] = ctx.kernel.transform(ctx.shapes[body], point, direction, angle, offset)
         return MoveResult(bodies)
+
+
+MIRROR_PLANES = {"YZ": (1.0, 0.0, 0.0), "XZ": (0.0, 1.0, 0.0), "XY": (0.0, 0.0, 1.0)}
+
+
+@transform_type
+class Mirror(_Placing):
+    """
+    Each target mirrored in place: in the plane parallel to `plane` (YZ: x
+    flips...) through its own center (the middle of its bounds; a group's:
+    of all its bodies, mirrored as one).
+    """
+
+    TYPE = "mirror"
+    VERB = "mirrors"
+    FIELDS = (
+        Field("plane", "choice", "YZ", tuple(MIRROR_PLANES), doc="mirrored in the plane parallel to it through "
+                                                                  "its center"),
+    )
+
+    def describe(self):
+        return f"mirrored in {self['plane']} through its center"
+
+    def apply(self, ctx):
+        self._bodies(ctx)                       # none: it fails
+        normal = np.array(MIRROR_PLANES[self["plane"]])
+        done = []
+        for target in self.targets:
+            bodies = [b for b in expand([target], ctx.part, ctx.shapes) if b not in done]
+            if not bodies:
+                continue
+            corners = np.array([ctx.kernel.bounds(ctx.shapes[b]) for b in bodies])
+            center = 0.5 * (corners[:, 0].min(axis=0) + corners[:, 1].max(axis=0))
+            for body in bodies:
+                ctx.shapes[body] = ctx.kernel.mirror(ctx.shapes[body], center, normal)
+            done += bodies
+        return MoveResult(done)

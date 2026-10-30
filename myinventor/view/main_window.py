@@ -117,7 +117,7 @@ from model.extrude import Extrude
 from model.revolve import Revolve, axis_of, check_side, onto_axis
 from model.workplane import WorkPlane
 from model.importstep import Import, body_names
-from model.transforms import GROUP, Move, expand
+from model.transforms import GROUP, Mirror, Move, expand
 from model.profiles import find_regions, named_regions, whole_regions
 from model.expressions import evaluate
 from model.offsets import CAPS, offset_key
@@ -139,7 +139,7 @@ BEND_PARAMETER = {
 }
 from view.extrude_panel import ExtrudePanel
 from view.workplane_panel import WorkPlanePanel
-from view.move_panel import MovePanel
+from view.move_panel import MirrorPanel, MovePanel
 from view.sketch_tools import (
     ALIGN_PX, CURVE_SNAP_PX, SNAP_PX, CircleTool, LineTool, PasteTool, PointTool, SplineTool, TraceTool, align,
     curve_snap,
@@ -369,6 +369,10 @@ class MainWindow(QMainWindow):
         self.rotate_action = self._action("Rotate", lambda: self.start_move(rotate=True), tip=(
             "Turn the selected bodies or group around an axis (and move them): the same transform as Move"))
         group.add_action(self.rotate_action)
+        self.mirror_action = self._action("Mirror", lambda: self.start_move(mirror=True), tip=(
+            "Mirror the selected bodies or group in place: in a plane parallel to YZ, XZ or XY through its own "
+            "center (a group's: of all its bodies)"))
+        group.add_action(self.mirror_action)
         group = model.add_group("Inspect")
         self.measure_action = self._action("Measure", self._set_measure, checkable=True,
                                            tip="Measure: click picks point A, Shift + click point B")
@@ -1545,12 +1549,13 @@ class MainWindow(QMainWindow):
             return [GROUP + self._selected_group]
         return list(dict.fromkeys(k[1] for k in self.view.selection if k[0] == "body"))
 
-    def start_move(self, edit=None, rotate=False):
+    def start_move(self, edit=None, rotate=False, mirror=False):
         """
-        Placement > Move / Rotate: a panel for a transform of the selected
-        bodies or group (offset; an axis and an angle), a preview of them
-        moved; Apply adds it to the placement (a body of a group before its
-        group). edit: a transform to change.
+        Placement > Move / Rotate / Mirror: a panel for a transform of the
+        selected bodies or group (Move: an offset, an axis and an angle;
+        Mirror: a plane through its center), a preview of them transformed;
+        Apply adds it to the placement (a body of a group before its group).
+        edit: a transform to change.
         """
         if self.move_panel is not None:
             self.move_panel.raise_()
@@ -1558,27 +1563,32 @@ class MainWindow(QMainWindow):
         self.finish_sketch()
         if edit is not None:
             t = self.part.transform(edit)
-            targets, offset, axis, angle = list(t.targets), t["offset"], t["axis"] or None, t["angle"]
+            kind, targets = t.TYPE, list(t.targets)
         else:
-            targets, offset, axis, angle = self._selection_targets(), ["0", "0", "0"], None, "90" if rotate else "0"
+            kind, targets = ("mirror" if mirror else "move"), self._selection_targets()
             groups = {g.name for g in self.part.groups}
-            targets = [t for t in targets if not t.startswith(GROUP) or t[len(GROUP):] in groups]
-        self._moving = {"edit": edit, "targets": targets}
-        panel = MovePanel(self, self.result.values, targets, offset=offset, axis=axis,
-                          axis_label=self._work_axis_label(axis) if axis else None, angle=angle,
-                          title=f"Edit {edit}" if edit else ("Rotate" if rotate else "Move"))
+            targets = [x for x in targets if not x.startswith(GROUP) or x[len(GROUP):] in groups]
+        self._moving = {"edit": edit, "targets": targets, "kind": kind}
+        title = f"Edit {edit}" if edit else ("Mirror" if mirror else "Rotate" if rotate else "Move")
+        if kind == "mirror":
+            panel = MirrorPanel(self, self.result.values, targets, plane=t["plane"] if edit else "YZ", title=title)
+        else:
+            offset, axis = (t["offset"], t["axis"] or None) if edit else (["0", "0", "0"], None)
+            angle = t["angle"] if edit else ("90" if rotate else "0")
+            panel = MovePanel(self, self.result.values, targets, offset=offset, axis=axis,
+                              axis_label=self._work_axis_label(axis) if axis else None, angle=angle, title=title)
+            panel.pick_axis.connect(self._pick_move_axis)
         panel.applied.connect(self._apply_move)
         panel.cancelled.connect(self._end_move)
         panel.changed.connect(self._preview_move)
-        panel.pick_axis.connect(self._pick_move_axis)
         panel.cleared.connect(lambda: self._set_move_targets([]))
         self.move_panel = panel
-        self.move_action.setEnabled(False)
-        self.rotate_action.setEnabled(False)
+        for action in (self.move_action, self.rotate_action, self.mirror_action):
+            action.setEnabled(False)
         self._set_move_targets(targets)
         panel.show()
-        self.statusBar().showMessage("Move: click bodies or groups under Solid Bodies (or bodies in 3D) to take or "
-                                     "drop them · Apply · Esc: cancel")
+        self.statusBar().showMessage(f"{title}: click bodies or groups under Solid Bodies (or bodies in 3D) to take "
+                                     "or drop them · Apply · Esc: cancel")
         if rotate and edit is None:
             self._pick_move_axis()
 
@@ -1647,6 +1657,9 @@ class MainWindow(QMainWindow):
     def _move_transform(self):
         """The transform the panel describes (FeatureError if it cannot be one)."""
         panel, state = self.move_panel, self._moving
+        if state.get("kind") == "mirror":
+            return Mirror(state["edit"] or self.part.free_feature_name("Mirror"), targets=state["targets"],
+                          plane=panel.plane.currentText())
         name = state["edit"] or self.part.free_feature_name("Move")
         return Move(name, targets=state["targets"], offset=[e.text().strip() for e in panel.offset],
                     axis=panel.axis or "", angle=panel.angle.text().strip() if panel.axis else "0")
@@ -1730,15 +1743,16 @@ class MainWindow(QMainWindow):
     def _end_move(self):
         panel, self.move_panel = self.move_panel, None
         if panel is not None:
-            for signal in (panel.applied, panel.cancelled, panel.changed, panel.pick_axis, panel.cleared):
+            signals = [panel.applied, panel.cancelled, panel.changed, panel.cleared]
+            for signal in signals + ([] if isinstance(panel, MirrorPanel) else [panel.pick_axis]):
                 signal.disconnect()
             panel.close()
         self._end_axis_pick()
         self._moving = None
         self.view.select(None)
         self.view.set_preview(None)
-        self.move_action.setEnabled(True)
-        self.rotate_action.setEnabled(True)
+        for action in (self.move_action, self.rotate_action, self.mirror_action):
+            action.setEnabled(True)
 
     def reorder_transform(self, name, step):
         """Move Up / Move Down in the placement (refused if a body of a group would come after its group)."""
@@ -2465,8 +2479,7 @@ class MainWindow(QMainWindow):
                 key = ("transform", t.name)
                 row = QTreeWidgetItem([t.name])
                 row.setData(0, Qt.UserRole, key)
-                tip = f"{t.TYPE} {', '.join(t.targets)}: offset ({', '.join(t['offset'])}) mm" + (
-                    f", turned {t['angle']} deg around {t['axis']}" if t["axis"] else "")
+                tip = f"{t.TYPE} {', '.join(t.targets)}: {t.describe()}"
                 if t.name in errors:
                     row.setForeground(0, QBrush(ERROR_COLOR))
                     tip += f"\nerror: {errors[t.name]}"
@@ -2647,10 +2660,7 @@ class MainWindow(QMainWindow):
             self.info.setText(self._face_info(key))
         elif key[0] == "transform":
             t = self.part.transform(key[1])
-            lines = [f"<b>{t.name}</b> ({t.TYPE}, placement)", f"of {', '.join(t.targets)}",
-                     f"offset ({', '.join(t['offset'])}) mm"]
-            if t["axis"]:
-                lines.append(f"turned {t['angle']} deg around {t['axis']} first")
+            lines = [f"<b>{t.name}</b> ({t.TYPE}, placement)", f"of {', '.join(t.targets)}", t.describe()]
             error = self.result.feature_errors.get(t.name)
             if error:
                 lines.append(f"<span style='color:#c81e1e'>error: {error}</span>")

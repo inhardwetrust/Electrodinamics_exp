@@ -56,7 +56,7 @@ class MovePanel(QDialog):
         axis_row.addWidget(self.axis_label, 1)
         axis_row.addWidget(self.pick)
         axis_row.addWidget(self.clear)
-        form = QFormLayout()
+        form = self.form = QFormLayout()
         self.targets_label = QLabel()
         self.targets_label.setWordWrap(True)
         self.targets_label.setToolTip("Click bodies or groups under Solid Bodies (or bodies in 3D) to take or drop "
@@ -155,3 +155,34 @@ class MovePanel(QDialog):
             self._done = True
             self.cancelled.emit()
         super().closeEvent(event)
+
+
+class MirrorPanel(MovePanel):
+    """
+    The Mirror command's panel: the targets (picked as for Move) and the
+    plane each is mirrored in, through its own center (YZ / XZ / XY).
+    """
+
+    def __init__(self, parent, values, targets, plane="YZ", title="Mirror"):
+        super().__init__(parent, values, targets, title=title)
+        from PySide6.QtWidgets import QComboBox
+
+        from model.transforms import MIRROR_PLANES
+
+        for row in range(5, 0, -1):             # Offset X / Y / Z, Turn around, Angle: not a mirror's
+            self.form.removeRow(row + 1)
+        self.plane = QComboBox()
+        self.plane.addItems(list(MIRROR_PLANES))
+        self.plane.setCurrentText(plane)
+        self.plane.setToolTip("Mirrored in the plane parallel to it through its own center (a group's: of all "
+                              "its bodies)")
+        self.plane.currentIndexChanged.connect(self._update)
+        self.form.insertRow(2, "Plane (through its center):", self.plane)
+
+    def _update(self, *_, emit=True):
+        problem = self._error
+        self.note.setText(problem or "")
+        self.note.setStyleSheet(ERROR_STYLE if problem else "")
+        self.apply_button.setEnabled(problem is None)
+        if emit:
+            self.changed.emit()

@@ -277,6 +277,11 @@ is placed before its group (local, then global); the other way round fails.
     angle = "90"
     offset = ["board_w / 2", "0", "h"]
 
+`type = "mirror"`: `targets`, `plane` = `"YZ"` | `"XZ"` | `"XY"`: each target
+mirrored in place, in the plane parallel to that one through its own center
+(the middle of its bounds; a group's: of all its bodies, as one). No outside
+planes, no copy: to place a mirrored part, mirror it, then move it.
+
 ## Conventions for RF structures
 
 - The board on the XY plane from z = 0 up by `h`; copper on its top as a
