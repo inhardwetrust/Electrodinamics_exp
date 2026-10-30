@@ -20,9 +20,12 @@ Russian; files here are in English.
   write: then write it in meaningful steps (not 30 tiny ones), and never
   while it has unsaved edits of theirs (the window then only warns: ask).
 - customcst (`../customcst/`): read its skill
-  `../customcst/.claude/skills/antenna-design/SKILL.md` (goal, sweeps,
-  convergence, the final run, the server rules) and the bridge section
-  there (the model from myCad, `TASK_mycad_bridge.md` until it is done).
+  `../customcst/.claude/skills/customcst/SKILL.md` (set up, check, run,
+  read the results, drive the window) and the facts it points to,
+  `../customcst/REFERENCE.md`; then
+  `../customcst/.claude/skills/antenna-design/SKILL.md` (the goal, tuning,
+  convergence, the final run; its section 8: the loop with a myCad model,
+  one model changed in place, each change a run).
 - A tool missing something: say so, note it in notes/log.md, and fix it in
   that tool's own session or folder rules (its checks, its CLAUDE.md), not
   by hacks here.

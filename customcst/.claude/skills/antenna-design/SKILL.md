@@ -5,9 +5,12 @@ description: Design, tune and verify an antenna (a patch, a dipole, a feed netwo
 
 # Antenna design with customcst
 
-customcst is an FDTD simulator (this folder). Read `CLAUDE.md` first, then the
-parts of `ARCHITECTURE.md` named below as you need them. The user speaks
-Russian: answer in Russian, keep code, comments and docs in English.
+customcst is an FDTD simulator (this folder). Read `REFERENCE.md` first
+(the facts: project file, body types, mesh, runs, results, the window's
+commands) and follow the `customcst` skill (`.claude/skills/customcst/`)
+for each simulation; this skill is the antenna method on top of them.
+The user speaks Russian: answer in Russian, keep code, comments and docs
+in English.
 
 The way of working this skill describes: agree on the goal and the
 structure with the user, then do the iterations yourself (models, sweeps,
@@ -42,10 +45,10 @@ or `patch_5g8_4layer`):
   `f_ref` at the design frequency: the loss is exact at f_ref only), band
   (f min .. f max around it), mesh, far-field frequencies, `save()`.
 
-Rules the code relies on (ARCHITECTURE "Lumped elements", "Waveguide
-ports", project/ports.py):
+Rules the code relies on (REFERENCE 5):
 - a lumped port is a truncated cone between two conductors, its SMALL end
-  "+"; a lumped element is a cylinder; a waveguide port sits on a domain end;
+  "+"; a lumped element is a cylinder; a waveguide port's plane ends the
+  domain on its side;
 - disjoint solids fused into one body come back as `name#1`, `name#2`: map
   types by `name.split("#")[0]`;
 - `_trace` adds half the width at the ends: end a line at the board edge
@@ -125,19 +128,13 @@ nothing because the lines' own radiation set the pattern).
   The run lands in `models/STEM_final.results/` as Run N (not in git);
   the user opens the model and sees it in Results and the Far field tab.
 
-## 6. Read the results (solver/farfield.py)
+## 6. Read the results
 
-```python
-from solver.result_file import list_results
-from solver.farfield import cut, beamwidth, figures, surface
-run = list_results(step)[0][-1]; ff = run.farfield["feed"]      # per excited port
-figures(ff)          # per frequency: D, G, realized, efficiency, beam direction
-cut(ff, k, "phi", 0) # E-plane of an x-polarized patch; "phi", 90: H-plane; "theta", 90: horizon
-beamwidth(angles, values)
-```
-ARCHITECTURE "Far field (antenna pattern)" has the definitions (D over the
-sphere integral, G over the accepted power, efficiency = radiated /
-accepted, Ludwig-3 co / cross).
+REFERENCE 12 (`list_results`, `figures`, `cut`, `beamwidth`, `summary`).
+For a patch: S11 minimum and the -10 dB band; per far-field frequency D,
+G, realized G, efficiency, the beam direction, the E (φ 0) and H (φ 90)
+beamwidths, front/back, and the front asymmetry (U(θ) against U(-θ) in
+each plane, θ < 80°: `scripts/sweep.py front_asymmetry`).
 
 Sanity figures (a patch on FR4 1.6 mm, 5.8 GHz, probe fed, 40 x 40 mm
 ground): D ~7 dBi, efficiency ~70 %, G ~5.5 dBi, 85 / 76 degree beamwidth
@@ -215,25 +212,26 @@ Names and the connector:
   types: the types follow the names.
 - A non-ASCII name (`Volumenkörper16`) must come through the STEP intact:
   read the exported STEP's body names back (`read_step`) before assigning.
-- A coax connector's port is its end cylinder, type `waveport`, standing on
-  the domain end (section "Waveguide ports" of ARCHITECTURE.md); the dry
-  run says whether it is found.
+- A coax connector's port is its end cylinder, type `waveport`
+  (REFERENCE 5); the dry run says whether it is found. Its plane ends the
+  domain on that side with no padding, so the far-field box there runs
+  through the connector: not validated yet. For the pattern, check the
+  run's "body crosses the far-field box" line, and compare once with the
+  same antenna fed by a lumped port at the board edge before trusting
+  the back and the connector-side figures.
 - Conductors may touch or overlap (a pin on the line, solder on a pad):
   PEC merges. Two dielectrics in one place: the later body wins cell by
   cell; avoid it.
 
 ## Pitfalls we hit
 
-- `cd ROOT && nohup ... &` over SSH hangs the channel: use
-  `cd ROOT || exit 1; nohup ... & echo $!` (remote_tasks.py does).
-- An SSH call that timed out may still have started the process: check
-  with `status` before starting it again.
-- Far-field frequencies must lie within f min .. f max; they are not in the
-  run's fingerprint, so changing them does not outdate a run.
-- dB of exact zeros (a symmetry plane's cross-pol, an axis null): floor the
-  value before log10; complex64 arrays underflow in float32 - cast to
-  complex128 first.
-- Square 90 degree bends are exact on the grid; 45 degree traces need the
-  slanted-metal refinement (on by default; ARCHITECTURE "Slanted metal").
-- Thin layers (0.2 mm prepreg, 15 um planes) shrink the time step: a run
-  takes 3-5x longer; sweep coarse.
+The general ones are in REFERENCE 16. For antennas:
+- too little padding: the far-field box crosses the board (the run's info
+  says so): ~λ/2 of air at the lowest far-field frequency;
+- feed lines on the antenna's side of 1.6 mm FR4 radiate and lose: the
+  beam tilts, the efficiency drops to 40 %; a feed behind the ground
+  (4 layers) is shielded;
+- an asymmetric feed tilts the beam 1-3° and makes the back lobe
+  asymmetric: that is physics, not a mesh error;
+- thin layers (0.2 mm prepreg, 35 µm copper) shrink the time step: the
+  4-layer patch ran 28 min against 3 min on 1.6 mm: sweep coarse.

@@ -1,6 +1,10 @@
 # CLAUDE.md — customcst
 
 Context for future Claude sessions. Read this first, then `ARCHITECTURE.md`.
+To USE customcst (simulate a model, drive the window) rather than change
+its code: `REFERENCE.md` (the facts) and the skill
+`.claude/skills/customcst/SKILL.md` (the procedure); antennas: also
+`.claude/skills/antenna-design/SKILL.md`.
 
 - This is the successor of `../pseudo_cst_3d`; read its CLAUDE.md for the
   working style and its pitfalls (Qt swap on AMD, screenshots only through
