@@ -2512,6 +2512,7 @@ class MainWindow(QMainWindow):
     # =====================================================
 
     def _fill_tree(self):
+        current = self._key_of(self.tree.currentItem())     # a feature's row stays current (its highlight)
         self.tree.blockSignals(True)
         self.tree.clear()
         self._rows = {}
@@ -2636,6 +2637,9 @@ class MainWindow(QMainWindow):
                 self._rows[("feature", feature.name)].setExpanded(True)
         group_row = self._rows.get(("group", self._selected_group))
         selected = group_row if group_row is not None else self._rows.get(self.view.selected)
+        feature_row = self._rows.get(current) if current is not None and current[0] == "feature" else None
+        if selected is None and feature_row is not None and self.view.selected is None:
+            selected = feature_row              # (the view drops a non-sketch feature's key on a rebuild)
         if selected is not None:
             self.tree.setCurrentItem(selected)
         elif self.view.selected is not None and self.view.selected[0] != "entity":
@@ -2643,7 +2647,7 @@ class MainWindow(QMainWindow):
         if group_row is None:                   # that group is gone (ungrouped, renamed, emptied)
             self._selected_group = None
         self.tree.blockSignals(False)
-        self._show_info(self.view.selected)
+        self._show_info(current if selected is feature_row and feature_row is not None else self.view.selected)
 
     @staticmethod
     def _key_of(item):
@@ -2756,7 +2760,36 @@ class MainWindow(QMainWindow):
         if self._hover_row is not None:
             self._hover_row.setBackground(0, HOVER_ROW)
 
+    def _feature_highlight(self, name):
+        """
+        (Body, cut) of what feature `name` made, placed as its bodies are
+        (an extrusion's or a revolution's swept profiles, an import's bodies
+        as read), or None (a sketch, a work plane: shown otherwise).
+        """
+        from geometry import kernel
+        from OCP.BRep import BRep_Builder
+        from OCP.TopoDS import TopoDS_Compound
+
+        feature = self.part.feature(name)
+        out = self.result.outputs.get(name)
+        if out is None or self.result.upto is not None:
+            return None
+        if feature.TYPE in ("extrude", "revolve"):
+            made, cut = [(out.body, out.shape)], feature["operation"] == "cut"
+        elif feature.TYPE == "import":
+            made, cut = list(zip(out.bodies, out.shapes)), False
+        else:
+            return None
+        placements = {} if self._modeling_shown else self.result.placements
+        compound, builder = TopoDS_Compound(), BRep_Builder()
+        builder.MakeCompound(compound)
+        for body, shape in made:
+            builder.Add(compound, kernel.placed(shape, placements[body]) if body in placements else shape)
+        return body_from_shape(f"{name} made", compound), cut
+
     def _show_info(self, key):
+        highlight = self._feature_highlight(key[1]) if key is not None and key[0] == "feature" else None
+        self.view.set_highlight(*(highlight or (None,)))
         self._fill_props(key)
         if key is None:
             self.info.setText("")

@@ -41,6 +41,12 @@ def transform_type(cls):
     return cls
 
 
+def _place(ctx, body, trsf):
+    """A body under one more placement; ctx.placements keeps its whole placement (what a feature made follows)."""
+    ctx.shapes[body] = ctx.kernel.placed(ctx.shapes[body], trsf)
+    ctx.placements[body] = ctx.kernel.then(ctx.placements.get(body), trsf)
+
+
 @dataclass
 class MoveResult:
     bodies: list            # the bodies it moved
@@ -142,8 +148,9 @@ class Move(_Placing):
         if self["axis"].strip():
             point, direction = axis_line(self["axis"], ctx.part, ctx.outputs)
             angle = ctx.evaluate(self["angle"], "angle")
+        trsf = ctx.kernel.move_trsf(point, direction, angle, offset)
         for body in bodies:
-            ctx.shapes[body] = ctx.kernel.transform(ctx.shapes[body], point, direction, angle, offset)
+            _place(ctx, body, trsf)
         return MoveResult(bodies)
 
 
@@ -178,7 +185,8 @@ class Mirror(_Placing):
                 continue
             corners = np.array([ctx.kernel.bounds(ctx.shapes[b]) for b in bodies])
             center = 0.5 * (corners[:, 0].min(axis=0) + corners[:, 1].max(axis=0))
+            trsf = ctx.kernel.mirror_trsf(center, normal)
             for body in bodies:
-                ctx.shapes[body] = ctx.kernel.mirror(ctx.shapes[body], center, normal)
+                _place(ctx, body, trsf)
             done += bodies
         return MoveResult(done)

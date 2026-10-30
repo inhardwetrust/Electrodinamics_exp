@@ -148,6 +148,9 @@ PROFILE_HOVER_COLOR = (0.25, 1.0, 0.35, 0.35)      # a profile under the cursor
 PROFILE_SELECTED_COLOR = (0.35, 0.65, 1.0, 0.45)  # a selected profile
 PREVIEW_COLOR = (0.95, 0.7, 0.25, 0.45)           # what a feature command would add (see-through)
 PREVIEW_CUT_COLOR = (1.0, 0.3, 0.25, 0.45)        # what it would cut away
+HIGHLIGHT_COLOR = (0.25, 0.6, 1.0, 0.35)          # what a feature selected in the browser made (seen through all)
+HIGHLIGHT_CUT_COLOR = (1.0, 0.35, 0.3, 0.35)      # what it cut away
+HIGHLIGHT_EDGE_COLOR = (0.2, 0.5, 1.0, 1.0)
 FACE_HOVER_COLOR = (0.25, 1.0, 0.35, 0.55)        # a body face under the cursor
 FACE_SELECTED_COLOR = (0.35, 0.65, 1.0, 0.6)      # a selected body face
 SNAP_MARKER_COLOR = (0.25, 1.0, 0.35, 1.0)        # where a drag snapped (green, as the tools' marker)
@@ -808,6 +811,16 @@ class GeometryView:
         self.preview.set_gl_state("translucent", depth_test=True, cull_face=False)
         self.preview.order = 8
         self.preview.visible = False
+        # What the feature selected in the browser made: see-through, over everything (set_highlight).
+        self.highlight = scene.visuals.Mesh(parent=self.root)
+        self.highlight.set_gl_state("translucent", depth_test=False, cull_face=False)
+        self.highlight.order = 10
+        self.highlight.visible = False
+        self.highlight_edges = scene.visuals.Line(connect="segments", width=1.5, parent=self.root)
+        self.highlight_edges.set_gl_state("translucent", depth_test=False)
+        self.highlight_edges.order = 11
+        self.highlight_edges.visible = False
+        self.highlight_body = None      # the Body shown so (for the checks)
 
         self._picker = None
         self.picks = [None, None]       # points A and B: Pick or None
@@ -1529,6 +1542,25 @@ class GeometryView:
             self._update_light()
         else:
             self.preview.visible = False
+        self.canvas.update()
+
+    def set_highlight(self, body, cut=False):
+        """
+        What a feature selected in the browser made (a Body: an extrusion's
+        swept profiles, an import's bodies), drawn see-through over
+        everything with its edges; cut: what it cut away (red). None: off.
+        """
+        self.highlight_body = body
+        on = body is not None and len(body.triangles) > 0
+        self.highlight.visible = self.highlight_edges.visible = on
+        if on:
+            self.highlight.set_data(vertices=(body.vertices / SCENE_UNIT).astype(np.float32), faces=body.triangles,
+                                    color=HIGHLIGHT_CUT_COLOR if cut else HIGHLIGHT_COLOR)
+            if len(body.edges):
+                self.highlight_edges.set_data(pos=(body.edges.reshape(-1, 3) / SCENE_UNIT).astype(np.float32),
+                                              color=HIGHLIGHT_EDGE_COLOR)
+            else:
+                self.highlight_edges.visible = False
         self.canvas.update()
 
     def set_profile_selection(self, keys):

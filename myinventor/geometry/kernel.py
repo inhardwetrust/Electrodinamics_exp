@@ -206,13 +206,9 @@ def file_sha256(path):
     return sha(path)
 
 
-def transform(shape, point, direction, angle, offset):
-    """
-    A shape (mm) turned by `angle` degrees around the axis through `point`
-    (3,) mm along `direction` (the right hand way), then moved by `offset`
-    (3,) mm: a copy.
-    """
-    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+def move_trsf(point, direction, angle, offset):
+    """The placement turning by `angle` degrees around the axis through `point` (3,) mm along `direction`, then
+    moving by `offset` (3,) mm (opaque: for placed / then)."""
     from OCP.gp import gp_Trsf
 
     turn = gp_Trsf()
@@ -220,17 +216,38 @@ def transform(shape, point, direction, angle, offset):
         turn.SetRotation(gp_Ax1(gp_Pnt(*map(float, point)), gp_Dir(*map(float, direction))), float(np.radians(angle)))
     move = gp_Trsf()
     move.SetTranslation(gp_Vec(*map(float, offset)))
-    return BRepBuilderAPI_Transform(shape, move.Multiplied(turn), True).Shape()
+    return move.Multiplied(turn)
 
 
-def mirror(shape, point, normal):
-    """A shape (mm) mirrored in the plane through `point` (3,) mm with `normal` (3,): a copy."""
-    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+def mirror_trsf(point, normal):
+    """The placement mirroring in the plane through `point` (3,) mm with `normal` (3,)."""
     from OCP.gp import gp_Trsf
 
     trsf = gp_Trsf()
     trsf.SetMirror(gp_Ax2(gp_Pnt(*map(float, point)), gp_Dir(*map(float, normal))))
+    return trsf
+
+
+def placed(shape, trsf):
+    """A shape (mm) under a placement: a copy."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+
     return BRepBuilderAPI_Transform(shape, trsf, True).Shape()
+
+
+def then(first, second):
+    """The placement `first`, then `second` (first may be None: none yet)."""
+    return second if first is None else second.Multiplied(first)
+
+
+def transform(shape, point, direction, angle, offset):
+    """A shape (mm) turned by `angle` degrees around the axis, then moved by `offset` (3,) mm: a copy."""
+    return placed(shape, move_trsf(point, direction, angle, offset))
+
+
+def mirror(shape, point, normal):
+    """A shape (mm) mirrored in the plane through `point` (3,) mm with `normal` (3,): a copy."""
+    return placed(shape, mirror_trsf(point, normal))
 
 
 _PLANAR = {}                # id of a shape -> its planar faces (an import's shapes are kept, read once)

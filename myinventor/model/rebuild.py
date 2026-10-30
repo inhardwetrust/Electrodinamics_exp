@@ -27,6 +27,7 @@ class Result:
     bodies: list = field(default_factory=list)          # Body, named, for the view and STEP
     shapes: dict = field(default_factory=dict)          # body name -> OCP shape (mm): exact, for STEP
     colors: dict = field(default_factory=dict)          # body name -> (r, g, b): its own, else an import's
+    placements: dict = field(default_factory=dict)      # body name -> its placement (opaque, ctx.kernel's)
     upto: str = None                                    # built only up to this feature (no bodies), or None
 
 
@@ -38,6 +39,7 @@ class BuildContext:
     shapes: dict = field(default_factory=dict)          # body name -> OCP shape (mm), in the order made
     parameter_errors: dict = field(default_factory=dict)
     folder: str = None                                  # the part file's folder (an import's file is in it)
+    placements: dict = field(default_factory=dict)      # body name -> the transforms that moved it, composed
     colors: dict = field(default_factory=dict)          # body name -> (r, g, b) by default (an import's)
 
     def evaluate(self, formula, what):
@@ -115,4 +117,5 @@ def rebuild(part, upto=None, folder=None, tessellate=True, placement=True):
     result.bodies = [ctx.kernel.body(name, shape, result.colors[name])
                      for name, shape in ctx.shapes.items()] if ctx.shapes and tessellate else []
     result.shapes = dict(ctx.shapes)
+    result.placements = dict(ctx.placements)
     return result

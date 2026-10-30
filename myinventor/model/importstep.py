@@ -38,6 +38,7 @@ class ImportResult:
     bodies: list            # the body names it made
     path: str               # the file read
     planes: dict = field(default_factory=dict)  # "face.<i>.<k>" -> (center (3,) m, u (3,), normal (3,) outward)
+    shapes: list = field(default_factory=list)  # its bodies as read (OCP, mm), in `bodies`' order
 
     def face_frame(self, role):
         """The SketchFrame of a sketch on planar face `role` ("face.2.12"): its center, its normal outward."""
@@ -109,7 +110,7 @@ class Import(Feature):
             ctx.shapes[name] = shape
             if color is not None:
                 ctx.colors[name] = color
-        result = ImportResult(list(self.bodies), path)
+        result = ImportResult(list(self.bodies), path, shapes=[shape for _, _, shape, _ in read])
         for i, (_, _, shape, _) in enumerate(read, 1):
             for k, center, u, normal in ctx.kernel.planar_faces(shape):
                 result.planes[f"face.{i}.{k}"] = (center * MM, u, normal)
