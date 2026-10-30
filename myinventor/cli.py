@@ -66,6 +66,8 @@ def report(part, result):
         elif feature.TYPE == "extrude":
             row.update(sketch=feature["sketch"], profiles=[list(p) for p in feature.profiles],
                        distance=feature["distance"], operation=feature["operation"], body=feature["body"])
+        elif feature.TYPE == "workplane":
+            row.update(base=feature["base"], offset=feature["offset"], axis=feature["axis"], angle=feature["angle"])
         elif feature.TYPE == "revolve":
             row.update(sketch=feature["sketch"], profiles=[list(p) for p in feature.profiles], axis=feature["axis"],
                        angle=feature["angle"], operation=feature["operation"], body=feature["body"])
@@ -122,6 +124,9 @@ def text(data):
         elif f["type"] == "extrude":
             lines.append(f"    {f['operation']} body {f['body']!r} from {f['sketch']} {f['profiles']}, "
                          f"distance {f['distance']}")
+        elif f["type"] == "workplane":
+            how = f"turned {f['angle']} deg around {f['axis']}" if f["axis"] else f"offset {f['offset']} mm"
+            lines.append(f"    from {f['base']}, {how}")
         elif f["type"] == "revolve":
             lines.append(f"    {f['operation']} body {f['body']!r} from {f['sketch']} {f['profiles']}, "
                          f"around {f['axis']} by {f['angle']} deg")

@@ -9,7 +9,7 @@
 #   [[feature]]
 #   name = "Sketch1"
 #   type = "sketch"
-#   plane = "XY Plane"        # an origin plane, or a planar face of a feature by meaning:
+#   plane = "XY Plane"        # an origin plane, a work plane ("WorkPlane1"), or a planar face of a feature:
 #                             # "Extrusion1:end", "Extrusion1:start", "Extrusion1:side.L3",
 #                             # "Revolution1:start", "Revolution1:end", "Revolution1:disc.L3"
 #
@@ -801,21 +801,8 @@ class Sketch(Feature):
     # =====================================================
 
     def _frame(self, ctx):
-        """Where the sketch lies: an origin plane, or a feature's planar face (its frame, normal outward)."""
-        name = self["plane"]
-        feature, _, face = name.partition(":")
-        if face:
-            built = ctx.outputs.get(feature)
-            if built is None or not hasattr(built, "face_frame"):
-                raise ValueError(f"{feature!r} has no faces to sketch on")
-            return built.face_frame(face)
-        try:
-            datum = ctx.part.datum(name)
-        except KeyError:
-            raise ValueError(f"{name!r} is not a plane") from None
-        if datum.kind != "plane":
-            raise ValueError(f"{name!r} is a work {datum.kind}, not a plane")
-        return SketchFrame(datum.origin.copy(), datum.u.copy(), datum.v.copy(), datum.direction.copy())
+        """Where the sketch lies (plane_frame)."""
+        return plane_frame(ctx, self["plane"])
 
     def build(self, ctx):
         frame = self._frame(ctx)
@@ -889,6 +876,30 @@ class Sketch(Feature):
         if broken:
             raise PartialBuild("; ".join(broken), result)
         return result
+
+
+def plane_frame(ctx, name):
+    """
+    The SketchFrame of a plane by name: an origin plane, a feature's planar
+    face ("Extrusion1:end": its frame, normal outward), or a work plane
+    (model/workplane.py); ValueError if it is none of them.
+    """
+    feature, _, face = name.partition(":")
+    if face:
+        built = ctx.outputs.get(feature)
+        if built is None or not hasattr(built, "face_frame"):
+            raise ValueError(f"{feature!r} has no faces to sketch on")
+        return built.face_frame(face)
+    built = ctx.outputs.get(name)
+    if built is not None and hasattr(built, "plane_frame"):
+        return built.plane_frame()
+    try:
+        datum = ctx.part.datum(name)
+    except KeyError:
+        raise ValueError(f"{name!r} is not a plane") from None
+    if datum.kind != "plane":
+        raise ValueError(f"{name!r} is a work {datum.kind}, not a plane")
+    return SketchFrame(datum.origin.copy(), datum.u.copy(), datum.v.copy(), datum.direction.copy())
 
 
 def _construction(entity):

@@ -109,11 +109,12 @@ from geometry.kernel import extrude as extrude_shape, region_face, revolve as re
 from geometry.step_io import export_part
 from geometry.tessellate import body_from_shape
 from model.document import Document
-from model.part import Part, PartError, color_rgb
+from model.part import Datum, Part, PartError, color_rgb
 from model.part_file import EXTENSION, PartFileError
 from model.rebuild import rebuild
 from model.extrude import Extrude
 from model.revolve import Revolve, axis_of, check_side, onto_axis
+from model.workplane import WorkPlane
 from model.profiles import find_regions, named_regions, whole_regions
 from model.expressions import evaluate
 from model.offsets import CAPS, offset_key
@@ -134,6 +135,7 @@ BEND_PARAMETER = {
     "miter": ("Miter radius", "half the width (a full bevel)"),
 }
 from view.extrude_panel import ExtrudePanel
+from view.workplane_panel import WorkPlanePanel
 from view.sketch_tools import (
     ALIGN_PX, CURVE_SNAP_PX, SNAP_PX, CircleTool, LineTool, PasteTool, PointTool, SplineTool, TraceTool, align,
     curve_snap,
@@ -247,6 +249,10 @@ class MainWindow(QMainWindow):
         self._spline = None         # the spline the Spline tool is drawing
         self.spline_tolerance = "50"    # µm: how far a spline made from a curve may be off it
         self.extrude_panel = None   # the Extrude command's panel while it runs
+        self.workplane_panel = None  # the Work Plane command's panel while it runs
+        self._workplane = None      # that command: {"edit": name or None, "base": plane name}
+        self._plane_purpose = "sketch"  # what a picked plane is for: "sketch" | "workplane"
+        self._axis_for_workplane = False    # the view picks the work plane's axis
         self._extruding = None      # the extrusion being edited by it, or None (a new one)
         self._sweep = "extrude"     # the command the panel runs: "extrude" | "revolve"
         self._rolled_back = False   # the view shows the bodies from before the edited extrusion
@@ -340,6 +346,11 @@ class MainWindow(QMainWindow):
                                            tip="Revolve closed regions of a sketch around an axis (a straight line "
                                                "of a sketch, or an origin axis)")
         group.add_action(self.revolve_action)
+        group = model.add_group("Work Features")
+        self.workplane_action = self._action("Work Plane", self.start_work_plane,
+                                             tip="A work plane: offset from a plane or flat face, or turned around "
+                                                 "an axis in it (select the plane first, or click it next)")
+        group.add_action(self.workplane_action)
         group = model.add_group("Inspect")
         self.measure_action = self._action("Measure", self._set_measure, checkable=True,
                                            tip="Measure: click picks point A, Shift + click point B")
@@ -521,13 +532,33 @@ class MainWindow(QMainWindow):
         result.bodies, result.shapes = frozen.bodies, frozen.shapes
         return result
 
+    def _datums(self):
+        """The origin's datums and the work planes built (model.part.Datum, as the view draws them)."""
+        planes = []
+        for feature in self.part.features:
+            built = self.result.outputs.get(feature.name) if self.result is not None else None
+            if feature.TYPE == "workplane" and built is not None:
+                f = built.plane_frame()
+                planes.append(Datum(feature.name, "plane", f.origin, f.normal, f.u, f.v, feature["visible"]))
+        return list(self.part.origin) + planes
+
+    def _datum(self, name):
+        """A datum by name: the origin's or a work plane (KeyError if none)."""
+        for d in self._datums():
+            if d.name == name:
+                return d
+        raise KeyError(name)
+
+    def _is_workplane(self, name):
+        return any(f.name == name and f.TYPE == "workplane" for f in self.part.features)
+
     def full_result(self):
         """The Result of the whole part (rebuilt if a sketch being edited holds 3D back): for STEP."""
         return self.result if self.result.upto is None else rebuild(self.part)
 
     def show_result(self, result, reset_view=False):
         self.result = result
-        self.view.set_datums(self.part.origin)
+        self.view.set_datums(self._datums())
         self._show_sketches(force=True)
         if self.editing is not None and self.editing in result.outputs:
             self.view.set_sketch(result.outputs[self.editing].frame, self.editing)
@@ -781,7 +812,8 @@ class MainWindow(QMainWindow):
         or wait for a click on one.
         """
         selected = self.view.selected
-        if selected is not None and selected[0] == "datum" and self.part.datum(selected[1]).kind == "plane":
+        self._plane_purpose = "sketch"
+        if selected is not None and selected[0] == "datum" and self._datum(selected[1]).kind == "plane":
             self.new_sketch(selected[1])
             return
         if selected is not None and selected[0] == "face":
@@ -791,7 +823,7 @@ class MainWindow(QMainWindow):
                 return
             self.statusBar().showMessage(why, 8000)
         self.picking_plane = True
-        planes = [d.name for d in self.part.origin if d.kind == "plane"]
+        planes = [d.name for d in self._datums() if d.kind == "plane"]
         self.view.set_pick_filter({"plane", "face"}, forced=planes)
         self.start_sketch_action.setEnabled(False)
         self.statusBar().showMessage(PICK_PLANE_HINT)
@@ -813,13 +845,20 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(why, 8000)
                 return False
             self._stop_picking_plane()
-            self.new_sketch(reference)
+            self._plane_taken(reference)
             return True
-        if key[0] != "datum" or self.part.datum(key[1]).kind != "plane":
+        if key[0] != "datum" or self._datum(key[1]).kind != "plane":
             return False
         self._stop_picking_plane()
-        self.new_sketch(key[1])
+        self._plane_taken(key[1])
         return True
+
+    def _plane_taken(self, name):
+        """A plane picked: a new sketch on it (Start 2D Sketch), or a work plane's base (Work Plane)."""
+        if self._plane_purpose == "workplane":
+            self._open_work_plane(name)
+        else:
+            self.new_sketch(name)
 
     def face_reference(self, key):
         """
@@ -1351,8 +1390,8 @@ class MainWindow(QMainWindow):
         wanted = {self.editing} | {k[1] for k in (self.view.hovered, self.view.selected)
                                    if k is not None and k[0] in ("feature", "entity")}
         wanted |= {name for name in used if self._failed_users(name)}
-        if self.extrude_panel is not None and self._sweep == "revolve":     # an axis may be in any of them
-            wanted |= set(used)
+        if (self.extrude_panel is not None and self._sweep == "revolve") or self._axis_for_workplane:
+            wanted |= set(used)                 # an axis may be in any of them
         shown = [(f.name, outputs[f.name]) for f in self.part.features
                  if f.TYPE == "sketch" and f.name in outputs and (f.name not in used or f.name in wanted)]
         # force: after a rebuild (their geometry changed); else only when the set of names changes
@@ -1371,6 +1410,166 @@ class MainWindow(QMainWindow):
             if feature.TYPE in ("extrude", "revolve"):
                 used.setdefault(feature["sketch"], feature.name)
         return used
+
+    def start_work_plane(self, edit=None):
+        """
+        3D Model > Work Plane: from the selected plane or flat face (else a
+        click on one next), a panel: Offset or Angle (an axis picked in the
+        view), a preview; Apply makes it. edit: a work plane to change.
+        """
+        if self.workplane_panel is not None:
+            self.workplane_panel.raise_()
+            return
+        self.finish_sketch()
+        if edit is not None:
+            self._open_work_plane(self.part.feature(edit)["base"], edit)
+            return
+        selected = self.view.selected
+        if selected is not None and selected[0] == "datum" and self._datum(selected[1]).kind == "plane":
+            self._open_work_plane(selected[1])
+            return
+        if selected is not None and selected[0] == "face":
+            reference, why = self.face_reference(selected)
+            if reference is not None:
+                self._open_work_plane(reference)
+                return
+            self.statusBar().showMessage(why, 8000)
+        self._plane_purpose = "workplane"
+        self.picking_plane = True
+        self.view.set_pick_filter({"plane", "face"}, forced=[d.name for d in self._datums() if d.kind == "plane"])
+        self.statusBar().showMessage("Work Plane: select its base, a plane or a flat face of a body (in 3D or in "
+                                     "the browser), Esc: cancel")
+
+    def _open_work_plane(self, base, edit=None):
+        feature = self.part.feature(edit) if edit else None
+        self._workplane = {"edit": edit, "base": base}
+        axis = feature["axis"] if feature is not None and feature["axis"] else None
+        panel = WorkPlanePanel(self, self.result.values, base,
+                               offset=feature["offset"] if feature is not None else "10",
+                               axis=axis, axis_label=self._work_axis_label(axis) if axis else None,
+                               angle=feature["angle"] if axis else "30",
+                               title=f"Edit {edit}" if edit else "Work Plane")
+        panel.applied.connect(self._apply_work_plane)
+        panel.cancelled.connect(self._end_work_plane)
+        panel.changed.connect(self._preview_work_plane)
+        panel.pick_axis.connect(self._pick_work_axis)
+        self.workplane_panel = panel
+        self.workplane_action.setEnabled(False)
+        self._preview_work_plane()
+        panel.show()
+        self.statusBar().showMessage(f"Work Plane on {base}: Offset, or Angle around an axis (Pick) · Apply · "
+                                     "Esc: cancel")
+
+    @staticmethod
+    def _work_axis_label(axis):
+        owner, sep, name = axis.rpartition(":")
+        return f"{name} ({owner})" if sep else axis
+
+    def _work_plane_feature(self):
+        """The work plane the panel describes (FeatureError if it cannot be one)."""
+        panel, state = self.workplane_panel, self._workplane
+        name = state["edit"] or self.part.free_feature_name("WorkPlane")
+        visible = self.part.feature(state["edit"])["visible"] if state["edit"] else True
+        if panel.is_angle():
+            return WorkPlane(name, base=state["base"], axis=panel.axis or "", angle=panel.angle.text().strip(),
+                             visible=visible)
+        return WorkPlane(name, base=state["base"], offset=panel.offset.text().strip(), visible=visible)
+
+    def _preview_work_plane(self):
+        """The plane the panel makes, shown (forced) while it runs; the panel told why if it cannot be made."""
+        panel = self.workplane_panel
+        if panel is None:
+            return
+        datums = self._datums()
+        try:
+            feature = self._work_plane_feature()
+            trial = Part.from_dict(self.part.to_dict())
+            if self._workplane["edit"]:
+                index = [f.name for f in trial.features].index(feature.name)
+                trial.features[index] = feature
+            else:
+                trial.add_feature(feature)
+            built = rebuild(trial, upto=feature.name)
+            if feature.name in built.feature_errors:
+                raise ValueError(built.feature_errors[feature.name])
+            f = built.outputs[feature.name].plane_frame()
+            datums = [d for d in datums if d.name != feature.name]
+            datums.append(Datum(feature.name, "plane", f.origin, f.normal, f.u, f.v, True))
+            panel.set_error(None)
+        except (ValueError, KeyError) as error:
+            panel.set_error(str(error))
+        self.view.set_datums(datums)
+
+    def _pick_work_axis(self):
+        """Pick (Angle): a click in the view takes a straight sketch line or an origin axis."""
+        self._axis_for_workplane = True
+        self.view.set_profile_mode([])
+        self.view.set_axis_mode(True)
+        self.view.on_axis = self._work_axis_picked
+        self._show_sketches()
+        self.statusBar().showMessage("Work Plane: click a straight line of a sketch or an origin axis")
+
+    def _work_axis_picked(self, key):
+        axis = key[1] if key[0] == "datum" else f"{key[1]}:{key[2]}"
+        self._end_axis_pick()
+        if self.workplane_panel is not None:
+            self.workplane_panel.set_axis(axis, self._work_axis_label(axis))
+
+    def _end_axis_pick(self):
+        if self._axis_for_workplane:
+            self._axis_for_workplane = False
+            self.view.set_profile_mode(None)
+            self.view.on_axis = None
+            self._show_sketches()
+
+    def _apply_work_plane(self):
+        try:
+            feature = self._work_plane_feature()
+        except (ValueError, KeyError) as error:
+            self.show_error(f"Work Plane: {error}")
+            return
+        edit = self._workplane["edit"]
+        self._end_work_plane()
+        if edit:
+            self.part.feature(edit).values.update(feature.values)
+        else:
+            self.part.add_feature(feature)
+        self._commit()
+        error = self.result.feature_errors.get(feature.name)
+        if error:
+            self.show_error(f"{feature.name} failed: {error}")
+
+    def _end_work_plane(self):
+        panel, self.workplane_panel = self.workplane_panel, None
+        if panel is not None:
+            for signal in (panel.applied, panel.cancelled, panel.changed, panel.pick_axis):
+                signal.disconnect()
+            panel.close()
+        self._end_axis_pick()
+        self._workplane = None
+        self.workplane_action.setEnabled(True)
+        self.view.set_datums(self._datums())
+
+    def set_work_plane_visible(self, name, on):
+        """A work plane shown or hidden (its tick); one undo step."""
+        feature = self.part.feature(name)
+        if feature["visible"] != on:
+            feature.values["visible"] = on
+            self._commit()
+
+    def _work_plane_info(self, name):
+        feature = self.part.feature(name)
+        how = (f"turned {feature['angle']} deg around {feature['axis']}" if feature["axis"]
+               else f"offset {feature['offset']} mm")
+        lines = [f"<b>{name}</b> (work plane)", f"from {feature['base']}, {how}"]
+        if name in self.result.outputs:
+            d = self._datum(name)
+            lines += [f"through {_fmt_point(d.origin)} mm", f"normal {_fmt_vector(d.direction)}",
+                      "New Sketch (right click) puts a sketch on it"]
+        error = self.result.feature_errors.get(name)
+        if error:
+            lines.append(f"<span style='color:#c81e1e'>error: {error}</span>")
+        return "<br>".join(lines)
 
     def start_revolve(self, edit=None):
         """3D Model > Revolve: as Extrude, with an axis to pick (Axis) and an angle (see start_extrude)."""
@@ -1612,6 +1811,11 @@ class MainWindow(QMainWindow):
         if kind == "body_color":
             return [("Pick a color...", lambda: self.pick_body_color(name)),
                     ("Default color", lambda: self.set_body_color(name, None))]
+        if kind == "datum" and self._is_workplane(name):
+            built = name in self.result.outputs
+            return ([("New Sketch", lambda: self.new_sketch(name))] if built else []) + [
+                ("Edit Work Plane", lambda: self.start_work_plane(edit=name)),
+                ("Delete", lambda: self.delete_feature(name))]
         if kind == "datum" and self.part.datum(name).kind == "plane":
             return [("New Sketch", lambda: self.new_sketch(name))]
         if kind == "feature" and self.part.feature(name).TYPE == "sketch":
@@ -1707,6 +1911,9 @@ class MainWindow(QMainWindow):
         if key is not None and key[0] == "body":
             _later(lambda: self.rename_body_dialog(key[1]))
             return
+        if key is not None and key[0] == "datum" and self._is_workplane(key[1]):
+            _later(lambda: self.start_work_plane(edit=key[1]))
+            return
         if key is None or key[0] != "feature":
             return
         kind = self.part.feature(key[1]).TYPE
@@ -1774,9 +1981,17 @@ class MainWindow(QMainWindow):
             key = ("feature", feature.name)
             # A row may exist already: made for the sketch it took, which comes earlier in the history.
             item = self._rows[key] if key in self._rows else QTreeWidgetItem()
+            if feature.TYPE == "workplane":        # a datum: a tick for showing it, picked like the origin's
+                key = ("datum", feature.name)
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                item.setCheckState(0, Qt.Checked if feature["visible"] else Qt.Unchecked)
             item.setText(0, feature.name)
             item.setData(0, Qt.UserRole, key)
-            if feature.TYPE == "sketch":
+            if feature.TYPE == "workplane":
+                how = (f"turned {feature['angle']} deg around {feature['axis']}" if feature["axis"]
+                       else f"offset {feature['offset']} mm")
+                tip = f"work plane: {feature['base']} {how}\nTick: shown in 3D. Double click: edit"
+            elif feature.TYPE == "sketch":
                 tip = f"sketch on {feature['plane']}"
             elif feature.TYPE == "extrude":
                 what = {"new": "into", "join": "joined to", "cut": "cut from", "intersect": "intersected with"}
@@ -1852,6 +2067,9 @@ class MainWindow(QMainWindow):
         on = item.checkState(0) == Qt.Checked
         if key[0] == "entity":                  # a curve's row: after this signal (the tree is rebuilt)
             QTimer.singleShot(0, lambda: self.set_curve_visible(key[1], key[2], on))
+        elif key[0] == "datum" and self._is_workplane(key[1]):
+            name = key[1]
+            _later(lambda: self.set_work_plane_visible(name, on))
         elif key[0] == "datum":
             self.part.datum(key[1]).visible = on          # saved with the part, one undo step
             self.view.set_datum_visible(key[1], on)
@@ -1908,6 +2126,8 @@ class MainWindow(QMainWindow):
             self.info.setText("")
         elif key[0] == "face":
             self.info.setText(self._face_info(key))
+        elif key[0] == "datum" and self._is_workplane(key[1]):
+            self.info.setText(self._work_plane_info(key[1]))
         elif key[0] == "datum":
             self.info.setText(self._datum_info(self.part.datum(key[1])))
         elif key[0] == "entity":

@@ -125,6 +125,7 @@ them when you need more than the example shows.
 | `"Rev:start"` (a revolution under 360°: its sketch's plane) | as Rev's sketch | as Rev's sketch, or mirrored | out of the body |
 | `"Rev:end"` (that plane turned by the angle) | Rev's sketch x turned | its y turned, **mirrored** | out of the body |
 | `"Rev:disc.L3"` (the flat ring a profile line across the axis sweeps) | along L3 from its start | out of the ring × x | out along the axis; the origin on the axis |
+| `"WorkPlane1"` (a work plane, below) | its base's x (turned with it) | its base's y | its normal |
 
 A sketch on `Ext:end` keeps Ext's origin and axes, moved to the cap: draw a
 patch on a substrate's top with the substrate's own x, y. Check positions in
@@ -212,6 +213,15 @@ A body's name is its id (STEP names the solid after it, customcst reads it):
 name bodies by meaning (`Substrate`, `Patch`, `Ground`). To rename one in the
 file, change it in every feature's `body` and in its `[[body]]` row (the
 window's Rename does that in one step); no quotes in a name.
+
+### Work plane (`type = "workplane"`)
+
+A plane to sketch on where no origin plane or face is: `base` (an origin
+plane, a planar face `"Ext:end"`, or a work plane above) and either
+`offset` (mm along the base's normal, a formula) or `axis` (an origin axis
+or a sketch line `"Sketch1:L3"`, lying in the base) with `angle` (degrees
+around it, the right hand way); `visible = false` hides it. A feed's plane
+at the focus of a reflector: `base = "XY Plane"`, `offset = "f"`.
 
 ### Revolution (`type = "revolve"`)
 

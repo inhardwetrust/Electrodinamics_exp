@@ -30,7 +30,7 @@ import numpy as np
 
 from model.expressions import ExpressionError, name_error, names, rename
 from model.features import FEATURE_TYPES, FeatureError
-from model import extrude, revolve, sketch  # noqa: F401  (register the feature types)
+from model import extrude, revolve, sketch, workplane  # noqa: F401  (register the feature types)
 
 DATUM_KINDS = ("plane", "axis", "point")
 COLOR = re.compile(r"#[0-9a-fA-F]{6}\Z")

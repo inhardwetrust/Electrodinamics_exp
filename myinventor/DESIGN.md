@@ -184,7 +184,8 @@ the curves, exact pieces, pieces named "L1:0"...; the whole loops keep their
 plain names for files and the AI).
 
 Done since: Revolve (model/revolve.py): profiles around a line of any
-sketch or an origin axis, the axis picked in the view.
+sketch or an origin axis, the axis picked in the view; sketches on its
+planar faces; work planes (model/workplane.py: Offset, Angle).
 
 Next, in this order:
 1. Manual primitives: arc, poly-arc, Bézier; copy / paste of generators.

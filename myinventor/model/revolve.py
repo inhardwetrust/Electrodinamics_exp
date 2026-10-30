@@ -153,8 +153,22 @@ def axis_of(sketch_result, axis, part, outputs):
     does not lie in the sketch's plane.
     """
     frame = sketch_result.frame
+    point, direction = axis_line(axis, part, outputs, sketch_result)
+    normal = np.asarray(frame.normal, float)
+    origin = np.asarray(frame.origin, float) / MM
+    if abs(float(direction @ normal)) > 1e-9 or abs(float((point - origin) @ normal)) > 1e-6:
+        raise ValueError(f"{axis} does not lie in the sketch's plane")
+    return point, direction
+
+
+def axis_line(axis, part, outputs, own=None):
+    """
+    (point (3,) mm, unit direction (3,)) of an axis by name: "L3" (a line of
+    `own`, a SketchResult), "Sketch2:L3" (a line of a built sketch), or an
+    origin axis; ValueError if it is none of them.
+    """
     owner, _, name = axis.rpartition(":")
-    lines_of = outputs.get(owner) if owner else sketch_result
+    lines_of = outputs.get(owner) if owner else own
     line = next((e for e in getattr(lines_of, "lines", []) if e.name == name), None)
     if line is not None:
         a, b = lines_of.points[line.start], lines_of.points[line.end]
@@ -173,10 +187,6 @@ def axis_of(sketch_result, axis, part, outputs):
             raise ValueError(f"{axis!r} is a work {datum.kind}, not an axis")
         point = np.asarray(datum.origin, float) / MM
         direction = np.asarray(datum.direction, float)
-    normal = np.asarray(frame.normal, float)
-    origin = np.asarray(frame.origin, float) / MM
-    if abs(float(direction @ normal)) > 1e-9 or abs(float((point - origin) @ normal)) > 1e-6:
-        raise ValueError(f"{axis} does not lie in the sketch's plane")
     return point, direction / np.linalg.norm(direction)
 
 
