@@ -4,8 +4,9 @@
 # so the volume is the band's area:
 #   - a line 10 long, left 1, right 0.5: 15 exactly; round caps: + pi 0.75^2
 #     (half circles on the caps, exact arcs);
-#   - a rectangle with an offset on one of its lines: that line is a spine,
-#     the rectangle no longer closes; the band is the only profile;
+#   - a rectangle with an offset on its bottom line (a spine): the band
+#     cuts the sides (its caps lie on them: one way kept), two regions, the
+#     band 10 and the rest 40;
 #   - a circle r 5, left 1 (inside), right 2: the ring pi (49 - 16) with its
 #     inner disc as a hole; the disc 16 pi a profile of its own;
 #   - a parabola y = x^2 / 4 from 0 to 2 (length sqrt 2 + asinh 1, turning
@@ -87,9 +88,11 @@ def check_line():
     for a, b in zip(p, p[1:] + p[:1]):
         s.add_line(a, b)
     s.add_offset("L1", left="1")
-    keys = [r.key for r in find_regions(rebuild(part).outputs["S"])]
-    check("a rectangle with an offset line: the line is a spine, only the band is a profile",
-          keys == [("L1.offset",)], f"{keys}")
+    regions = find_regions(rebuild(part).outputs["S"])
+    areas = sorted(round(r.area, 9) for r in regions)
+    check("a rectangle 10 x 5 with an offset 1 on its bottom line: cut by the band, the band 10 and the rest 40",
+          areas == [10.0, 40.0] and all("L1.offset" in r.key for r in regions),
+          f"{[(r.key, round(r.area, 6)) for r in regions]}")
 
 
 def check_circle():

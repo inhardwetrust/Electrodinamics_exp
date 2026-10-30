@@ -3,7 +3,7 @@
 # The Extrude command's panel (as Inventor's Extrude dialog, for now only
 # what is needed): a small tool window over the main one, not modal, so the
 # 3D view stays usable for picking profiles.
-#   Profiles   how many are selected (picked in 3D)
+#   Profiles   how many are selected (picked in 3D); Clear drops them all
 #   Operation  New solid, Join, Cut, Intersect (only New without a body)
 #   Body       the body joined / cut / intersected (the bodies there are)
 #   Distance   a formula of the parameters (mm), its value or the error
@@ -12,7 +12,7 @@
 #              closing the panel) leaves without one.
 # The same panel edits an extrusion (its distance formula filled in, the
 # title "Edit Extrusion1"). The panel only shows and reports (applied(distance
-# text), cancelled(), changed() on any edit); the window does the rest, the
+# text), cancelled(), cleared() (Clear), changed() on any edit); the window does the rest, the
 # preview included.
 
 from PySide6.QtCore import Qt, Signal
@@ -29,6 +29,7 @@ OPERATIONS = (("new", "New solid"), ("join", "Join"), ("cut", "Cut"), ("intersec
 class ExtrudePanel(QDialog):
     applied = Signal(str)
     cancelled = Signal()
+    cleared = Signal()
     changed = Signal()
 
     def __init__(self, parent, values, bodies=(), distance="10", operation=None, body=None, title="Extrude"):
@@ -64,8 +65,16 @@ class ExtrudePanel(QDialog):
                                  "parameters; negative: the other way")
         self.value = QLabel()
         self.distance.textChanged.connect(self._update)
+        self.clear_button = QPushButton("Clear")
+        self.clear_button.setToolTip("Drop all the selected profiles, to pick them again")
+        self.clear_button.setAutoDefault(False)
+        self.clear_button.setFixedWidth(self.clear_button.fontMetrics().horizontalAdvance("Clear") + 16)
+        self.clear_button.clicked.connect(self.cleared.emit)
+        profiles = QHBoxLayout()
+        profiles.addWidget(self.profiles, 1)
+        profiles.addWidget(self.clear_button)
         form = QFormLayout()
-        form.addRow("Profiles:", self.profiles)
+        form.addRow("Profiles:", profiles)
         form.addRow("Operation:", self.operation)
         form.addRow("Body:", self.body)
         form.addRow("Distance:", self.distance)
@@ -89,6 +98,7 @@ class ExtrudePanel(QDialog):
     def set_profile_count(self, count):
         self._count = count
         self.profiles.setText(f"{count} selected" if count else "click closed regions in the view")
+        self.clear_button.setEnabled(count > 0)
         self._update()
 
     def operation_key(self):

@@ -286,7 +286,19 @@ def fit_spline(at, t0, t1, tolerance=FIT_TOLERANCE):
 
 
 def edge_function(edge):
-    """(at, t0, t1) of a curve's kernel edge: at(t values) -> (N, 2) points, t from t0 to t1."""
+    """(at, t0, t1) of a kernel edge: at(t values) -> (N, 2) points, t from t0 (its start) to t1 (its end)."""
+    if edge[0] == "line":
+        a, b = np.asarray(edge[1], float), np.asarray(edge[2], float)
+        return (lambda t: a + np.asarray(t, float)[:, None] * (b - a)), 0.0, 1.0
+    if edge[0] in ("arc", "circle"):
+        if edge[0] == "arc":
+            from model.traces import _arc
+
+            center, radius, t0, t1 = _arc(np.asarray(edge[1], float), np.asarray(edge[2], float),
+                                          np.asarray(edge[3], float))
+        else:
+            center, radius, t0, t1 = np.asarray(edge[1], float), float(edge[2]), 0.0, 2.0 * np.pi
+        return (lambda t: center + radius * np.stack([np.cos(t), np.sin(t)], axis=1)), t0, t1
     if edge[0] == "parabola":
         _, vertex, focal, u0, u1 = edge
         return (lambda u: np.asarray(vertex, float)
@@ -332,3 +344,59 @@ def _off(points, path):
     t = np.clip(((points[:, None, :] - a[None]) * d[None]).sum(axis=2) / length2, 0.0, 1.0)
     nearest = a[None] + t[..., None] * d[None]
     return float(np.sqrt(((points[:, None, :] - nearest) ** 2).sum(axis=2).min(axis=1)).max())
+
+
+def sub_edge(edge, s0, s1):
+    """
+    The piece of a kernel edge from fraction s0 to s1 of its parameter (0:
+    its start, 1: its end), exactly: a line's piece is a line, an arc's or a
+    circle's an arc, a parabola's a parabola, a B-spline's a B-spline (knots
+    inserted at the cuts).
+    """
+    at, t0, t1 = edge_function(edge)
+    ta, tb = t0 + s0 * (t1 - t0), t0 + s1 * (t1 - t0)
+    if edge[0] == "line":
+        ends = at(np.array([ta, tb]))
+        return ("line", ends[0], ends[1], *edge[3:])
+    if edge[0] in ("arc", "circle"):
+        p = at(np.array([ta, 0.5 * (ta + tb), tb]))
+        return ("arc", p[0], p[1], p[2])
+    if edge[0] == "parabola":
+        return ("parabola", edge[1], edge[2], ta, tb)
+    return _bspline_piece(edge, ta, tb)
+
+
+def _bspline_piece(edge, ua, ub):
+    """The B-spline between parameters ua < ub (or ua > ub: reversed), knots inserted there (Boehm)."""
+    if ua > ub:
+        return reversed_edge(_bspline_piece(edge, ub, ua))
+    _, poles, knots, mults, degree = edge
+    full, poles = list(np.repeat(np.asarray(knots, float), mults)), np.asarray(poles, float)
+    for u in (ua, ub):
+        while sum(abs(k - u) <= 1e-12 for k in full) < degree:
+            full, poles = _insert_knot(full, poles, degree, u)
+    full = np.array(full)
+    same_a = np.nonzero(np.abs(full - ua) <= 1e-12)[0]
+    same_b = np.nonzero(np.abs(full - ub) <= 1e-12)[0]
+    first, last = same_a[-1] - degree, same_b[0] - 1
+    inner = full[(full > ua + 1e-12) & (full < ub - 1e-12)]
+    values, counts = (np.unique(inner, return_counts=True) if len(inner) else (np.zeros(0), np.zeros(0, int)))
+    return ("bspline", poles[first:last + 1].copy(), np.concatenate([[ua], values, [ub]]),
+            [degree + 1] + [int(c) for c in counts] + [degree + 1], degree)
+
+
+def _insert_knot(full, poles, degree, u):
+    """One knot u inserted into a B-spline (full knot vector, poles): the same curve (Boehm)."""
+    t = np.asarray(full, float)
+    k = int(np.searchsorted(t, u, side="right")) - 1
+    k = min(k, len(t) - degree - 2)
+    out = []
+    for i in range(len(poles) + 1):
+        if i <= k - degree:
+            out.append(poles[i])
+        elif i <= k:
+            a = (u - t[i]) / (t[i + degree] - t[i])
+            out.append(a * poles[i] + (1.0 - a) * poles[i - 1])
+        else:
+            out.append(poles[i - 1])
+    return sorted(list(full) + [u]), np.array(out)

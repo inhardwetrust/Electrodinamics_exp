@@ -113,7 +113,7 @@ from model.part import Part, PartError, color_rgb
 from model.part_file import EXTENSION, PartFileError
 from model.rebuild import rebuild
 from model.extrude import Extrude
-from model.profiles import find_regions
+from model.profiles import find_regions, named_regions, whole_regions
 from model.expressions import evaluate
 from model.offsets import CAPS, offset_key
 from model.sketch import OFFSET_KINDS, Sketch, SketchPolyline, SketchSpline
@@ -1382,7 +1382,11 @@ class MainWindow(QMainWindow):
             built = self.result.outputs.get(name)
             if built is None:
                 continue
-            for region in find_regions(built):
+            regions = find_regions(built)          # the pieces where things cross: what is picked
+            if feature is not None:                 # ... and the whole loops the extrusion names (files, AI)
+                keys = {r.key for r in regions}
+                regions += [r for r in whole_regions(built) if r.key in feature.profiles and r.key not in keys]
+            for region in regions:
                 fill = body_from_shape("profile", region_face(built.frame, region))
                 items.append((("profile", name, region.key), built.frame, region, fill.vertices / MM, fill.triangles))
         if not items:
@@ -1411,6 +1415,7 @@ class MainWindow(QMainWindow):
                 self.view.set_profile_selection([items[0][0]])
         panel.applied.connect(self._apply_extrude)
         panel.cancelled.connect(self._end_extrude)
+        panel.cleared.connect(self._clear_profiles)
         panel.changed.connect(self._update_preview)
         self.extrude_panel = panel
         self._profiles_picked(self.view.profile_selection)
@@ -1418,6 +1423,11 @@ class MainWindow(QMainWindow):
         self.extrude_action.setEnabled(False)
         self.statusBar().showMessage(f"{'Edit ' + edit if edit else 'Extrude'}: click closed regions to take or "
                                      "drop them · Apply · Esc: cancel")
+
+    def _clear_profiles(self):
+        """The panel's Clear: no profile selected, the preview gone; pick them again."""
+        self.view.set_profile_selection([])
+        self._profiles_picked([])
 
     def _profiles_picked(self, keys):
         """Profiles come from one sketch: a pick in another sketch starts over with it."""
@@ -1440,7 +1450,7 @@ class MainWindow(QMainWindow):
             self.view.set_preview(None)
             return
         built = self.result.outputs[keys[0][1]]
-        regions = {r.key: r for r in find_regions(built)}
+        regions = named_regions(built)
         try:
             shape = extrude_shape(built.frame, [regions[k[2]] for k in keys], distance)
         except (ValueError, RuntimeError, KeyError):

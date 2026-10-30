@@ -3,48 +3,52 @@
 # The closed regions of a sketch (profiles, what an extrusion takes), from
 # its evaluated geometry (model/sketch.py SketchResult). numpy only.
 #
-# - Lines join where they share a point; points at the same place (the ends
-#   of separate chains) count as one. Construction geometry is left out.
-# - Lines alone: the bounded faces of the planar graph they form (dangling
-#   lines pruned first). A rectangle is one face; with a diagonal, two
-#   triangles. Each face's boundary is a loop of lines.
-# - A circle (not construction) is a loop on its own, and so is a wide
-#   polyline's outline (model/traces.py: its edges are lines and arcs).
-# - A generated curve (model/curves.py) is an edge between its two end
-#   points, a spline one between its first and last points, like a line (a
-#   closed one is a loop on its own); edges are ordered around a point by
-#   the way they leave it (a curve: its tangent).
-# - An entity with an Offset (model/offsets.py) is a spine: in no loop
-#   itself; its band's loops are loops on their own ("L1.offset", and a
-#   closed one's "C1.offset.inner").
-# - Regions: a loop minus the loops directly inside it (holes). A circle in
-#   a rectangle gives two regions: the rectangle with a round hole, and the
-#   disc (as Inventor does).
-# - Not yet: curves crossing without a shared point (a line over a circle)
-#   do not split regions; loops that overlap without one inside the other
-#   are taken as they are.
+# Everything that bounds regions goes into one planar graph: lines, circles,
+# generated curves and splines, the outlines of wide polylines
+# (model/traces.py) and of offsets (model/offsets.py). Construction geometry
+# and the spines of offsets are left out.
+# - Its kernel edges (model/curves.py) are cut where they cross or touch
+#   each other (a line over a circle, a line through a band, a line ending
+#   on another's middle): crossings found on their polylines, then refined
+#   on the exact curves (Newton); the pieces are exact (curves.sub_edge).
+# - Ends at the same place are one node (points of separate chains, the
+#   ends of a curve and a line).
+# - Regions are the bounded faces of that graph (dangling pieces pruned),
+#   traced around each node in the order the pieces leave it (their
+#   tangent): a rectangle is one, with a diagonal two triangles, a circle
+#   crossed by a line two halves. A closed curve nothing crosses is a loop
+#   on its own.
+# - A loop inside another is its hole (a circle in a rectangle: the plate
+#   with a round hole, and the disc, as Inventor does).
 #
-# A region is named by its outer loop: the sorted names of its lines or its
-# circle (Region.key). Features refer to profiles by that key, so moving
-# points or changing sizes keeps the reference; breaking the loop does not.
+# whole_regions: the same without cutting (each loop as it is: what files and
+# the AI name); named_regions: both, what a feature's profile key may name.
+#
+# A region is named by its outer loop (Region.key): the sorted names of what
+# bounds it. An entity cut into pieces is named by the piece: "L1:0",
+# "L1:1"... from its start (a closed one: the piece through its start is 0),
+# so the two halves of a band cut by a line differ ("L1:1", "W.offset:0" /
+# "W.offset:1"). Nothing cut: the plain names, as before. Features refer to
+# profiles by that key, so moving points or changing sizes keeps the
+# reference; changing what crosses what does not.
 
 from dataclasses import dataclass, field
 
 import numpy as np
 
-from model.curves import end_points, reversed_edge
+from model.curves import edge_function, end_points, reversed_edge, sub_edge
 
 SAME_PLACE_MM = 1e-6
-CIRCLE_SAMPLES = 96
+PATH_SAMPLES = {"line": 1, "arc": 48, "circle": 128, "parabola": 96, "bspline": 128}
+NEWTON_STEPS = 30
 
 
 @dataclass
 class Loop:
-    names: tuple            # sorted entity names (the key)
+    names: tuple            # sorted names of what bounds it (the key)
     polygon: np.ndarray     # (N, 2) mm, counter-clockwise, not closed
-    edges: list             # in order: ("line", (2,) mm, (2,) mm[, line name]), ("arc", a, middle, b), curve
-    #                         edges (model/curves.py: "parabola", "bspline"),
-    #                         or [("circle", center (2,), radius)]
+    edges: list             # its kernel edges in order (model/curves.py): ("line", a, b[, line name]),
+    #                         ("arc", a, middle, b), ("parabola", ...), ("bspline", ...), [("circle", center, r)]
 
     @property
     def area(self):
@@ -72,8 +76,28 @@ class Region:
 
 
 def find_regions(result):
-    """The regions of a SketchResult, largest first."""
-    loops = _line_loops(result) + _circle_loops(result) + _polyline_loops(result) + _offset_loops(result)
+    """The regions of a SketchResult (cut where things cross: what is picked), largest first."""
+    return _regions(_loops(_items(result)))
+
+
+def whole_regions(result):
+    """
+    The regions of the loops as they are, nothing cut where they cross: a
+    rectangle and a feed polyline overlapping it are two whole profiles,
+    their keys the plain names (what files and the AI name; an extrusion of
+    both fuses them).
+    """
+    return _regions(_loops(_items(result), cut=False))
+
+
+def named_regions(result):
+    """{key: Region} of every profile a feature may name: the pieces (find_regions) and the whole loops."""
+    named = {r.key: r for r in whole_regions(result)}
+    named.update({r.key: r for r in find_regions(result)})
+    return named
+
+
+def _regions(loops):
     regions = []
     for loop in loops:
         inside = [other for other in loops if other is not loop and other.area < loop.area
@@ -92,88 +116,204 @@ def _sample(loop):
     return c if loop.contains(c) else loop.polygon[0]
 
 
-def _polyline_loops(result):
-    """Each wide polyline's outline is a loop on its own (model/traces.py), named by the polyline."""
-    loops = []
-    for polyline in getattr(result, "polylines", []):
-        if polyline.name not in result.outlines:
-            continue                        # it failed: no outline, no profile
-        edges, polygon = result.outlines[polyline.name]
-        loops.append(Loop((polyline.name,), polygon, list(edges)))
-    return loops
-
-
-def _offset_loops(result):
-    """The loops of the entities' offsets (model/offsets.py), each keyed by itself."""
-    return [Loop((key,), polygon, list(edges))
-            for built in getattr(result, "offsets", {}).values() for key, edges, polygon in built]
-
-
-def _circle_loops(result):
-    loops = []
+def _items(result):
+    """[(name, kernel edges in order, closed)]: what bounds regions."""
     spines = getattr(result, "spines", set())
-    for circle in result.circles:
-        if circle.construction or circle.name in spines:
+    items = [(line.name, [("line", result.points[line.start].copy(), result.points[line.end].copy(), line.name)],
+              False) for line in result.lines if not line.construction and line.name not in spines]
+    for c in getattr(result, "curves", []) + getattr(result, "splines", []):
+        if not c.construction and c.name not in spines and c.name in result.shapes:
+            shape = result.shapes[c.name]
+            items.append((c.name, list(shape.edges), shape.closed))
+    for c in result.circles:
+        if not c.construction and c.name not in spines:
+            items.append((c.name, [("circle", result.points[c.center].copy(), result.radii[c.name])], True))
+    for w in getattr(result, "polylines", []):
+        if w.name in result.outlines:
+            items.append((w.name, list(result.outlines[w.name][0]), True))
+    for built in getattr(result, "offsets", {}).values():
+        items += [(key, list(edges), True) for key, edges, _ in built]
+    return items
+
+
+@dataclass
+class _Curve:
+    item: int               # index into the items
+    edge: tuple             # its kernel edge
+    g: object               # s in [0, 1] -> points (N, 2)
+    path: np.ndarray        # (K + 1, 2) at s = linspace(0, 1, K + 1)
+    cuts: list = field(default_factory=list)        # s where it is cut
+
+    def point(self, s):
+        return self.g(np.array([float(s)]))[0]
+
+    def tangent(self, s):
+        h = 1e-7
+        lo, hi = max(s - h, 0.0), min(s + h, 1.0)
+        return (self.point(hi) - self.point(lo)) / (hi - lo)
+
+
+def _curves(items):
+    curves = []
+    for i, (_, edges, _) in enumerate(items):
+        for edge in edges:
+            at, t0, t1 = edge_function(edge)
+            g = (lambda at, t0, t1: lambda s: at(t0 + np.asarray(s, float) * (t1 - t0)))(at, t0, t1)
+            samples = PATH_SAMPLES[edge[0]] * (max(1, (len(edge[2]) - 1) // 8) if edge[0] == "bspline" else 1)
+            path = g(np.linspace(0.0, 1.0, samples + 1))
+            curves.append(_Curve(i, edge, g, path))
+    return curves
+
+
+def _cut(curves):
+    """Marks where curves of different items cross or touch (s on each, refined)."""
+    boxes = [(c.path.min(axis=0) - 1e-6, c.path.max(axis=0) + 1e-6) for c in curves]
+    for i, a in enumerate(curves):
+        for j in range(i + 1, len(curves)):
+            b = curves[j]
+            if a.item == b.item or np.any(boxes[i][1] < boxes[j][0]) or np.any(boxes[j][1] < boxes[i][0]):
+                continue
+            for sa, sb in _crossings(a, b):
+                a.cuts.append(sa)
+                b.cuts.append(sb)
+    for c in curves:                            # touching: an end of one on another's middle
+        for s_end in (0.0, 1.0):
+            p = c.point(s_end)
+            for d in curves:
+                if d.item == c.item or np.any(p < d.path.min(axis=0) - 1e-6) or np.any(p > d.path.max(axis=0) + 1e-6):
+                    continue
+                s = _nearest(d, p)
+                if s is not None and np.linalg.norm(d.point(s) - p) <= SAME_PLACE_MM:
+                    d.cuts.append(s)
+
+
+def _crossings(a, b):
+    """[(s on a, s on b)] where two curves cross: their polylines' crossings, refined (Newton)."""
+    pa, pb = a.path, b.path
+    p, r = pa[:-1][:, None, :], (pa[1:] - pa[:-1])[:, None, :]
+    q, t = pb[:-1][None, :, :], (pb[1:] - pb[:-1])[None, :, :]
+    denom = r[..., 0] * t[..., 1] - r[..., 1] * t[..., 0]
+    qp = q - p
+    with np.errstate(divide="ignore", invalid="ignore"):
+        u = (qp[..., 0] * t[..., 1] - qp[..., 1] * t[..., 0]) / denom
+        v = (qp[..., 0] * r[..., 1] - qp[..., 1] * r[..., 0]) / denom
+    eps = 1e-9
+    hit = (np.abs(denom) > 1e-30) & (u >= -eps) & (u <= 1 + eps) & (v >= -eps) & (v <= 1 + eps)
+    na, nb = len(pa) - 1, len(pb) - 1
+    found = []
+    for i, j in zip(*np.nonzero(hit)):
+        sa, sb = _refine(a, b, (i + u[i, j]) / na, (j + v[i, j]) / nb)
+        if sa is None:
             continue
-        center, radius = result.points[circle.center], result.radii[circle.name]
-        t = np.linspace(0.0, 2.0 * np.pi, CIRCLE_SAMPLES, endpoint=False)
-        polygon = center + radius * np.stack([np.cos(t), np.sin(t)], axis=1)
-        loops.append(Loop((circle.name,), polygon, [("circle", center.copy(), radius)]))
-    return loops
+        if not any(abs(sa - x) < 1e-7 and abs(sb - y) < 1e-7 for x, y in found):
+            found.append((sa, sb))
+    return found
+
+
+def _refine(a, b, sa, sb):
+    """Newton on a(sa) = b(sb), from a guess; (sa, sb), or (None, None) if it does not settle in [0, 1]."""
+    for _ in range(NEWTON_STEPS):
+        f = a.point(sa) - b.point(sb)
+        if np.linalg.norm(f) < 1e-12:
+            break
+        jac = np.column_stack([a.tangent(sa), -b.tangent(sb)])
+        try:
+            step = np.linalg.solve(jac, -f)
+        except np.linalg.LinAlgError:
+            break
+        sa, sb = float(np.clip(sa + step[0], 0.0, 1.0)), float(np.clip(sb + step[1], 0.0, 1.0))
+    if np.linalg.norm(a.point(sa) - b.point(sb)) > SAME_PLACE_MM:
+        return None, None
+    return sa, sb
+
+
+def _nearest(c, p):
+    """s of the point of curve c nearest to p (refined), or None."""
+    d = np.linalg.norm(c.path - p, axis=1)
+    s = np.argmin(d) / (len(c.path) - 1)
+    for _ in range(NEWTON_STEPS):
+        tangent = c.tangent(s)
+        length2 = float(tangent @ tangent)
+        if length2 < 1e-30:
+            return None
+        step = float((p - c.point(s)) @ tangent) / length2
+        s = float(np.clip(s + step, 0.0, 1.0))
+        if abs(step) < 1e-13:
+            break
+    return s
 
 
 @dataclass
 class _Edge:
     a: int                  # nodes
     b: int
-    name: str
-    path: np.ndarray        # (K, 2) mm from a to b (a line: its two ends; a curve: its samples)
-    kernel: list            # its kernel edges from a to b (model/curves.py)
+    name: str               # what bounds: the item's name, or "name:k" for its piece k
+    path: np.ndarray        # (K, 2) mm from a to b
+    kernel: list            # its kernel edges from a to b
 
 
-def _line_loops(result):
+def _pieces(items, curves):
     """
-    Bounded faces of the planar graph of the (non-construction) lines and
-    generated curves (each an edge between its two end points; a closed
-    curve is a loop on its own).
+    The graph's pieces [(name, s0, s1, curve)]: each curve cut at its inner
+    cuts; an item cut anywhere is named by piece ("name:k", k from its start;
+    a closed one's piece through its start is 0), else by itself.
     """
-    spines = getattr(result, "spines", set())
-    lines = [line for line in result.lines if not line.construction and line.name not in spines]
-    # Generated curves run between their end points, splines between their first and last points.
-    curves = [(c.name, *end_points(c.name)) for c in getattr(result, "curves", [])
-              if not c.construction and c.name in result.shapes and c.name not in spines]
-    curves += [(w.name, w.points[0], w.points[-1]) for w in getattr(result, "splines", [])
-               if not w.construction and w.name in result.shapes and w.name not in spines]
-    if not lines and not curves:
+    by_item = {}
+    for c in curves:
+        by_item.setdefault(c.item, []).append(c)
+    pieces = []
+    for i, (name, _, closed) in enumerate(items):
+        runs = []                               # (curve, s0, s1, starts at a cut), in the item's order
+        for c in by_item.get(i, []):
+            cuts = sorted({round(x, 12) for x in c.cuts if 1e-9 < x < 1 - 1e-9})
+            bounds = [0.0] + cuts + [1.0]
+            runs += [(c, bounds[k], bounds[k + 1], k > 0) for k in range(len(bounds) - 1)]
+        cut = any(starts for *_, starts in runs)
+        index, numbered = 0, []
+        for c, s0, s1, starts in runs:
+            index += starts
+            numbered.append((c, s0, s1, index))
+        mine = by_item.get(i, [])
+        start_cut = bool(mine) and (any(x <= 1e-9 for x in mine[0].cuts) or any(x >= 1 - 1e-9 for x in mine[-1].cuts))
+        if closed and cut and not start_cut:    # the pieces after the last cut run on into piece 0
+            numbered = [(c, s0, s1, 0 if n == index else n) for c, s0, s1, n in numbered]
+        pieces += [(f"{name}:{n}" if cut else name, s0, s1, c) for c, s0, s1, n in numbered]
+    return pieces
+
+
+def _loops(items, cut=True):
+    if not items:
         return []
-    # Nodes: points merged by place.
-    node_of, places = {}, []
-    for name, xy in result.points.items():
+    curves = _curves(items)
+    if cut:
+        _cut(curves)
+    places, edges, loops = [], [], []
+
+    def node(xy):
         for i, p in enumerate(places):
-            if np.allclose(p, xy, atol=SAME_PLACE_MM):
-                node_of[name] = i
-                break
-        else:
-            node_of[name] = len(places)
-            places.append(np.asarray(xy, float))
-    edges, loops = [], []
-    pairs = set()
-    for line in lines:
-        a, b = node_of[line.start], node_of[line.end]
-        if a != b and (a, b) not in pairs and (b, a) not in pairs:
-            pairs |= {(a, b)}
-            pa, pb = places[a].copy(), places[b].copy()
-            edges.append(_Edge(a, b, line.name, np.array([pa, pb]), [("line", pa, pb, line.name)]))
-    for name, start, end in curves:
-        shape = result.shapes[name]
-        a, b = node_of[start], node_of[end]
-        if a == b:                              # closed: a loop on its own
-            loop = Loop((name,), shape.points[:-1], list(shape.edges))
-            loops.append(loop if loop.area > 0 else Loop((name,), shape.points[:0:-1],
-                                                         [reversed_edge(e) for e in shape.edges[::-1]]))
+            if np.linalg.norm(p - xy) <= SAME_PLACE_MM:
+                return i
+        places.append(np.asarray(xy, float))
+        return len(places) - 1
+
+    for name, s0, s1, c in _pieces(items, curves):
+        count = max(2, int(np.ceil((s1 - s0) * (len(c.path) - 1))) + 1)
+        path = c.g(np.linspace(s0, s1, count))
+        if np.linalg.norm(np.diff(path, axis=0), axis=1).sum() <= SAME_PLACE_MM:
+            continue                            # no length
+        kernel = [c.edge if (s0, s1) == (0.0, 1.0) else sub_edge(c.edge, s0, s1)]
+        a, b = node(path[0]), node(path[-1])
+        if a == b and len(items[c.item][1]) == 1:     # a closed curve nothing cuts: a loop on its own
+            polygon = path[:-1]
+            loop = Loop((name,), polygon, kernel)
+            loops.append(loop if loop.area > 0 else Loop((name,), polygon[::-1], [reversed_edge(kernel[0])]))
             continue
-        edges.append(_Edge(a, b, name, shape.points, list(shape.edges)))
-    # Prune dangling edges.
+        middle = path[len(path) // 2]
+        if any({e.a, e.b} == {a, b} and np.linalg.norm(e.path[len(e.path) // 2] - middle) <= 1e-4
+               for e in edges):
+            continue                            # the same way as one there already (a band's cap on a line)
+        edges.append(_Edge(a, b, name, path, kernel))
+    # Prune dangling pieces.
     while True:
         degree = {}
         for e in edges:
@@ -183,8 +323,7 @@ def _line_loops(result):
         if len(kept) == len(edges):
             break
         edges = kept
-    # Half-edges (edge index, forward) leaving each node, sorted by the way they leave it:
-    # a curve by its tangent there, so a line and a curve between the same two points differ.
+    # Half-edges (edge index, forward) leaving each node, sorted by the way they leave it.
     around = {}
     for i, e in enumerate(edges):
         around.setdefault(e.a, []).append((i, True))

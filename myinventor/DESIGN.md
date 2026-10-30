@@ -178,7 +178,10 @@ the interpolating spline (Sketch > Spline), true B-splines in the kernel,
 generators in the browser (show / hide, Convert / Copy as Spline).
 
 Done since: the Offset modifier (`[[feature.offset]]`, model/offsets.py):
-a band left / right of a line, circle, spline or curve, caps flat or round.
+a band left / right of a line, circle, spline or curve, caps flat or round;
+regions cut where curves cross (model/profiles.py: one planar graph of all
+the curves, exact pieces, pieces named "L1:0"...; the whole loops keep their
+plain names for files and the AI).
 
 Next, in this order:
 1. Revolve.

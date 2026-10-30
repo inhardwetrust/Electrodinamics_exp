@@ -23,7 +23,7 @@ import json
 import sys
 
 from model.part_file import PartFileError, load
-from model.profiles import find_regions
+from model.profiles import find_regions, whole_regions
 from model.rebuild import rebuild
 
 
@@ -56,9 +56,13 @@ def report(part, result):
                               for w in feature.splines]
             row["offsets"] = [{"of": o.of, "left": o.left, "right": o.right, "start": o.start, "end": o.end}
                               for o in feature.offsets]
-            if out is not None:
+            if out is not None:                 # whole loops (what a file names) and, where things cross, the pieces
+                whole = whole_regions(out)
                 row["profiles"] = [{"key": list(r.key), "area": round(r.area, 6), "holes": len(r.holes)}
-                                   for r in find_regions(out)]
+                                   for r in whole]
+                keys = {r.key for r in whole}
+                row["pieces"] = [{"key": list(r.key), "area": round(r.area, 6), "holes": len(r.holes)}
+                                 for r in find_regions(out) if r.key not in keys]
         elif feature.TYPE == "extrude":
             row.update(sketch=feature["sketch"], profiles=[list(p) for p in feature.profiles],
                        distance=feature["distance"], operation=feature["operation"], body=feature["body"])
@@ -107,6 +111,9 @@ def text(data):
             for r in f.get("profiles", []):
                 holes = f", {r['holes']} hole(s)" if r["holes"] else ""
                 lines.append(f"    profile {r['key']}: area {r['area']:g} mm2{holes}")
+            for r in f.get("pieces", []):
+                holes = f", {r['holes']} hole(s)" if r["holes"] else ""
+                lines.append(f"    piece {r['key']}: area {r['area']:g} mm2{holes} (where curves cross)")
             if "profiles" in f and not f["profiles"]:
                 lines.append("    no closed profile")
         elif f["type"] == "extrude":

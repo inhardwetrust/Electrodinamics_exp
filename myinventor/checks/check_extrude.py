@@ -256,6 +256,15 @@ def check_window():
     click(native, pixel(view, frame, (2, 2.5)))
     check("a click takes it back", view.profile_selection == [ring_key])
     click(native, pixel(view, frame, (2, 2.5)))
+    panel.clear_button.click()
+    settle()
+    check("Clear: none selected, no preview, Apply and Clear off", not view.profile_selection
+          and not panel.apply_button.isEnabled() and not panel.clear_button.isEnabled()
+          and all(state != "selected" for state in view.shown_profiles.values()) and view.preview_body is None)
+    click(native, pixel(view, frame, (0.5, 0.5)))
+    click(native, pixel(view, frame, (2, 2.5)))
+    check("  picked again: both, Clear on", view.profile_selection == [ring_key, disc_key]
+          and panel.clear_button.isEnabled())
     panel.distance.setText("nope")
     check("a bad distance: Apply off, the error shown", not panel.apply_button.isEnabled()
           and "nope" in panel.value.text())

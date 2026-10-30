@@ -185,8 +185,18 @@ Geometry (each is a `[[feature.<kind>]]` table under the sketch):
 - `construction = true` on a line, circle, curve or spline: a helper, never a profile.
 
 A loop inside another one is a hole of the outer profile (a rectangle with
-a circle inside: the plate with a hole, and the disc, two profiles). Curves
-crossing without a shared point do NOT split profiles: share points.
+a circle inside: the plate with a hole, and the disc, two profiles).
+
+Two kinds of profile keys, both valid in an extrusion:
+- whole loops, as drawn: the plain names (`["L1", "L2", "L3", "L4"]`,
+  `["Feed"]`), nothing cut where loops overlap; the report's `profile`
+  lines. Prefer these: overlapping copper (a feed over a patch) is fused by
+  extruding both whole loops together.
+- pieces where curves cross (what the user picks in the window): an entity
+  cut by others is named by piece from its start, `"L1:0"`, `"L1:1"`... (a
+  circle cut by a line through it: `["C1:0", "L1:1"]` and
+  `["C1:1", "L1:1"]`); the report's `piece` lines. They change when what
+  crosses what changes, so name them only when a part must be cut off.
 
 ### Extrusion (`type = "extrude"`)
 

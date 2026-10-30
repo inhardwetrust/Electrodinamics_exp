@@ -27,7 +27,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from model.features import Feature, FeatureError, Field, feature_type
-from model.profiles import find_regions
+from model.profiles import named_regions
 from model.sketch import SketchFrame
 
 MM = 1e-3
@@ -138,7 +138,7 @@ class Extrude(Feature):
         sketch = ctx.outputs.get(self["sketch"])
         if sketch is None or not hasattr(sketch, "frame"):
             raise ValueError(f"{self['sketch']!r} is not a sketch")
-        regions = {r.key: r for r in find_regions(sketch)}
+        regions = named_regions(sketch)
         missing = [p for p in self.profiles if p not in regions]
         if missing:
             raise ValueError(f"profile {' '.join(missing[0])} is not a closed region of {self['sketch']} any more")
