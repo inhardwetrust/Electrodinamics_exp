@@ -233,6 +233,43 @@ def mirror(shape, point, normal):
     return BRepBuilderAPI_Transform(shape, trsf, True).Shape()
 
 
+_PLANAR = {}                # id of a shape -> its planar faces (an import's shapes are kept, read once)
+
+
+def planar_faces(shape):
+    """
+    [(index, center (3,) mm, u (3,), normal (3,) outward)] of a shape's
+    planar faces, by their index in the explorer's order (the one the view's
+    face picking counts); the center is the face's center of mass.
+    """
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_Plane
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_REVERSED
+
+    key = id(shape)
+    if key in _PLANAR and _PLANAR[key][0] is shape:
+        return _PLANAR[key][1]
+    out, explorer, index = [], TopExp_Explorer(shape, TopAbs_FACE), 0
+    while explorer.More():
+        face = TopoDS.Face(explorer.Current())
+        explorer.Next()
+        surface = BRepAdaptor_Surface(face)
+        if surface.GetType() == GeomAbs_Plane:
+            plane = surface.Plane()
+            normal = plane.Axis().Direction()
+            normal = np.array([normal.X(), normal.Y(), normal.Z()])
+            if face.Orientation() == TopAbs_REVERSED:
+                normal = -normal
+            x = plane.XAxis().Direction()
+            props = GProp_GProps()
+            BRepGProp.SurfaceProperties_s(face, props)
+            c = props.CentreOfMass()
+            out.append((index, np.array([c.X(), c.Y(), c.Z()]), np.array([x.X(), x.Y(), x.Z()]), normal))
+        index += 1
+    _PLANAR[key] = (shape, out)
+    return out
+
+
 def body(name, shape, color=None):
     """A Body (meters, tessellated) of an OCP shape in mm."""
     return body_from_shape(name, shape, color=color)

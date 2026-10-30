@@ -11,7 +11,8 @@
 #   type = "sketch"
 #   plane = "XY Plane"        # an origin plane, a work plane ("WorkPlane1"), or a planar face of a feature:
 #                             # "Extrusion1:end", "Extrusion1:start", "Extrusion1:side.L3",
-#                             # "Revolution1:start", "Revolution1:end", "Revolution1:disc.L3"
+#                             # "Revolution1:start", "Revolution1:end", "Revolution1:disc.L3",
+#                             # "SMA:face.2.12" (an import's planar face: model/importstep.py)
 #
 #   [[feature.point]]
 #   name = "P1"

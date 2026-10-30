@@ -15,7 +15,8 @@
 # Navigation (TrackballCamera, CAD-style like Inventor's orbit):
 #   - middle drag rotates as a virtual trackball about the camera center;
 #   - Ctrl + middle drag pans (Space + left drag too, for a touchpad);
-#   - the wheel or a right drag zooms;
+#   - the wheel or a right drag zooms; a right click (no drag) asks the
+#     window for a menu of what is under the cursor (on_context(key, pos));
 #   - a left drag moves nothing: the left button selects (and will draw).
 #
 # Datums (set_datums): the part's work planes, axes and points (the origin
@@ -789,6 +790,8 @@ class GeometryView:
         self.axis_mode = False          # profile mode picks an axis instead (set_axis_mode)
         self.axis_key = None            # the axis taken: ("entity", sketch, line) or ("datum", name)
         self.on_axis = None             # callback(key) after a click took an axis
+        self.on_context = None          # callback(key or None, canvas pos) on a right click (not a drag)
+        self._right_press = None
         self.shown_profiles = {}        # key -> "hover" | "selected" | None, as drawn
         self.preview_body = None        # the Body shown as a feature's preview, or None
         self.preview_cut = False        # drawn as a cut (red)
@@ -927,6 +930,7 @@ class GeometryView:
 
     def _mouse_press(self, event):
         self._press = np.array(event.pos[:2], float) if event.button == 1 else None
+        self._right_press = np.array(event.pos[:2], float) if event.button == 2 else None
         self._drag = self._box = None
         modifiers = set(event.modifiers)
         if event.button != 1 or self.tool is not None or self.measure or self.view.camera.space_down \
@@ -981,6 +985,11 @@ class GeometryView:
         return drag is not None and drag["started"]
 
     def _mouse_release(self, event):
+        if event.button == 2:
+            press, self._right_press = self._right_press, None
+            if press is not None and np.linalg.norm(np.asarray(event.pos[:2], float) - press) < CLICK_PX                     and self.on_context is not None and not self.profile_mode and self.tool is None                     and self.editing_sketch is None and not self.measure:
+                self.on_context(self.key_at(event.pos), event.pos)       # a right click: the window's menu
+            return
         if event.button == 1 and self._drag_end("end"):
             self._press = None
             return

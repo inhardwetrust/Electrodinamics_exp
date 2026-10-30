@@ -129,6 +129,7 @@ them when you need more than the example shows.
 | `"Rev:end"` (that plane turned by the angle) | Rev's sketch x turned | its y turned, **mirrored** | out of the body |
 | `"Rev:disc.L3"` (the flat ring a profile line across the axis sweeps) | along L3 from its start | out of the ring × x | out along the axis; the origin on the axis |
 | `"WorkPlane1"` (a work plane, below) | its base's x (turned with it) | its base's y | its normal |
+| `"SMA:face.2.12"` (an import's planar face: body 2 of its list, face 12) | the face's plane x | normal × x | out of the body; the origin at the face's center |
 
 A sketch on `Ext:end` keeps Ext's origin and axes, moved to the cap: draw a
 patch on a substrate's top with the substrate's own x, y. Check positions in

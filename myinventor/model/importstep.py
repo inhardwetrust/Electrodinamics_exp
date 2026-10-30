@@ -15,20 +15,42 @@
 # its place in `bodies` (renaming one renames it there), colored as in the
 # file unless the part colors it ([[body]]). The file is read through
 # ctx.kernel (geometry/step_io.py read_bodies), once per content.
+# Its bodies' planar faces carry names a sketch can sit on (before the
+# placement): "face.<i>.<k>", face k (the explorer's order) of its body i
+# (1-based, in `bodies`), as the file has it: a sketch "SMA:face.2.12" is on
+# the face's center, its normal outward (ImportResult.face_frame).
 # A file that changed since (another sha256): its bodies are built from it,
 # but the feature is marked failed (Reload accepts the new content); a
 # different number of bodies, or no file: it fails.
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
 
+import numpy as np
+
 from model.features import Feature, FeatureError, Field, PartialBuild, feature_type
+
+MM = 1e-3
 
 
 @dataclass
 class ImportResult:
     bodies: list            # the body names it made
     path: str               # the file read
+    planes: dict = field(default_factory=dict)  # "face.<i>.<k>" -> (center (3,) m, u (3,), normal (3,) outward)
+
+    def face_frame(self, role):
+        """The SketchFrame of a sketch on planar face `role` ("face.2.12"): its center, its normal outward."""
+        from model.sketch import SketchFrame
+
+        if role not in self.planes:
+            raise ValueError(f"no planar face {role!r} (a face of a body of the import, 'face.<body>.<face>')")
+        origin, u, normal = self.planes[role]
+        return SketchFrame(origin.copy(), u.copy(), np.cross(normal, u), normal.copy())
+
+    def face_planes(self):
+        """{role: (point (3,) m, outward normal (3,))} of its bodies' planar faces."""
+        return {role: (origin, normal) for role, (origin, _, normal) in self.planes.items()}
 
 
 @feature_type
@@ -88,6 +110,9 @@ class Import(Feature):
             if color is not None:
                 ctx.colors[name] = color
         result = ImportResult(list(self.bodies), path)
+        for i, (_, _, shape, _) in enumerate(read, 1):
+            for k, center, u, normal in ctx.kernel.planar_faces(shape):
+                result.planes[f"face.{i}.{k}"] = (center * MM, u, normal)
         sha = ctx.kernel.file_sha256(path)
         if self["sha256"] and sha != self["sha256"]:
             raise PartialBuild(f"{self['file']} changed since it was imported (built from it as it is now): "

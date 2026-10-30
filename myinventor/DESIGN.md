@@ -190,6 +190,10 @@ planar faces; work planes (model/workplane.py: Offset, Angle); STEP import
 in the part, kept per content); groups of bodies ([[group]], flat).
 
 Done: Move (with its turn: Rotate), Mirror (in place, through the target's center).
+Sketches on an import's planar faces; while modeling (a sketch edited, a
+plane picked, Extrude, Revolve, Work Plane) the view shows the bodies
+unplaced (rebuild(placement=False)). Next: Combine (a body with a body: join
+/ cut / intersect), a feature of the history, not of the placement.
 Transforms are post-features, a
 section after the features ([[transform]]), applied to the bodies as built
 (as an imported STEP's), in order, a body or a group each; a body of a

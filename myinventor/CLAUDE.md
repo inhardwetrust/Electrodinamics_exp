@@ -59,7 +59,8 @@ Compatibility with Inventor or any other CAD is not a goal.
   `checks/check_sketch_mode_3d.py`, `checks/check_offset.py`,
   `checks/check_profile_cuts.py`, `checks/check_body_rename.py`,
   `checks/check_revolve.py`, `checks/check_workplane.py`, `checks/check_import.py`,
-  `checks/check_groups.py`, `checks/check_move.py`, `checks/check_mirror.py`.
+  `checks/check_groups.py`, `checks/check_move.py`, `checks/check_mirror.py`,
+  `checks/check_import_faces.py`.
 - Without the window: `main.py name.part.toml --report [--json]
   [--export-step out.step]` (`cli.py`: rebuild, report, STEP; no Qt).
   The skill `.claude/skills/mycad/SKILL.md` teaches an AI to draw by
@@ -105,8 +106,9 @@ Compatibility with Inventor or any other CAD is not a goal.
   does not reach the canvas): synthetic moves send `QMouseEvent`s
   themselves (`checks/check_view.py`).
 - Navigation differs from customcst: middle drag rotates, Ctrl + middle
-  pans (Space + left too), the wheel / right drag zooms; the left button
-  only selects (and will draw in sketches).
+  pans (Space + left too), the wheel / right drag zooms; a right click (no
+  drag) opens a menu of what is under the cursor (New Sketch on a face); the
+  left button only selects (and draws in sketches).
 
 ## Reuse from customcst (read the code, copy what fits)
 

@@ -69,11 +69,13 @@ def _color(text):
     return None if text is None else color_rgb(text)
 
 
-def rebuild(part, upto=None, folder=None, tessellate=True):
+def rebuild(part, upto=None, folder=None, tessellate=True, placement=True):
     """
     The part's Result; upto: only the features up to that one (inclusive),
     the bodies not tessellated; folder: the part file's (imports' files);
-    tessellate=False: the shapes only (a preview needs no triangles).
+    tessellate=False: the shapes only (a preview needs no triangles);
+    placement=False: the bodies as the features built them (what modeling
+    sees: a sketch, its faces), no transform applied.
     """
     result = Result(upto=upto)
     result.values, result.errors = evaluate_parameters([(p.name, p.formula) for p in part.parameters])
@@ -97,7 +99,7 @@ def rebuild(part, upto=None, folder=None, tessellate=True):
     # Placement: the transforms, in order, on the bodies as built (model/transforms.py).
     from model.transforms import order_error
 
-    for i, transform in enumerate(part.transforms):
+    for i, transform in enumerate(part.transforms if placement else []):
         failed = [ref for ref in transform.references() if ref in result.feature_errors]
         try:
             if failed:

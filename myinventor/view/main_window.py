@@ -97,7 +97,7 @@ import re
 
 import numpy as np
 
-from PySide6.QtCore import QEvent, QRect, Qt, QTimer
+from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QTimer
 from PySide6.QtGui import QAction, QBrush, QColor, QGuiApplication, QIcon, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QColorDialog, QComboBox, QDockWidget, QFileDialog, QFormLayout, QInputDialog, QLineEdit, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton, QTabWidget,
@@ -172,6 +172,8 @@ ERROR_COLOR = QColor(200, 30, 30)
 EDITING_ROW = QColor(0, 120, 215, 45)        # the sketch being edited
 FILE_FILTER = f"myCad part (*{EXTENSION});;All files (*)"
 STEP_FILTER = "STEP (*.step *.stp)"
+TREE_INDENT_PX = 12             # the browser's indent per level (Qt's default ~20)
+EYE_PX = 14                     # the visibility eye in the browser
 
 
 def _fmt_mm(value):
@@ -260,6 +262,8 @@ class MainWindow(QMainWindow):
         self.move_panel = None      # the Move / Rotate command's panel while it runs
         self._moving = None         # that command: {"edit": name or None, "targets": [...]}
         self._selected_group = None  # the group whose browser row is selected (a Move's target)
+        self._unplaced = None       # the Result without the placement (modeling's view of the bodies), cached
+        self._modeling_shown = False    # the view shows the bodies unplaced (a modeling command runs)
         self._extruding = None      # the extrusion being edited by it, or None (a new one)
         self._sweep = "extrude"     # the command the panel runs: "extrude" | "revolve"
         self._rolled_back = False   # the view shows the bodies from before the edited extrusion
@@ -267,6 +271,7 @@ class MainWindow(QMainWindow):
         self.view = GeometryView()
         self.view.on_pick = self._on_pick
         self.view.on_select = self._on_view_select
+        self.view.on_context = self._view_context_menu
         self.view.on_hover = self._on_view_hover
         self.view.on_escape = self._escape
         self.view.on_delete = self.delete_selected
@@ -455,6 +460,13 @@ class MainWindow(QMainWindow):
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
         self.tree.setMouseTracking(True)                  # itemEntered: hover
+        self.tree.setIndentation(TREE_INDENT_PX)          # a deep tree stays narrow
+        # Visibility ticks drawn as an eye (open: shown, struck through: hidden); their state works as a tick's.
+        icons = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons").replace(os.sep, "/")
+        self.tree.setStyleSheet(
+            f"QTreeView::indicator {{ width: {EYE_PX}px; height: {EYE_PX}px; }}"
+            f"QTreeView::indicator:checked {{ image: url({icons}/eye.svg); }}"
+            f"QTreeView::indicator:unchecked {{ image: url({icons}/eye_off.svg); }}")
         self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)     # Shift / Ctrl: several bodies
         self.tree.itemSelectionChanged.connect(self._tree_selection_changed)
         self.tree.itemChanged.connect(self._item_changed)
@@ -580,17 +592,50 @@ class MainWindow(QMainWindow):
         """The part file's folder (imported files live next to it), or None before it is saved."""
         return os.path.dirname(self.doc.path) if self.doc.path else None
 
+    def _modeling_result(self):
+        """
+        The part as modeling sees it: the bodies as the features built them,
+        no placement (the result itself when there is no transform).
+        """
+        if not self.part.transforms:
+            return self.result
+        if self._unplaced is None or self._unplaced is self.result:
+            self._unplaced = rebuild(self.part, folder=self._folder(), placement=False)
+        return self._unplaced
+
+    def _show_modeling(self, on):
+        """
+        While a modeling command runs (a sketch edited, a plane picked, Extrude,
+        Revolve, Work Plane), the bodies unplaced: what sketches and faces
+        refer to. Off: placed again.
+        """
+        if not self.part.transforms or on == self._modeling_shown:
+            return
+        self._modeling_shown = on
+        bodies = self._modeling_result().bodies if on else self.result.bodies
+        self.view.set_geometry(Geometry(bodies), reset=False)
+        if on:
+            self.statusBar().showMessage("Placement off while modeling (the bodies as built)", 5000)
+
+    def _placed_bodies(self):
+        """The bodies some transform moves (their faces as shown are not where modeling has them)."""
+        return {b for t in self.part.transforms
+                for b in getattr(self.result.outputs.get(t.name), "bodies", [])}
+
     def full_result(self):
         """The Result of the whole part (rebuilt if a sketch being edited holds 3D back): for STEP."""
         return self.result if self.result.upto is None else rebuild(self.part, folder=self._folder())
 
     def show_result(self, result, reset_view=False):
         self.result = result
+        if result.upto is None:
+            self._unplaced = None               # the part changed: built anew when asked
         self.view.set_datums(self._datums())
         self._show_sketches(force=True)
         if self.editing is not None and self.editing in result.outputs:
             self.view.set_sketch(result.outputs[self.editing].frame, self.editing)
         if result.upto is None or reset_view:   # while a sketch is edited, the bodies stay as they were
+            self._modeling_shown = False
             self.view.set_geometry(Geometry(result.bodies), reset=reset_view)
         self._fill_tree()
         self.parameters.show_parameters(self.part.parameters, result.values, result.errors)
@@ -948,6 +993,9 @@ class MainWindow(QMainWindow):
         if selected is not None and selected[0] == "datum" and self._datum(selected[1]).kind == "plane":
             self.new_sketch(selected[1])
             return
+        if selected is not None and selected[0] == "face" and not self._modeling_shown \
+                and selected[1] in self._placed_bodies():
+            selected = None                     # a placed body's face as shown: picked again, unplaced
         if selected is not None and selected[0] == "face":
             reference, why = self.face_reference(selected)
             if reference is not None:
@@ -955,6 +1003,7 @@ class MainWindow(QMainWindow):
                 return
             self.statusBar().showMessage(why, 8000)
         self.picking_plane = True
+        self._show_modeling(True)
         planes = [d.name for d in self._datums() if d.kind == "plane"]
         self.view.set_pick_filter({"plane", "face"}, forced=planes)
         self.start_sketch_action.setEnabled(False)
@@ -964,6 +1013,8 @@ class MainWindow(QMainWindow):
         if self.picking_plane:
             self.picking_plane = False
             self.view.set_pick_filter(None)
+            if self.workplane_panel is None:    # (a work plane's panel follows: modeling still)
+                self._show_modeling(False)
             self.start_sketch_action.setEnabled(self.editing is None)
             self._on_pick(self.view.picks)
 
@@ -1017,8 +1068,8 @@ class MainWindow(QMainWindow):
                 if np.allclose(outward, normal, atol=FACE_TOLERANCE) \
                         and abs(float(np.dot(points[0] - origin, outward))) < FACE_TOLERANCE:
                     return f"{feature.name}:{role}", None
-        return None, ("this face is not a cap or a wall of an extrusion, nor a start / end face or a flat ring "
-                      "of a revolution (not supported yet)")
+        return None, ("this face is not a cap or a wall of an extrusion, a start / end face or a flat ring of a "
+                      "revolution, nor a planar face of an import (not supported yet)")
 
     def _escape(self):
         """Esc in the 3D view: cancels the Extrude command or picking a plane (True: used)."""
@@ -1048,7 +1099,9 @@ class MainWindow(QMainWindow):
         for action in self.tool_actions:
             action.setChecked(False)
         self.editing = name
-        self._frozen = self.result if self.result.upto is None else rebuild(self.part, folder=self._folder())
+        self._frozen = self._modeling_result() if self.result.upto is None else \
+            rebuild(self.part, folder=self._folder(), placement=False)
+        self._show_modeling(True)               # the bodies as the features built them (no placement)
         self.view.select(None)
         self._show_sketches(force=True)         # a sketch an extrusion used shows while edited
         self.view.set_sketch(built.frame, name)
@@ -1078,6 +1131,7 @@ class MainWindow(QMainWindow):
             if self.result.upto is not None:
                 self._refresh()                 # 3D catches up with the sketch now
             else:
+                self._show_modeling(False)      # nothing changed: the placement back
                 self._fill_tree()
                 self._on_pick(self.view.picks)
             failed = self._failed_users(name) if name in self.result.outputs else []
@@ -1785,6 +1839,9 @@ class MainWindow(QMainWindow):
         if selected is not None and selected[0] == "datum" and self._datum(selected[1]).kind == "plane":
             self._open_work_plane(selected[1])
             return
+        if selected is not None and selected[0] == "face" and not self._modeling_shown \
+                and selected[1] in self._placed_bodies():
+            selected = None                     # a placed body's face as shown: picked again, unplaced
         if selected is not None and selected[0] == "face":
             reference, why = self.face_reference(selected)
             if reference is not None:
@@ -1793,6 +1850,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(why, 8000)
         self._plane_purpose = "workplane"
         self.picking_plane = True
+        self._show_modeling(True)
         self.view.set_pick_filter({"plane", "face"}, forced=[d.name for d in self._datums() if d.kind == "plane"])
         self.statusBar().showMessage("Work Plane: select its base, a plane or a flat face of a body (in 3D or in "
                                      "the browser), Esc: cancel")
@@ -1812,6 +1870,7 @@ class MainWindow(QMainWindow):
         panel.pick_axis.connect(self._pick_work_axis)
         self.workplane_panel = panel
         self.workplane_action.setEnabled(False)
+        self._show_modeling(True)
         self._preview_work_plane()
         panel.show()
         self.statusBar().showMessage(f"Work Plane on {base}: Offset, or Angle around an axis (Pick) · Apply · "
@@ -1905,6 +1964,8 @@ class MainWindow(QMainWindow):
         self._end_axis_pick()
         self._workplane = None
         self.workplane_action.setEnabled(True)
+        if self.editing is None:
+            self._show_modeling(False)
         self.view.set_datums(self._datums())
 
     def set_work_plane_visible(self, name, on):
@@ -1980,7 +2041,7 @@ class MainWindow(QMainWindow):
             # Roll back: the bodies as they were just before this feature.
             rolled = Part.from_dict(self.part.to_dict())
             rolled.features = rolled.features[:[f.name for f in rolled.features].index(edit)]
-            before = rebuild(rolled, folder=self._folder()).bodies
+            before = rebuild(rolled, folder=self._folder(), placement=False).bodies
             self.view.set_geometry(Geometry(before), reset=False)
             self._rolled_back = True
             amount = feature["distance"] if self._sweep == "extrude" else feature["angle"]
@@ -1993,6 +2054,7 @@ class MainWindow(QMainWindow):
             if axis_key is not None:
                 self.view.set_axis_key(axis_key)
         else:
+            self._show_modeling(True)           # the bodies as built: what it joins to, cuts from
             panel = ExtrudePanel(self, self.result.values, bodies=[b.name for b in self.result.bodies],
                                  distance="10" if self._sweep == "extrude" else "360", kind=self._sweep,
                                  title=verb)
@@ -2135,7 +2197,9 @@ class MainWindow(QMainWindow):
         self.view.set_preview(None)
         if self._rolled_back:                   # the whole model again
             self._rolled_back = False
+            self._modeling_shown = False
             self.view.set_geometry(Geometry(self.result.bodies), reset=False)
+        self._show_modeling(False)
         self._extruding = None
         self.extrude_action.setEnabled(True)
         self.revolve_action.setEnabled(True)
@@ -2199,6 +2263,46 @@ class MainWindow(QMainWindow):
             return [("Edit Revolution", lambda: self.start_extrude(edit=name)),
                     ("Delete", lambda: self.delete_feature(name))]
         return []
+
+    def view_context_actions(self, key):
+        """
+        [(text, callable)] of the 3D view's right-click menu for `key` (what is
+        under the cursor): a flat face or a plane: New Sketch on it, a Work
+        Plane from it (a placed body's face: picked again, unplaced).
+        """
+        if key is None:
+            return []
+        if key[0] == "datum":
+            try:
+                if self._datum(key[1]).kind != "plane":
+                    return []
+            except KeyError:
+                return []
+            name = key[1]
+            return [("New Sketch", lambda: self.new_sketch(name)), ("Work Plane", lambda: self._open_work_plane(name))]
+        if key[0] != "face":
+            return []
+        if key[1] in self._placed_bodies() and not self._modeling_shown:
+            return [("New Sketch (pick the face as built)...", self.start_sketch)]
+        reference, why = self.face_reference(key)
+        if reference is None:
+            self.statusBar().showMessage(why, 8000)
+            return []
+        return [("New Sketch", lambda: self.new_sketch(reference)),
+                ("Work Plane", lambda: self._open_work_plane(reference))]
+
+    def _view_context_menu(self, key, pos):
+        """A right click in 3D: what is under the cursor selected, its menu."""
+        actions = self.view_context_actions(key)
+        if not actions:
+            return
+        self.view.select(key)
+        self._on_view_select(key)
+        menu = QMenu(self)
+        for text, slot in actions:
+            menu.addAction(text).triggered.connect(lambda _=False, f=slot: _later(f))
+        native = self.view.canvas.native
+        menu.exec(native.mapToGlobal(QPoint(int(pos[0]), int(pos[1]))))
 
     def _show_context_menu(self, pos):
         actions = self.context_actions(self.tree.itemAt(pos))
