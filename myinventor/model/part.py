@@ -15,8 +15,10 @@
 # The bodies come from the rebuild (model/rebuild.py), not from here.
 #
 # Names: parameters have their own namespace (formulas see only them);
-# datums and features share one (references see both). A name is the id:
-# renaming rewrites every formula or reference that uses it.
+# datums and features share one (references see both); bodies have theirs
+# (the features making and changing them name them). A name is the id:
+# renaming rewrites every formula or reference that uses it (rename_body:
+# the features' body fields and the [[body]] row).
 #
 # to_dict / from_dict: the plain data of the part file (model/part_file.py);
 # from_dict validates everything and raises PartError naming the place.
@@ -142,6 +144,33 @@ class Part:
         while f"{stem}{n}" in taken:
             n += 1
         return f"{stem}{n}"
+
+    def body_names(self):
+        """The bodies the features make or change, in history order."""
+        return list(dict.fromkeys(f["body"] for f in self.features if "body" in f.values))
+
+    def rename_body(self, old, new):
+        """
+        Renames a body: every feature making or changing it, and its
+        properties ([[body]]). PartError if the name is empty, taken, or
+        would break a STEP file (a quote, a control character).
+        """
+        new = new.strip()
+        if new == old:
+            return
+        if old not in self.body_names():
+            raise PartError(f"no body {old!r}")
+        if not new:
+            raise PartError("a body needs a name")
+        if "'" in new or any(ord(c) < 32 for c in new):
+            raise PartError(f"{new!r}: no quotes or control characters in a body's name (STEP)")
+        if new in self.body_names():
+            raise PartError(f"a body {new!r} already exists")
+        for f in self.features:
+            if f.values.get("body") == old:
+                f.values["body"] = new
+        if old in self.bodies:
+            self.bodies[new] = self.bodies.pop(old)
 
     def free_feature_name(self, stem):
         """Sketch1, Sketch2...: the first one not taken (as Inventor names them)."""

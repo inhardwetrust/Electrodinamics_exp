@@ -57,7 +57,7 @@ Compatibility with Inventor or any other CAD is not a goal.
   `checks/check_sketch_polyline.py`, `checks/check_cli.py`,
   `checks/check_deparametrize.py`, `checks/check_curves.py`,
   `checks/check_sketch_mode_3d.py`, `checks/check_offset.py`,
-  `checks/check_profile_cuts.py`.
+  `checks/check_profile_cuts.py`, `checks/check_body_rename.py`.
 - Without the window: `main.py name.part.toml --report [--json]
   [--export-step out.step]` (`cli.py`: rebuild, report, STEP; no Qt).
   The skill `.claude/skills/mycad/SKILL.md` teaches an AI to draw by

@@ -99,7 +99,7 @@ import numpy as np
 from PySide6.QtCore import QEvent, QRect, Qt, QTimer
 from PySide6.QtGui import QAction, QBrush, QColor, QGuiApplication, QIcon, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
-    QCheckBox, QColorDialog, QComboBox, QDockWidget, QFileDialog, QFormLayout, QLineEdit, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton, QTabWidget,
+    QCheckBox, QColorDialog, QComboBox, QDockWidget, QFileDialog, QFormLayout, QInputDialog, QLineEdit, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton, QTabWidget,
     QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -420,6 +420,11 @@ class MainWindow(QMainWindow):
         self.tree.currentItemChanged.connect(lambda item, _: self._item_selected(item))
         self.tree.itemEntered.connect(lambda item, _: self._row_hovered(item))
         self.tree.itemDoubleClicked.connect(lambda item, _: self._row_double_clicked(item))
+        rename = QAction("Rename", self.tree)
+        rename.setShortcut(QKeySequence(Qt.Key_F2))
+        rename.setShortcutContext(Qt.WidgetShortcut)
+        rename.triggered.connect(self._rename_current)
+        self.tree.addAction(rename)
         self.tree.itemClicked.connect(lambda item, _: self._row_clicked(item))
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._show_context_menu)
@@ -1523,6 +1528,8 @@ class MainWindow(QMainWindow):
                     ("Convert to Spline", lambda: self.curve_to_spline(sketch_name, curve, keep=False)),
                     ("Copy as Spline", lambda: self.curve_to_spline(sketch_name, curve, keep=True))]
         kind, name = key
+        if kind == "body":
+            return [("Rename...", lambda: self.rename_body_dialog(name))]
         if kind == "body_color":
             return [("Pick a color...", lambda: self.pick_body_color(name)),
                     ("Default color", lambda: self.set_body_color(name, None))]
@@ -1550,6 +1557,11 @@ class MainWindow(QMainWindow):
         if key is not None and key[0] == "body_color":
             self.pick_body_color(key[1])
 
+    def ask_text(self, title, label, text):
+        """A line of text from a small dialog, or None if cancelled."""
+        value, ok = QInputDialog.getText(self, title, label, QLineEdit.Normal, text)
+        return value if ok else None
+
     def ask_color(self, initial, title):
         """A color from Qt's color dialog (palette and picker), or None if cancelled."""
         color = QColorDialog.getColor(initial, self, title)
@@ -1570,8 +1582,49 @@ class MainWindow(QMainWindow):
         self.part.set_body_color(name, color)
         self._commit()
 
+    def rename_body_dialog(self, name):
+        """Rename (the body's right-click menu, double click, F2): asks for the new name."""
+        new = self.ask_text(f"Rename {name}", "New name of the body:", name)
+        if new is not None:
+            self.rename_body(name, new)
+
+    def rename_body(self, old, new):
+        """
+        A body renamed everywhere (the features making and changing it, its
+        color, STEP on the next save); one undo step. A bad or taken name: the
+        status bar says why, nothing changes.
+        """
+        try:
+            self.part.rename_body(old, new)
+        except PartError as error:
+            self.statusBar().showMessage(f"Rename {old}: {error}", 8000)
+            return False
+        new = new.strip()
+        if new == old:
+            return True
+        hidden = not self.view._visible.get(old, True)
+        selected = self.view.selected == ("body", old)
+        self._commit()
+        if hidden:                              # it stays hidden under its new name
+            self.view.set_visible(new, False)
+            self._fill_tree()
+        if selected:
+            self.view.select(("body", new))
+            self._on_view_select(("body", new))
+        self.statusBar().showMessage(f"{old} renamed {new} (in every feature using it)", 5000)
+        return True
+
+    def _rename_current(self):
+        """F2 in the browser: rename the body on the current row."""
+        key = self._key_of(self.tree.currentItem())
+        if key is not None and key[0] == "body":
+            self.rename_body_dialog(key[1])
+
     def _row_double_clicked(self, item):
         key = self._key_of(item)
+        if key is not None and key[0] == "body":
+            _later(lambda: self.rename_body_dialog(key[1]))
+            return
         if key is None or key[0] != "feature":
             return
         kind = self.part.feature(key[1]).TYPE

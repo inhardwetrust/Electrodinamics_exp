@@ -205,6 +205,10 @@ negative: the other way), `operation` = `"new"` (a new body named `body`) |
 `"join"` | `"cut"` | `"intersect"` (changes the existing body `body`).
 Several profiles in one extrusion become one body (touching ones fuse).
 A cut that removes nothing or everything fails on purpose: check the report.
+A body's name is its id (STEP names the solid after it, customcst reads it):
+name bodies by meaning (`Substrate`, `Patch`, `Ground`). To rename one in the
+file, change it in every feature's `body` and in its `[[body]]` row (the
+window's Rename does that in one step); no quotes in a name.
 
 ## Conventions for RF structures
 
