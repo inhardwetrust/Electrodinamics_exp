@@ -1384,6 +1384,18 @@ UI, and the type is stored in `model.toml` next to the file.
   change and before another file is opened or the window closes, but never
   over a project file edited outside since it was read. It is not in the
   results' fingerprint.
+- A model changed on disk by another program (myCad exporting the STEP,
+  Claude writing the .toml) reloads by itself: `MainWindow.poll_disk`, a
+  timer every `DISK_POLL` (700 ms), compares the STEP's mtime and size and
+  the project file's mtime with the state taken just before they were last
+  read or written here. A change is reloaded on the next look that sees
+  it unchanged (the STEP and the .toml are often written one after the
+  other: one reload, not two), never during a local run, a server
+  transfer, a mesh job, an edit in the tree or a modal dialog (the next
+  look retries). The camera stays where the user has it; the rest of
+  [view] comes from the file. A file that does not read leaves the window
+  as it was with a status message, no dialog, and is not retried until it
+  changes again. Check: `checks/check_disk_reload.py`.
 - An end of a port or element may touch several PEC bodies (a via in a
   pad: the layer and `vias`); they touch there, so it is one conductor.
 - Body names: in a multi-body part each body keeps its CAD name (for

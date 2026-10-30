@@ -22,7 +22,9 @@ The first project of this kind: it also proves the workflow.
     model/            the myCad part (*.part.toml) and its folder (*.files:
                       the imported STEPs, copied by myCad), the exported STEP
     sim/              the customcst project(s) (*.step + *.toml), final runs
-    sweeps/           sweep folders: variants, their STEPs, projects, results
+    variants/         the part as it was for each run (runNN.part.toml and
+                      its report runNN.mycad.json)
+    sweeps/           a batch of one knob's values, when one is wanted
 
 ## The workflow
 
@@ -33,8 +35,12 @@ The first project of this kind: it also proves the workflow.
    myCad window (it reloads the file on every change).
 3. Export STEP, write the customcst project (materials, the connector's
    coax port, band, mesh) into `sim/`; a dry run finds the port.
-4. Tune: sweeps of 1-2 parameters through the bridge (myCad exports each
-   variant, customcst runs it): `sweeps/`. Log each round in notes/.
+4. Tune, one change at a time: the part as it is goes to `variants/`, the
+   open part is edited, its STEP exported over `sim/` (customcst reloads
+   it), the run goes to the server and comes back; old runs stay,
+   outdated, to compare. Log each run in notes/log.md (Run N =
+   variants/runNN, what changed, the figures). The customcst skill,
+   section 8, has the details.
 5. The final run with the converged mesh in `sim/`, opened by the user.
 6. Report: the figures, what changed and why, what is left.
 

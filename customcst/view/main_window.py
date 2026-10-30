@@ -32,7 +32,7 @@ from discretize.materials import discretize
 from mesh.rectilinear import ACCURATE_CELLS_PER_FEATURE, build_grid, z0_error_percent
 from project.materials import BUILTIN, CUSTOM, MATERIAL_PARAMS
 from project.object_types import OBJECT_TYPES
-from project.project_file import UP_AXES, Z0PATH_PARAMS, Project, ProjectError
+from project.project_file import UP_AXES, Z0PATH_PARAMS, Project, ProjectError, project_path
 from project.settings import SECTIONS
 from view.farfield_panel import FarFieldPanel
 from view.geometry_view import GeometryView
@@ -55,6 +55,7 @@ MM = 1e-3
 AXES = "xyz"
 MESH_PROGRESS_DELAY = 0.3       # s: the mesh progress bar appears after this
 REMOTE_POLL = 15000             # ms between status reads of a run going on the server
+DISK_POLL = 700                 # ms between looks at the model's STEP and project file on disk
 SLIDER_STEPS = 1000             # plane positions over the model when it is not on the grid lines
 TREE_SECTIONS = ("simulation", "mesh")  # the settings sections, in the tree's order (before Model)
 TREE_GROUPS = ("model", "bodies", "section", "monitors", "results")   # rows _tree_item looks into
@@ -132,6 +133,18 @@ class MainWindow(QMainWindow):
         self._view_timer.timeout.connect(self._save_view)
         self._restoring = False
         self._project_mtime = None      # of the project file as last read or written here
+        # Another program (myCad exporting the STEP, Claude writing the
+        # .toml) changes the model: the window reloads it by itself once
+        # both files have stayed the same for one more look (they are often
+        # written one after the other), and not while a run, a transfer or
+        # an edit in the tree is going on. A file that does not read leaves
+        # the window as it was (a status message, no dialog).
+        self._step_stat = None          # (mtime, size) of the STEP file as last read
+        self._disk_pending = None       # the files' state seen changed on the last look
+        self._disk_failed = None        # the files' state that did not read: not retried
+        self._disk_timer = QTimer(self)
+        self._disk_timer.setInterval(DISK_POLL)
+        self._disk_timer.timeout.connect(self.poll_disk)
         self.view = GeometryView()
         self.view.view.camera.on_change = self._view_changed
         self.tabs = QTabWidget()
@@ -173,6 +186,7 @@ class MainWindow(QMainWindow):
             self.load(path)
         else:
             self.statusBar().showMessage("Open a STEP file (Open STEP or Recent)")
+        self._disk_timer.start()
 
     # =====================================================
     # UI
@@ -844,6 +858,7 @@ class MainWindow(QMainWindow):
 
     def load(self, path):
         self._save_view()               # the display of the file being left (or reloaded)
+        stats = self._disk_state(path)      # before reading: a write meanwhile is seen next look
         try:
             geometry = read_step(path)
         except Exception as error:      # show any kernel/file error, keep the old model
@@ -860,13 +875,20 @@ class MainWindow(QMainWindow):
                 f"{error}\n\nThe project is read-only until the file is fixed (then Reload).",
             )
             project = None
+        self._show_loaded(path, geometry, project, stats)
 
+    def _show_loaded(self, path, geometry, project, stats):
+        """
+        The model read from path in the window: geometry, its project (None
+        if that file has errors) and the files' state before they were read.
+        """
+        self._step_stat, self._project_mtime = stats
+        self._disk_pending = self._disk_failed = None
         self.geometry = geometry
         self._port_cache = {}
         self.project = project
         if project is not None and project.z0path is None:
             project.z0path = project.default_z0path(geometry)     # saved with the next save
-        self._project_mtime = self._file_mtime(project.path) if project else None
         self.holes = find_holes(geometry)
         self.view.highlight_holes([])
         self._mesh_coordinate = None
@@ -967,6 +989,57 @@ class MainWindow(QMainWindow):
             return os.stat(path).st_mtime_ns
         except OSError:
             return None
+
+    @staticmethod
+    def _file_stat(path):
+        try:
+            stat = os.stat(path)
+        except OSError:
+            return None
+        return stat.st_mtime_ns, stat.st_size
+
+    # =====================================================
+    # The model changed on disk (another program wrote it)
+    # =====================================================
+
+    def _disk_state(self, path):
+        """(the STEP's (mtime, size), the project file's mtime), None for a missing file."""
+        return self._file_stat(path), self._file_mtime(project_path(path))
+
+    def poll_disk(self):
+        """One look at the STEP and project files (DISK_POLL); reloads them when they changed and settled."""
+        if self.geometry is None:
+            return
+        path = self.geometry.source
+        now = self._disk_state(path)
+        if now == (self._step_stat, self._project_mtime) or now == self._disk_failed:
+            self._disk_pending = None
+            return
+        if now != self._disk_pending:
+            self._disk_pending = now        # changed: wait one more look (the other file may follow)
+            return
+        if (self.runner.running or self.remote.running or self.mesh_busy()
+                or self.tree.state() == QAbstractItemView.EditingState
+                or QApplication.activeModalWidget() is not None):
+            return                          # later: the pending state stays, the next look retries
+        self._reload_from_disk(path, now)
+
+    def _reload_from_disk(self, path, now):
+        """Like Reload, without dialogs: a file that does not read leaves the window as it was."""
+        name = os.path.basename(path)
+        try:
+            geometry = read_step(path)
+            project = Project.load(path)
+        except Exception as error:          # half written, or not ours to fix: say it, keep the model
+            self._disk_failed = now
+            self._disk_pending = None
+            self.statusBar().showMessage(f"{name} changed on disk but does not read, not reloaded: {error}", 15000)
+            return
+        camera = self.view.view.camera.state()  # the user's view stays (not the file's [view] camera)
+        self._view_timer.stop()             # the display is not written over the file read here
+        self._show_loaded(path, geometry, project, now)
+        self.view.view.camera.set_state(camera["center"], camera["distance"], camera["rotation"])
+        self.statusBar().showMessage(f"{name} changed on disk: reloaded", 5000)
 
     def _restore_switches(self, view):
         """

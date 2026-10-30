@@ -1,6 +1,6 @@
 ---
 name: antenna-design
-description: Design, tune and verify an antenna (a patch, a dipole, a feed network) with customcst - a parametric model, sweeps on the remote server, the far field (pattern, D, G, efficiency), a final run the user opens in the window, and an honest report. Use when the user asks to design, optimize, compare or explain an antenna or its feed in customcst, or to "compute it properly on the server".
+description: Design, tune and verify an antenna (a patch, a dipole, a feed network) with customcst - a parametric model, sweeps on the remote server, the far field (pattern, D, G, efficiency), a final run the user opens in the window, and an honest report. Use when the user asks to design, optimize, compare or explain an antenna or its feed in customcst, or to "compute it properly on the server", including a design whose model is a myCad part (a design project folder beside customcst).
 ---
 
 # Antenna design with customcst
@@ -29,7 +29,8 @@ Write down before modeling, and confirm in one message:
 
 ## 2. Build a parametric model
 
-Models are written by code, not drawn: `tools/make_test_models.py`. A new
+Models are written by code, not drawn: `tools/make_test_models.py`, or a
+myCad part in a design project (section 8). In make_test_models a new
 design is a new stem S with three parts (copy `patch_5g8`, `patch_5g8_dual`
 or `patch_5g8_4layer`):
 - `PARAMS = {...}`: every dimension in mm, with a comment how each starting
@@ -155,6 +156,59 @@ To the user, in Russian, short:
 - what is not committed, and the next options. Commit and push only when
   the user asks; never commit the user's own files (their models, the
   [view] the window saved into a .toml).
+
+## 8. The model from myCad (a design project)
+
+Instead of a generator in `tools/make_test_models.py`, the model can be a
+myCad part (`../myinventor/`, the parametric modeler; read its skill
+`../myinventor/.claude/skills/mycad/SKILL.md`). Such a design lives in its
+own folder beside the tools (the first: `../patch_antenna_sma/`; read its
+README.md and CLAUDE.md): `model/` the part, `sim/` the customcst project,
+`variants/` the part as it was for each run, `notes/log.md`.
+
+One model, changed in place, each change a run (agreed with the user):
+1. Talk over what changes in the geometry and why.
+2. Copy the part as it is now to `variants/runNN.part.toml` (NN: the run
+   it will give) with its report beside it
+   (`main.py PART --report --json > variants/runNN.mycad.json`), then edit
+   the open part (the myCad window reloads it).
+3. Export over the project's STEP:
+   `../.venv/Scripts/python.exe ../myinventor/main.py model/X.part.toml --export-step sim/X.step`.
+   Only when the geometry changed (compare the report's parameter values
+   and bodies with the last run's .mycad.json): every export changes the
+   file's bytes (a time stamp, OCC's entity order), and the run
+   fingerprint hashes the bytes, so an export of the same geometry would
+   mark the last run outdated for nothing.
+4. The customcst window reloads the STEP and the .toml by itself
+   (`MainWindow.poll_disk`). The .toml keeps its types by body name. A new
+   body has none: assign it (type, material) in the .toml; a body gone is
+   listed as an orphan.
+5. Run on the server as the window does (`remote_tasks.py launch`,
+   `wait-run`, `fetch`; section 5). Do not export over the STEP while that
+   run goes on: its result would come back already outdated.
+6. Log the round in notes/log.md: Run N = variants/runNN, what changed,
+   the figures. Old runs stay in Results, marked outdated: they still show
+   and compare.
+
+The first time: export the STEP into `sim/`, write the .toml beside it
+(`Project.load(step)`, `set_type(body, ...)`, `set_material`, band, mesh,
+far field, `save()`), `run.py sim/X.step --dry-run` (the port found, no
+shorts). Several values of one knob at once (L at four values) is a batch:
+export each with `--set NAME=FORMULA` into a `zz_` folder with a copy of
+the .toml renamed to it, and run them together on the server.
+
+Names and the connector:
+- myCad names an imported body `<import>:<its name>` (`SMA:connector_wire`);
+  the .toml quotes such a key. Do not rename bodies once the .toml has
+  types: the types follow the names.
+- A non-ASCII name (`Volumenkörper16`) must come through the STEP intact:
+  read the exported STEP's body names back (`read_step`) before assigning.
+- A coax connector's port is its end cylinder, type `waveport`, standing on
+  the domain end (section "Waveguide ports" of ARCHITECTURE.md); the dry
+  run says whether it is found.
+- Conductors may touch or overlap (a pin on the line, solder on a pad):
+  PEC merges. Two dielectrics in one place: the later body wins cell by
+  cell; avoid it.
 
 ## Pitfalls we hit
 
