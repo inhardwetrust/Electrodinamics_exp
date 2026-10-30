@@ -11,8 +11,12 @@
 #   each other (a line over a circle, a line through a band, a line ending
 #   on another's middle): crossings found on their polylines, then refined
 #   on the exact curves (Newton); the pieces are exact (curves.sub_edge).
-# - Ends at the same place are one node (points of separate chains, the
-#   ends of a curve and a line).
+# - Ends within CONNECT_MM (1 um: points are stored rounded to it) are one
+#   node, and so is an end that close to another curve's middle (it cuts
+#   it there): the points of separate chains, a line ending on a curve. The
+#   node lies where the least movable end is (a parabola's, a circle's);
+#   lines, arcs and B-splines get their ends moved onto it (by < 1 um) so
+#   the kernel's loops close.
 # - Regions are the bounded faces of that graph (dangling pieces pruned),
 #   traced around each node in the order the pieces leave it (their
 #   tangent): a rectangle is one, with a diagonal two triangles, a circle
@@ -39,6 +43,8 @@ import numpy as np
 from model.curves import edge_function, end_points, reversed_edge, sub_edge
 
 SAME_PLACE_MM = 1e-6
+CONNECT_MM = 1e-3           # ends (and an end on a curve) this close are joined: points are rounded to 1 um
+RIGIDITY = {"parabola": 0, "circle": 0, "arc": 1, "bspline": 2, "line": 3}     # who moves to a joint: the higher
 PATH_SAMPLES = {"line": 1, "arc": 48, "circle": 128, "parabola": 96, "bspline": 128}
 NEWTON_STEPS = 30
 
@@ -180,10 +186,11 @@ def _cut(curves):
         for s_end in (0.0, 1.0):
             p = c.point(s_end)
             for d in curves:
-                if d.item == c.item or np.any(p < d.path.min(axis=0) - 1e-6) or np.any(p > d.path.max(axis=0) + 1e-6):
+                if d.item == c.item or np.any(p < d.path.min(axis=0) - CONNECT_MM) \
+                        or np.any(p > d.path.max(axis=0) + CONNECT_MM):
                     continue
                 s = _nearest(d, p)
-                if s is not None and np.linalg.norm(d.point(s) - p) <= SAME_PLACE_MM:
+                if s is not None and np.linalg.norm(d.point(s) - p) <= CONNECT_MM:
                     d.cuts.append(s)
 
 
@@ -265,8 +272,7 @@ def _pieces(items, curves):
     for i, (name, _, closed) in enumerate(items):
         runs = []                               # (curve, s0, s1, starts at a cut), in the item's order
         for c in by_item.get(i, []):
-            cuts = sorted({round(x, 12) for x in c.cuts if 1e-9 < x < 1 - 1e-9})
-            bounds = [0.0] + cuts + [1.0]
+            bounds = [0.0] + _cuts(c) + [1.0]
             runs += [(c, bounds[k], bounds[k + 1], k > 0) for k in range(len(bounds) - 1)]
         cut = any(starts for *_, starts in runs)
         index, numbered = 0, []
@@ -281,6 +287,17 @@ def _pieces(items, curves):
     return pieces
 
 
+def _cuts(c):
+    """A curve's cuts (s), sorted: those within CONNECT_MM of each other one, none within it of its ends."""
+    length = float(np.linalg.norm(np.diff(c.path, axis=0), axis=1).sum())
+    out = []
+    for s in sorted(c.cuts):
+        apart = not out or (s - out[-1]) * length > CONNECT_MM
+        if s * length > CONNECT_MM and (1.0 - s) * length > CONNECT_MM and apart:
+            out.append(s)
+    return out
+
+
 def _loops(items, cut=True):
     if not items:
         return []
@@ -289,25 +306,35 @@ def _loops(items, cut=True):
         _cut(curves)
     places, edges, loops = [], [], []
 
-    def node(xy):
-        for i, p in enumerate(places):
-            if np.linalg.norm(p - xy) <= SAME_PLACE_MM:
-                return i
-        places.append(np.asarray(xy, float))
-        return len(places) - 1
-
+    built = []                                  # (name, curve, path, kernel)
     for name, s0, s1, c in _pieces(items, curves):
         count = max(2, int(np.ceil((s1 - s0) * (len(c.path) - 1))) + 1)
         path = c.g(np.linspace(s0, s1, count))
         if np.linalg.norm(np.diff(path, axis=0), axis=1).sum() <= SAME_PLACE_MM:
             continue                            # no length
-        kernel = [c.edge if (s0, s1) == (0.0, 1.0) else sub_edge(c.edge, s0, s1)]
+        built.append((name, c, path, [c.edge if (s0, s1) == (0.0, 1.0) else sub_edge(c.edge, s0, s1)]))
+    # Nodes: ends within CONNECT_MM are one, placed by the end least free to move (an exact curve's).
+    ends = [(RIGIDITY[k[0][0]], xy) for _, _, path, k in built for xy in (path[0], path[-1])]
+    for _, xy in sorted(ends, key=lambda end: end[0]):
+        if all(np.linalg.norm(p - xy) > CONNECT_MM for p in places):
+            places.append(np.asarray(xy, float))
+
+    def node(xy):
+        gaps = [np.linalg.norm(p - xy) for p in places]
+        return int(np.argmin(gaps))
+
+    for name, c, path, kernel in built:
         a, b = node(path[0]), node(path[-1])
-        if a == b and len(items[c.item][1]) == 1:     # a closed curve nothing cuts: a loop on its own
-            polygon = path[:-1]
+        if a == b and len(items[c.item][1]) == 1 and len(kernel) == 1 and kernel[0][0] in ("circle", "bspline")                 and np.linalg.norm(path[0] - path[-1]) <= SAME_PLACE_MM:
+            polygon = path[:-1]                 # a closed curve nothing cuts: a loop on its own
             loop = Loop((name,), polygon, kernel)
             loops.append(loop if loop.area > 0 else Loop((name,), polygon[::-1], [reversed_edge(kernel[0])]))
             continue
+        if a == b:
+            continue                            # shorter than CONNECT_MM end to end
+        path = path.copy()
+        path[0], path[-1] = places[a], places[b]
+        kernel = [_ended(kernel[0], places[a], places[b])]
         middle = path[len(path) // 2]
         if any({e.a, e.b} == {a, b} and np.linalg.norm(e.path[len(e.path) // 2] - middle) <= 1e-4
                for e in edges):
@@ -360,6 +387,23 @@ def _loops(items, cut=True):
             loop_edges += [tuple(np.copy(v) if isinstance(v, np.ndarray) else v for v in k) for k in run]
         loops.append(Loop(names, polygon, loop_edges))
     return loops
+
+
+def _ended(edge, a, b):
+    """
+    A kernel edge with its ends moved onto the joints a, b (by under
+    CONNECT_MM): a line's ends, an arc's, a B-spline's end poles; a
+    parabola or a circle stays (the joint was placed on it).
+    """
+    if edge[0] == "line":
+        return ("line", a.copy(), b.copy(), *edge[3:])
+    if edge[0] == "arc":
+        return ("arc", a.copy(), edge[2], b.copy())
+    if edge[0] == "bspline":
+        poles = np.array(edge[1], float)
+        poles[0], poles[-1] = a, b
+        return ("bspline", poles, *edge[2:])
+    return edge
 
 
 def _area(polygon):

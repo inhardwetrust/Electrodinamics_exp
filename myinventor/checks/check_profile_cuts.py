@@ -15,7 +15,11 @@
 #   - the whole loops stay nameable: a rectangle with a circle over its
 #     edge: the rectangle (L1..L4) and the circle (C1) whole, the pieces
 #     besides; an extrusion of the whole rectangle still 100;
-#   - the window: Extrude offers the two halves of the cut circle.
+#   - a line ending 0.4 um off another (points are stored rounded to 1 um):
+#     still cuts it, the pieces exact (33.33); 2 um off: not;
+#   - the window: Extrude offers the two halves of the cut circle; the Line
+#     tool snaps onto a band's two sides (a parabola and its fitted offset,
+#     clicked a pixel off): the line cuts the band in two.
 #
 #   python checks/check_profile_cuts.py [--no-window]
 
@@ -23,6 +27,8 @@ import math
 import os
 import sys
 import tempfile
+
+import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -160,6 +166,19 @@ def check_whole():
           f"{v}")
 
 
+def check_near():
+    for y0, cut in (("0.0004", True), ("0.002", False)):
+        part, s = sketch_part()
+        rectangle(s, "10", "10")
+        line(s, ("3.333", y0), ("3.333", "10"))
+        regions = regions_of(part)
+        volumes = sorted(volume(part, r.key) for r in regions)
+        want = [33.33, 66.67] if cut else [100.0]
+        check(f"a line ending {y0} mm off the bottom: {'cuts it' if cut else 'does not cut'} ({want})",
+              len(volumes) == len(want) and all(math.isclose(v, w, rel_tol=1e-9) for v, w in zip(volumes, want)),
+              f"{[r.key for r in regions]} {volumes}")
+
+
 def check_window():
     from vispy import app
 
@@ -191,6 +210,43 @@ def check_window():
     keys = sorted(item[0][2] for item in window.view._profiles)
     check("the window: Extrude offers the two halves of the cut circle",
           keys == [("C1:0", "L1:1"), ("C1:1", "L1:1")], f"{keys}")
+    window.extrude_panel.reject()
+    settle()
+
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    from check_sketch_line import click, pixel, shield
+
+    part, s = sketch_part()
+    c = s.add_curve("parabola", focal="10", **{"from": "-20", "to": "20"})
+    s.add_offset(c, left="1")
+    path = os.path.join(TMP, "band.part.toml")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(dumps(part))
+    window.open_file(path)
+    window.edit_sketch("S")
+    settle()
+    shield(window)
+    view, native = window.view, window.view.canvas.native
+    frame = view.sketch_frame
+    band = window.result.outputs["S"].offsets[c][0][2]
+    outer = band[np.argmin(np.where(band[:, 1] > 1.2, np.abs(band[:, 0] - 5), np.inf))]     # the offset side at x 5
+    mm = view._mm_per_px()
+    window.line_action.trigger()
+    settle(100)
+    click(native, pixel(view, frame, (5, 0.625 - 1.2 * mm)))      # a pixel under the parabola
+    click(native, pixel(view, frame, tuple(outer + (0, 1.2 * mm))))  # a pixel over the offset side
+    QTest.keyClick(native, Qt.Key_Escape)
+    settle()
+    out = window.result.outputs["S"]
+    drawn = window.part.feature("S").line("L1")
+    ends = sorted((out.points[drawn.start], out.points[drawn.end]), key=lambda xy: xy[1])
+    on_parabola = abs(ends[0][1] - ends[0][0] ** 2 / 40) <= 1e-3
+    regions = find_regions(out)
+    check("  Line snapped onto both sides of a band (a pixel off each): its ends on them, the band cut in two",
+          on_parabola and len(regions) == 2 and all("L1" in r.key for r in regions),
+          f"{ends} {[r.key for r in regions]}")
     check("no error dialogs", not errors, f"{errors}")
     window.close()
     check("no errors in VisPy callbacks", not vispy_errors, f"{vispy_errors[:3]}")
@@ -202,6 +258,7 @@ def main():
     check_band()
     check_spline()
     check_whole()
+    check_near()
     if "--no-window" not in sys.argv:
         check_window()
     print("FAILED: " + ", ".join(FAILED) if FAILED else "all checks passed")

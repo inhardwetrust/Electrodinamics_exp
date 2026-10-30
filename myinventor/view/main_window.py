@@ -1253,7 +1253,9 @@ class MainWindow(QMainWindow):
                     x0, y0 = dragged[first]
                     fixed = (x0 is None, y0 is None)
                     target = np.where(fixed, before.points[first], np.array([x0 or 0.0, y0 or 0.0]) + offset)
-                    mine = {e.name for e in before.lines if {e.start, e.end} & set(group)}                         | {c.name for c in before.circles if c.center in group}
+                    mine = ({e.name for e in before.lines if {e.start, e.end} & set(group)}
+                            | {c.name for c in before.circles if c.center in group}
+                            | {w.name for w in before.splines + before.polylines if set(w.points) & set(group)})
                     on_curve = None if any(fixed) else curve_snap(
                         target, before, CURVE_SNAP_PX * self.view._mm_per_px(), exclude=mine)
                     if on_curve is not None:    # onto another line or circle

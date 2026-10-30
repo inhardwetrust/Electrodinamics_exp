@@ -9,9 +9,10 @@
 # put a point (bigger and green when it snaps). The cursor snaps to the
 # sketch's points and its origin within SNAP_PX; elsewhere a point lies
 # where the ray through the cursor meets the sketch's plane, rounded to 1 um.
-# Off the points, a line or circle within CURVE_SNAP_PX takes the point
-# (curve_snap(): the nearest place on it; the window's point drag uses it
-# too). Off those, alignment hints (align(), Inventor's inference lines): a
+# Off the points, a line, circle, spline, generated curve, or the outline
+# of a polyline or an offset within CURVE_SNAP_PX takes the point
+# (curve_snap(): the nearest place on it, exact; the window's point drag
+# uses it too). Off those, alignment hints (align(), Inventor's inference lines): a
 # new point within ALIGN_PX of the vertical or horizontal through another
 # point (or the sketch origin) takes that x or y exactly, and a dashed guide
 # runs from that point to it (GeometryView.set_guides); the window's point
@@ -41,6 +42,8 @@
 import numpy as np
 
 from vispy import scene
+
+from model.curves import edge_function
 
 from view.picking import _project, _ray
 
@@ -83,11 +86,14 @@ def align(xy, points, tolerance, exclude=(), fixed=(False, False)):
 
 def curve_snap(xy, result, tolerance, exclude=()):
     """
-    The nearest place on a line or circle of the sketch within `tolerance`
-    (mm) of `xy` (mm): ((2,) mm, entity name), or None. For a line, the
-    foot of the perpendicular (clamped to the segment); for a circle, the
-    point on it along the radius through xy. `exclude`: entity names that
-    do not attract (the lines and circles of a dragged point).
+    The nearest place on a line, circle or curve of the sketch within
+    `tolerance` (mm) of `xy` (mm): ((2,) mm, entity name), or None. For a
+    line, the foot of the perpendicular (clamped to the segment); for a
+    circle, the point on it along the radius through xy; for a spline, a
+    generated curve or the outline of a polyline or an offset (named by its
+    entity), the nearest point of its kernel edges (refined on the exact
+    curve). `exclude`: entity names that do not attract (what a dragged
+    point belongs to).
     """
     xy = np.asarray(xy, dtype=float)
     best = None
@@ -112,7 +118,48 @@ def curve_snap(xy, result, tolerance, exclude=()):
         gap = abs(r - radius)
         if gap <= tolerance and (best is None or gap < best[0]):
             best = (gap, center + away * (radius / r), circle.name)
+    for owner, edges in _snap_edges(result):
+        if owner in exclude:
+            continue
+        for edge in edges:
+            hit = _edge_foot(edge, xy, tolerance)
+            if hit is not None and (best is None or hit[0] < best[0]):
+                best = (hit[0], hit[1], owner)
     return None if best is None else (best[1], best[2])
+
+
+def _snap_edges(result):
+    """[(entity name, kernel edges)] of the curves drawn besides lines and circles."""
+    out = [(c.name, result.shapes[c.name].edges) for c in getattr(result, "curves", []) + getattr(result, "splines", [])
+           if c.name in result.shapes]
+    out += [(name, [e for _, edges, _ in loops for e in edges]) for name, loops in getattr(result, "offsets", {}).items()]
+    out += [(name, edges) for name, (edges, _) in getattr(result, "outlines", {}).items()]
+    return out
+
+
+def _edge_foot(edge, xy, tolerance, samples=128):
+    """(gap, (2,) mm) of the point of a kernel edge nearest to xy if within tolerance (mm), else None."""
+    at, t0, t1 = edge_function(edge)
+    s = np.linspace(0.0, 1.0, samples + 1)
+    path = at(t0 + s * (t1 - t0))
+    if np.any(xy < path.min(axis=0) - tolerance) or np.any(xy > path.max(axis=0) + tolerance):
+        return None
+    k = int(np.argmin(np.linalg.norm(path - xy, axis=1)))
+    if np.linalg.norm(path[k] - xy) > 2 * tolerance + np.linalg.norm(path[1] - path[0]):
+        return None
+    u = s[k]
+    for _ in range(30):                         # Gauss-Newton on |g(u) - xy|^2
+        h = 1e-7
+        lo, hi = max(u - h, 0.0), min(u + h, 1.0)
+        g = at(np.array([t0 + u * (t1 - t0)]))[0]
+        d = (at(np.array([t0 + hi * (t1 - t0)]))[0] - at(np.array([t0 + lo * (t1 - t0)]))[0]) / (hi - lo)
+        step = float((xy - g) @ d) / max(float(d @ d), 1e-30)
+        u = float(np.clip(u + step, 0.0, 1.0))
+        if abs(step) < 1e-13:
+            break
+    foot = at(np.array([t0 + u * (t1 - t0)]))[0]
+    gap = float(np.linalg.norm(foot - xy))
+    return (gap, foot) if gap <= tolerance else None
 
 
 def radius_snap(center, radius, points, tolerance, exclude=()):
