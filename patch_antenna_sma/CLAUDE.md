@@ -15,7 +15,7 @@ Russian; files here are in English.
   (`--set` overrides a parameter for that run only.) The user keeps the
   part open in the myCad window: drive that window through its control
   channel (`../customcst/tools/ui.py --app mycad lock / set / save /
-  export_step / unlock`, the skill's "Driving the open window"), so they
+  export_step / unlock`, the skill's "Show it in the window"; the facts in ../myinventor/REFERENCE.md), so they
   see each step. Without the lock the window reloads the file on every
   write: then write it in meaningful steps (not 30 tiny ones), and never
   while it has unsaved edits of theirs (the window then only warns: ask).

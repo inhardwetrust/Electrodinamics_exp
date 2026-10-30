@@ -1,6 +1,9 @@
 # CLAUDE.md — myCad
 
-Context for Claude sessions. Read this first, then `DESIGN.md`.
+Context for Claude sessions. Read this first, then `DESIGN.md`. What myCad can
+draw and how Claude drives it (the file format, every entity and feature,
+the control channel, the method): `REFERENCE.md`, which the skill
+`.claude/skills/mycad/SKILL.md` relies on: update it with every feature.
 
 myCad is a simple parametric 3D modeler, written from scratch. (It was
 "myinventor" until 2026-10-28; renamed because Inventor is Autodesk's
@@ -65,9 +68,9 @@ Compatibility with Inventor or any other CAD is not a goal.
 - Without the window: `main.py name.part.toml --report [--json]
   [--export-step out.step]` (`cli.py`: rebuild, report, STEP; no Qt).
   The skill `.claude/skills/mycad/SKILL.md` teaches an AI to draw by
-  writing part files and checking them this way; its example is
-  `examples/patch_antenna.part.toml` (check_cli.py checks both, including
-  the skill's table of sketch-plane axes). The window reloads its open file
+  writing part files and checking them this way (the facts in
+  REFERENCE.md); its example is `examples/patch_antenna.part.toml`
+  (check_cli.py checks it and REFERENCE.md's table of sketch-plane axes). The window reloads its open file
   when another program changes it (`MainWindow.poll_disk`). `--set
   NAME=FORMULA` changes a parameter for that run only (sweep variants).
 - Claude drives the open window through its control channel

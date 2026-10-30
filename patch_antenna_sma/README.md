@@ -16,6 +16,8 @@ The first project of this kind: it also proves the workflow.
     README.md         this file: what, how, the status
     CLAUDE.md         how Claude works here (read it first)
     prompt.md         the task as given (the user's prompt, filled in)
+    demo_prompt.md    a test of the workflow: a two-layer PCB with the connector
+                      (its part goes to demo/)
     notes/log.md      the discussion and the decisions, dated, newest last
     notes/*.md        estimates, sweep reports, anything worth keeping
     parts/            inputs from outside: the connector STEP (as received)

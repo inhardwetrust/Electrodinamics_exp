@@ -1,351 +1,139 @@
 ---
 name: mycad
-description: Draw a part (an antenna, a PCB structure, any 3D body built from sketches and extrusions) in myCad, our parametric modeler, by writing its part file (.part.toml), then check it numerically and export STEP for customcst. Use when asked to draw, model, build, change or export geometry in myCad, or to make a STEP of a structure for a simulation.
+description: Draw, change or export a part in myCad, our parametric modeler (an antenna, a PCB with a connector, any 3D body from sketches, extrusions, revolutions, imports), by writing its part file (.part.toml), checking it numerically, and, when the user watches, driving their open myCad window step by step through its control channel. Use when asked to draw, model, build, place, change or export geometry in myCad, or to make a STEP of a structure for customcst.
 ---
 
 # Drawing in myCad
 
-myCad (this folder) is a parametric modeler: a part is a *recipe* —
-parameters, sketches, extrusions — rebuilt from scratch every time. The
-recipe is the file `name.part.toml`. It is the one document you and the
-user share: whatever you write there opens in the editor exactly as if the
-user had drawn it, and they can change any point, width or parameter
-afterwards. So never produce geometry any other way (no STEP written by
-hand, no OCC scripts): write the part file, check it, export.
+myCad (`myinventor/`) is a parametric modeler: a part is a recipe
+(parameters, sketches, features, placement) in a text file
+`name.part.toml`, rebuilt from scratch on every change. You draw by
+writing that file; the user sees and edits the same document in the
+window. Never make geometry any other way (no hand-written STEP, no OCC
+scripts as the result).
 
-## The loop
+**Read `myinventor/REFERENCE.md` first.** It has everything this skill
+relies on: the file format (section 4), every sketch entity (5), the
+sketch planes and their axes (6), profile keys (7), the features (8),
+bodies, groups and placement (9), the report (10), the CLI (11), the
+window's commands (12), the method (15), measuring (16), the pitfalls
+(17). Start from `examples/patch_antenna.part.toml` (substrate, patch,
+feed with an arc bend, colors) for the shape of a file.
 
-1. Write (or edit) the part file. Start from `examples/patch_antenna.part.toml`
-   (substrate, patch, feed line with an arc bend, colors): it shows every
-   piece you usually need.
-2. Rebuild it without the window and read the report:
+All paths below are relative to `myinventor/`; the Python is
+`../.venv/Scripts/python.exe`.
 
-       ../.venv/Scripts/python.exe main.py path/name.part.toml --report
+## 1. Understand before drawing
 
-   It lists every parameter with its value, every feature as `ok` or
-   `FAILED: why`, each sketch's closed profiles (with the key an extrusion
-   uses and their area) and each body (exact volume, size, bounds in mm).
-   The last line is `ok` or `NOT OK`; the exit code is 0 / 1 (something
-   failed) / 2 (the file did not read: the message names the place).
-   Add `--json` for the same as JSON.
-3. Check the numbers against what you meant (sizes, positions, volumes:
-   compute them by hand). Never call it done by looking only.
-4. Export for customcst:
+- Clear up what is ambiguous in the request and decide what has a
+  convention (say which you chose). Examples:
+  - a "1.6 mm board" is 1.6 in total: FR4 1.53 + 35 µm copper on each side;
+  - "a trace to the connector": say where it starts.
+- An imported part (a connector): measure it first, numerically (its
+  bodies, bounds, slices: REFERENCE 16). Find its axis, pin, legs and
+  gaps, and how it must be turned and moved (REFERENCE 15, "Placing a
+  part by turning it").
+- Ask only what changes the result and has no sensible default.
 
-       ../.venv/Scripts/python.exe main.py path/name.part.toml --export-step path/name.step
+## 2. Plan
 
-   The STEP carries the bodies with their names and colors (customcst
-   reads them as separate bodies: name them as the simulation needs,
-   e.g. Substrate, Copper, Ground).
-5. Tell the user the file path: they open it in myCad
-   (`../.venv/Scripts/python.exe main.py path/name.part.toml`) to look and
-   adjust. If it is already open there, the editor reloads it by itself
-   within a second after you write it (one undo step: Ctrl+Z goes back) —
-   unless the user has unsaved edits in it: then it only warns, and their
-   Save would overwrite your change. So before editing a file the user works
-   on, ask them to save; after they adjusted it, re-read the file before you
-   edit it again (their changes are in it).
+- Every size that matters is a `[[parameter]]` with a `comment`;
+  positions are formulas of them. Plain numbers only for true constants.
+- Bodies named by meaning, one per material (`Substrate`, `Ground`,
+  `Trace`, `Patch`, `PinSolder`), with colors. customcst assigns materials
+  by these names: do not rename bodies once a simulation project uses them.
+- Conventions for RF structures:
+  - the board on XY from z 0 up by its FR4 thickness, centered on the
+    origin;
+  - top copper on `SubstrateExt:end`, ground on `SubstrateExt:start`
+    (it goes down, y mirrored);
+  - a line reaching the edge ends exactly on it;
+  - conductors may touch or overlap (no union needed); a round pin on a
+    flat trace touches along a line only, so add a solder block that
+    overlaps it.
+- Steps for showing: one meaningful thing each (the board, the trace,
+  the connector, the solder), not one per line.
 
-Do not write into the user's existing part files without being asked; a new
-design goes into a new file.
+## 3. Write and check without the window
 
-## Driving the open window
+Write a builder script in the scratchpad that writes the whole part for
+step N (0 = parameters only), atomically (temp file + `os.replace`). Keep
+it: a Save in the window drops the file's comments. Build the last step
+and read the report:
 
-When the user watches the part in the myCad window, drive the window
-itself through its control channel (customcst's client, one for both
-apps; run from this folder):
+    ../.venv/Scripts/python.exe main.py PART --report [--json]
 
-    ../.venv/Scripts/python.exe ../customcst/tools/ui.py --app mycad status
-    ../.venv/Scripts/python.exe ../customcst/tools/ui.py --app mycad lock "widening the patch"
-    ../.venv/Scripts/python.exe ../customcst/tools/ui.py --app mycad set patch_w=18 "feed_y=-14 - 2"
-    ../.venv/Scripts/python.exe ../customcst/tools/ui.py --app mycad save
-    ../.venv/Scripts/python.exe ../customcst/tools/ui.py --app mycad unlock "look at the patch: 18 mm now"
+- Every feature `ok`, the last line `ok`; exit 0 / 1 (failed: the reason
+  names the feature and the curve) / 2 (does not read: the place).
+- **Compare every number with your own:** volumes (exact), bounds, sizes;
+  profile and piece areas (from polygons, ~1e-3 relative). Pieces: take
+  the keys from the report (`pieces`), the larger part is the larger area.
+- Contacts and overlaps: measure them as `Common` volumes of the rebuilt
+  shapes (REFERENCE 16). Never call it done by looking only.
 
-- `status` (always allowed): the file, `modified`, `locked`, and
-  `report`: the same as `--report --json`. `describe` lists the commands.
-- `lock` first: the user then only looks (a yellow banner; "Take control
-  back" is theirs). It is refused while they are in a sketch, a command
-  panel or a dialog, or have unsaved edits: ask them to finish or save.
-- Then change by `set NAME=FORMULA ...` (several at once: one undo step;
-  the answer is the new report: check its numbers as in step 3; a
-  formula that does not evaluate changes nothing), or by writing the
-  part file and sending `reload` (locked, the window does not reload by
-  itself). Show what changed: `select kind=feature name=CopperExt`,
-  `view name=top`, `fit`, `screenshot path=...` (absolute paths).
-- `save` writes the file (and its STEP if the user turned STEP on Save
-  on); `export_step path=...` writes the STEP where customcst reads it.
-  Save before `unlock`: unsaved edits stay in the window, not on disk.
-- `unlock "what to look at"` when done.
+## 4. Show it in the window (when the user watches)
+
+    UI="../.venv/Scripts/python.exe ../customcst/tools/ui.py --app mycad"
+
+1. **Get a window.**
+   - None open (`$UI status` exits 2): write step 0, then start
+     `../.venv/Scripts/python.exe main.py PART --locked` in the background
+     and wait until `$UI status` shows the file.
+   - The user's window is open: ask before opening another part in it.
+     Then `$UI lock "what I am doing"` (refused while they edit, or with
+     unsaved edits: ask them to finish or save).
+2. **Per step:** write step N, `$UI reload`. Its answer is the status with
+   the report: check the numbers in it. Then `$UI view name=iso|top|front...`,
+   `$UI fit`, `$UI select kind=feature name=<new feature>`.
+   A parameter change needs no file write: `$UI set name=formula ...`
+   (one undo step, the report back).
+3. **Finish:** `$UI save`. If it goes to customcst, read the STEP back with
+   customcst's reader (REFERENCE 14). Then
+   `$UI unlock "what to look at"`.
+
+- Read `ui.py`'s JSON with `python -X utf8` (non-ASCII names).
 - An answer "not in control": the user took control back. Stop and ask;
-  never lock again by yourself. Exit code 2: no window open: work on the
-  file with the CLI as above.
+  never lock again on your own.
+- Without a window watching, skip this section: write the file, check,
+  export (`--export-step`).
 
-Variants of a sweep without touching the file: `main.py PART --set
-NAME=FORMULA [--set ...] --export-step out.step --report --json` (the
-formula for that run only; an unknown name: exit 2).
+## 5. Report
 
-## Make it editable: parameters
+In a few lines:
+- what is where (in mm), and the numbers that prove it;
+- what touches what, with the measured overlaps;
+- what you decided on your own;
+- what looks off (in an imported model too).
 
-Put every meaningful size into a `[[parameter]]` (with a `comment`) and use
-its name in the coordinates, widths, radii and distances: `x = "-patch_w/2"`,
-`distance = "h"`, `radius = "2 * feed_w"`. Then the user changes one number
-in the parameter table and the whole structure follows. Formulas: `+ - * / ^`,
-parentheses, `sqrt abs min max sin cos tan atan2 ...` (degrees), `pi`. A
-parameter may use another one. Numbers alone only for true constants.
+Do not hand the user screenshot paths: they watch the live window.
+Screenshots (`$UI screenshot path=ABS.png`) are for your own eyes.
 
-In the editor a point set by a formula cannot be dragged with the mouse
-(its formula decides where it is; dragging says so); a point given as a
-plain number can. So: sizes that matter (resonant lengths, line widths,
-gaps) as parameters; where the user wants to place something freely by
-hand, a plain number is fine. Say which ones you left free. The user can
-also free anything later: the Deparametrize button (properties panel, for
-the selection or the whole sketch) replaces its formulas by their values.
-So prefer formulas when in doubt: freeing is one click, the reverse is not.
-Before editing a file again, re-read it: deparametrized values are numbers
-now and must not be turned back into formulas without being asked.
+## 6. Changing an existing part
 
-## Two ways of drawing
-
-The user and you share the file, so pick the way that fits the shape
-(DESIGN.md "Two ways of drawing"); one part may mix both:
-
-1. **Manual**: primitives as a person would draw them (points, lines,
-   circles, wide polylines, splines). Plain numbers where the user may want to move
-   things by hand, formulas for the sizes that matter. Use it for layouts:
-   patches, feeds, slots, boards, anything made of straight pieces, arcs
-   of polyline bends and circles.
-2. **Parametric (generators)**: a few control parameters → a computed
-   shape (a parabola from f and D, a horn's profile, any x(t), y(t)),
-   rebuilt when they change. In the file a generator is `[[feature.curve]]`
-   with a `kind` and one formula per argument (see "Curves" below); its
-   ends are points (`Name.start`, `Name.end`) that lines use to close a
-   profile. Prefer a generator to many points with formulas: it is exact
-   (a parabola is OCC's parabola, a function a B-spline within 0.1 µm)
-   and the user edits its arguments in the properties. Never draw a curve
-   as a polyline of points and call it exact.
-
-Either way the user can free formulas later (Deparametrize, below) and keep
-working by hand.
-
-## The file
-
-All lengths are mm. Names are unique: parameters and features in the part,
-points / lines / circles / polylines within their sketch. TOML arrays of
-tables, in order:
-
-    format = "mycad-part"
-    version = 1
-    [[parameter]]   name, formula, comment (optional)
-    [[feature]]     in history order; a feature may use only features above it
-    [[body]]        name, color = "#rrggbb" (optional, per body)
-    [[group]]       name, bodies = [...]: bodies that move / hide together (flat: a body in one
-                    group at most; an import makes one of its bodies)
-    [[transform]]   placement, after all the features: the bodies as built, moved (below)
-
-Reading is strict: an unknown key, a wrong type or a missing reference is an
-error naming the place (exit 2). The full format with every key is in the
-module headers: `model/part_file.py`, `model/part.py`, `model/sketch.py`,
-`model/extrude.py`, `model/traces.py` (polyline outlines and bends). Read
-them when you need more than the example shows.
-
-### Sketch (`type = "sketch"`)
-
-`plane` = an origin plane or a planar face of an extrusion above it:
-
-| plane | sketch x | sketch y | an extrusion goes (+distance) |
-|---|---|---|---|
-| `"XY Plane"` | +X | +Y | +Z |
-| `"XZ Plane"` | +X | −Z | +Y |
-| `"YZ Plane"` | +Y | +Z | +X |
-| `"Ext:end"` (the cap at the distance) | as Ext's sketch | as Ext's sketch | out of the body |
-| `"Ext:start"` (the cap on Ext's plane) | as Ext's sketch | **mirrored** | out of the body |
-| `"Ext:side.L3"` (the wall line L3 swept) | along L3 from its start point | out of the wall × x | out of the body |
-| `"Rev:start"` (a revolution under 360°: its sketch's plane) | as Rev's sketch | as Rev's sketch, or mirrored | out of the body |
-| `"Rev:end"` (that plane turned by the angle) | Rev's sketch x turned | its y turned, **mirrored** | out of the body |
-| `"Rev:disc.L3"` (the flat ring a profile line across the axis sweeps) | along L3 from its start | out of the ring × x | out along the axis; the origin on the axis |
-| `"WorkPlane1"` (a work plane, below) | its base's x (turned with it) | its base's y | its normal |
-| `"SMA:face.2.12"` (an import's planar face: body 2 of its list, face 12) | the face's plane x | normal × x | out of the body; the origin at the face's center |
-
-A sketch on `Ext:end` keeps Ext's origin and axes, moved to the cap: draw a
-patch on a substrate's top with the substrate's own x, y. Check positions in
-the report's bounds anyway.
-
-Geometry (each is a `[[feature.<kind>]]` table under the sketch):
-- `point`: `name`, `x`, `y` (formulas). Every line, circle and polyline
-  refers to points by name. Name them meaningfully (P1.., or F1.. for a feed).
-- `line`: `name`, `start`, `end`. A closed chain of lines sharing points is a
-  profile; its key is the sorted line names (`["L1", "L2", "L3", "L4"]`).
-  A rectangle is four lines through four points.
-- `circle`: `name`, `center` (a point), `radius`. Its key: `["C1"]`.
-- `arc`: a circular arc, exact. `kind = "center"`: `center` (a point),
-  `radius`, `from`, `to` (formulas: mm, degrees from the sketch's x; it runs
-  counter-clockwise from `from` to `to`); its ends are points `A1.start` /
-  `A1.end` that lines use (as a curve's). `kind = "three"`: `start`, `end`,
-  `through` (points): from start through `through` to end. An arc and a line
-  on its ends close a profile (`["A1", "L1"]`).
-- `polyline`: a wide line (a microstrip, a trace): `points` (its center
-  line), `widths` (one formula per point; it tapers linearly between),
-  `width` (for points added later), `start` / `end` = `"flat"` | `"round"`,
-  optionally `bends` and `radii` (one per point, the ends' unused):
-  - `"normal"`: a sharp (mitered) corner;
-  - `"arc"`: the center line turns along an arc of radius R (`radii`, default
-    the width), both edges concentric, constant width: a curved microstrip;
-  - `"chamfer"`: the center line cut straight, `radii` = the setback from the
-    point (default the width), constant width;
-  - `"miter"`: only the outer corner cut (the classic microstrip miter),
-    `radii` = the cutting circle's radius around the point (default w/2).
-  Its outline is a profile on its own, key `["<its name>"]`. A bend's radius
-  or setback must fit between its neighbours or the sketch fails, naming it.
-- `curve`: a generator, `name`, `kind`, then its arguments (formulas;
-  the optional ones may be left out). Kinds (the registry is
-  `model/curves.py`; its `ARGS` say what each argument means):
-  - `parabola`: `focal` (f > 0), `from`, `to` (its distance from the axis
-    where it starts and ends, signed), `x0`, `y0` (the vertex, default 0):
-    y = y0 + (x − x0)² / (4f), the axis along the sketch's y. Exact.
-  - `function`: `x`, `y` (formulas of `t` and the parameters), `from`,
-    `to` (the range of t, default 0..1). Inside x and y, `t` is the
-    curve's own variable (it hides a parameter named t there). Trig in
-    degrees: `sin(360 * t)`. One B-spline within 0.1 µm.
-  Its ends are `Name.start` and `Name.end`: use them as line ends to close
-  a profile; a profile's key then names the curve too (`["L1", "Parabola1"]`,
-  from the report). A curve cannot be dragged; Deparametrize does not
-  touch it. `visible = false` hides it (not drawn, not in profiles; its
-  ends stay). The user turns one into a spline by hand (browser row or
-  properties: Convert to Spline, or Copy as Spline, which hides the curve;
-  50 µm by default): lines on its ends and extrusion profiles move to the
-  spline. The report lists each curve with its ends' coordinates.
-- `spline`: an interpolating spline (cubic, smooth, through every point):
-  `name`, `points` (two or more, each once; the first again at the end
-  closes it, smooth all around, then three or more). Its key on its own
-  when closed (`["Spline1"]`); open, it joins lines at its first and last
-  points like a line. Its points drag; in the kernel and STEP it is one
-  exact B-spline. Use it for a free smooth shape the user will shape
-  by hand; for a shape with a formula use a generator.
-- `offset`: the Offset modifier of a line, circle, spline or curve: `of`
-  (its name), `left`, `right` (mm to each side along it from its start to
-  its end; a circle runs counter-clockwise, its left is inside), `start`,
-  `end` = `"flat"` | `"round"` (caps of an open one). The entity becomes a
-  spine (in no profile itself); the band is a profile, key
-  `["<name>.offset"]`; a closed one's inner loop `["<name>.offset.inner"]`
-  (the band's hole, and a profile itself). A side of 0 is the entity
-  exactly (a reflector's parabola stays exact); a side past the radius of a
-  bend fails, naming it. Use it for a thick curve (a reflector's shell, a
-  curved strip, a ring).
-- `construction = true` on a line, circle, curve or spline: a helper, never a profile.
-
-A loop inside another one is a hole of the outer profile (a rectangle with
-a circle inside: the plate with a hole, and the disc, two profiles).
-
-Two kinds of profile keys, both valid in an extrusion:
-- whole loops, as drawn: the plain names (`["L1", "L2", "L3", "L4"]`,
-  `["Feed"]`), nothing cut where loops overlap; the report's `profile`
-  lines. Prefer these: overlapping copper (a feed over a patch) is fused by
-  extruding both whole loops together.
-- pieces where curves cross (what the user picks in the window): an entity
-  cut by others is named by piece from its start, `"L1:0"`, `"L1:1"`... (a
-  circle cut by a line through it: `["C1:0", "L1:1"]` and
-  `["C1:1", "L1:1"]`); the report's `piece` lines. They change when what
-  crosses what changes, so name them only when a part must be cut off.
-
-### Extrusion (`type = "extrude"`)
-
-`sketch`, `profiles` (a list of keys, from the report), `distance` (a formula;
-negative: the other way), `operation` = `"new"` (a new body named `body`) |
-`"join"` | `"cut"` | `"intersect"` (changes the existing body `body`).
-Several profiles in one extrusion become one body (touching ones fuse).
-A cut that removes nothing or everything fails on purpose: check the report.
-A body's name is its id (STEP names the solid after it, customcst reads it):
-name bodies by meaning (`Substrate`, `Patch`, `Ground`). To rename one in the
-file, change it in every feature's `body` and in its `[[body]]` row (the
-window's Rename does that in one step); no quotes in a name.
-
-### Import (`type = "import"`)
-
-The bodies of a STEP file (a connector, a housing): `file` (relative to the
-part file's folder: put it in `<part name>.files/`), `sha256` (its content;
-`""` skips the check), `bodies` (one name per body of the file, in its
-order: the report of a first try names them; customcst-style `"SMA:Pin"`).
-They are bodies like any other (join / cut them, rename them, color them;
-their colors come from the file). A file that changed since its sha256 is
-built but marked failed; the window's Reload accepts it.
-
-### Work plane (`type = "workplane"`)
-
-A plane to sketch on where no origin plane or face is: `base` (an origin
-plane, a planar face `"Ext:end"`, or a work plane above) and either
-`offset` (mm along the base's normal, a formula) or `axis` (an origin axis
-or a sketch line `"Sketch1:L3"`, lying in the base) with `angle` (degrees
-around it, the right hand way); `visible = false` hides it. A feed's plane
-at the focus of a reflector: `base = "XY Plane"`, `offset = "f"`. Or, with
-no base, `points` = three points: a sketch point (`"Sketch1:P3"`: the plane
-follows it), an origin point (`"Center Point"`) or `["x", "y", "z"]`
-(formulas, mm): the origin at the first, x toward the second, the normal the
-right hand way round 1 -> 2 -> 3.
-
-### Revolution (`type = "revolve"`)
-
-`sketch`, `profiles` (as for an extrusion), `axis` = a line of that sketch
-(usually a construction line: `"L5"`), a line of another sketch above
-(`"Sketch2:L1"`), or an origin axis (`"X Axis"`, `"Y Axis"`, `"Z Axis"`), in
-the sketch's plane and not across any profile (touching it is fine);
-`angle` (degrees, a formula, default `"360"`; negative: the other way, by
-the right hand around the axis's direction, a line from its start to its
-end), `operation`, `body` as for an extrusion. A parabolic reflector: the
-parabola from the axis to D/2, an `offset` for its thickness (the parabola
-side exact), a construction line on the axis, revolved 360:
-
-    [[feature]]
-    name = "Dish"
-    type = "revolve"
-    sketch = "Profile"
-    profiles = [["Reflector.offset"]]
-    axis = "L1"
-    angle = "360"
-    operation = "new"
-    body = "Reflector"
-
-### Placement (`[[transform]]`, after the features)
-
-Transforms move the bodies as the features built them (an imported
-connector onto the board's edge), in their order; nothing of the features
-sees them (a hole where a placed part goes: draw it from the same
-parameters). `type = "move"`: `targets` (bodies, and groups as
-`"group:SMA"`), `offset = ["x", "y", "z"]` (formulas, mm), optionally
-`axis` (an origin axis or a sketch line `"Sketch1:L3"`) and `angle`
-(degrees, the right hand way): turned first, then moved. A body of a group
-is placed before its group (local, then global); the other way round fails.
-
-    [[transform]]
-    name = "PlaceSMA"
-    type = "move"
-    targets = ["group:SMA"]
-    axis = "Z Axis"
-    angle = "90"
-    offset = ["board_w / 2", "0", "h"]
-
-`type = "mirror"`: `targets`, `plane` = `"YZ"` | `"XZ"` | `"XY"`: each target
-mirrored in place, in the plane parallel to that one through its own center
-(the middle of its bounds; a group's: of all its bodies, as one). No outside
-planes, no copy: to place a mirrored part, mirror it, then move it.
-
-## Conventions for RF structures
-
-- The board on the XY plane from z = 0 up by `h`; copper on its top as a
-  sketch on `Substrate:end` extruded by `t`; a ground plane as a sketch on
-  `Substrate:start` extruded by `t` (it goes down, out of the substrate;
-  its y is mirrored, see the table).
-- Separate bodies per material: `Substrate`, `Copper` (or `Top`, `Ground`,
-  `Via`...), each with a color. customcst assigns materials by body.
-- A port or feed reaching the board edge: end the line exactly on the edge
-  (`x = "sub_w/2"`), so the report shows the copper's bound equal to the
-  substrate's.
-- Keep the structure centered on the origin unless asked otherwise.
+- Re-read the file first: the user may have changed it, and
+  Deparametrize turns formulas into numbers (do not turn them back
+  without being asked).
+- Do not write into the user's part files without being asked; a new
+  design goes into a new file.
+- Unlocked, the open window reloads the file on every write: never write
+  while it has unsaved edits of the user's (it then only warns, and their
+  Save would overwrite you). Locked, it waits for `reload`.
+- Edit a saved file by its tables (REFERENCE 15, step 7), or regenerate
+  from your builder script.
+- Variants of a sweep without touching the file:
+  `main.py PART --set NAME=FORMULA [--set ...] --export-step out.step --report --json`.
 
 ## When it fails
 
-Read the `FAILED:` reason; it names the feature and the curve. Typical:
-a profile key that does not exist (`profile ... is not a closed region`: the
-chain is open, or the key names the wrong lines: take it from the report),
-a polyline bend that does not fit, a parameter with an error (every feature
-using it fails too), a sketch on a face that is not there (`no face`).
-A failed feature leaves its body out of the STEP; the export says which.
+Read the `FAILED:` reason; it names the feature and the curve. Typical
+causes:
+- a profile key that is not a region: take it from the report;
+- a polyline bend that does not fit;
+- a parameter with an error: every user of it fails;
+- a sketch on a face that is not there;
+- a cut that removes nothing;
+- a transform of a body after its group's.
+
+A failed feature's body is left out of the STEP; the export says which.
+A file that does not read leaves the window as it was: fix it and
+`reload` again.

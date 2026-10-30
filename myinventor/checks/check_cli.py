@@ -87,16 +87,16 @@ def box_bounds(plane, x0, y0, x1, y1, distance, before=()):
 
 
 def check_planes():
-    """The sketch planes' axes as the skill's table states them (.claude/skills/mycad/SKILL.md)."""
+    """The sketch planes' axes as REFERENCE.md's table states them (section 6; the skill points there)."""
     from model.extrude import Extrude
     from model.sketch import Sketch
 
     got = box_bounds("XY Plane", 1, 2, 3, 5, 1)
-    check("skill table: XY Plane: x -> X, y -> Y, + distance -> +Z", got == [[1, 2, 0], [3, 5, 1]], f"{got}")
+    check("REFERENCE table: XY Plane: x -> X, y -> Y, + distance -> +Z", got == [[1, 2, 0], [3, 5, 1]], f"{got}")
     got = box_bounds("XZ Plane", 1, 2, 3, 5, 1)
-    check("skill table: XZ Plane: x -> X, y -> -Z, + distance -> +Y", got == [[1, 0, -5], [3, 1, -2]], f"{got}")
+    check("REFERENCE table: XZ Plane: x -> X, y -> -Z, + distance -> +Y", got == [[1, 0, -5], [3, 1, -2]], f"{got}")
     got = box_bounds("YZ Plane", 1, 2, 3, 5, 1)
-    check("skill table: YZ Plane: x -> Y, y -> Z, + distance -> +X", got == [[0, 1, 2], [1, 3, 5]], f"{got}")
+    check("REFERENCE table: YZ Plane: x -> Y, y -> Z, + distance -> +X", got == [[0, 1, 2], [1, 3, 5]], f"{got}")
 
     def substrate():
         s = Sketch("Sub", plane="XY Plane")
@@ -106,12 +106,12 @@ def check_planes():
         return [s, Extrude("SubExt", profiles=[("L1", "L2", "L3", "L4")], sketch="Sub", distance="1.6",
                            body="Substrate")]
     got = box_bounds("SubExt:end", 1, 2, 3, 5, 0.5, substrate())
-    check("skill table: on Ext:end: the same x, y, up out of the body", got == [[1, 2, 1.6], [3, 5, 2.1]], f"{got}")
+    check("REFERENCE table: on Ext:end: the same x, y, up out of the body", got == [[1, 2, 1.6], [3, 5, 2.1]], f"{got}")
     got = box_bounds("SubExt:start", 1, 2, 3, 5, 0.5, substrate())
-    check("skill table: on Ext:start: x the same, y mirrored, down out of the body (a ground plane)",
+    check("REFERENCE table: on Ext:start: x the same, y mirrored, down out of the body (a ground plane)",
           got == [[1, -5, -0.5], [3, -2, 0]], f"{got}")
     got = box_bounds("SubExt:side.L2", 1, 0.2, 3, 0.6, 2, substrate())
-    check("skill table: on Ext:side.L2 (x = 20, from (20, -20) up): x along L2 from its start, y out of the wall "
+    check("REFERENCE table: on Ext:side.L2 (x = 20, from (20, -20) up): x along L2 from its start, y out of the wall "
           "x x (here +Z), out of the body (+X)", got == [[20, -19, 0.2], [22, -17, 0.6]], f"{got}")
 
 
