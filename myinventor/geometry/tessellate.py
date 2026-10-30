@@ -11,7 +11,9 @@ import numpy as np
 
 from OCP.BRep import BRep_Tool
 from OCP.BRepAdaptor import BRepAdaptor_Curve
+from OCP.BRepBndLib import BRepBndLib
 from OCP.BRepMesh import BRepMesh_IncrementalMesh
+from OCP.Bnd import Bnd_Box
 from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
 from OCP.GCPnts import GCPnts_TangentialDeflection
 from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED, TopAbs_SOLID
@@ -59,21 +61,17 @@ def body_from_shape(name, shape, color=None, linear_deflection=None, angular_def
 
 
 def _deflection_mm(shape):
-    """1e-3 of the diagonal through the edges' end points (cheap; Bnd_Box.Get() is broken in OCP 8)."""
-    points = []
-    explorer = TopExp_Explorer(shape, TopAbs_EDGE)
-    while explorer.More():
-        curve = BRepAdaptor_Curve(TopoDS.Edge(explorer.Current()))
-        for u in (curve.FirstParameter(), curve.LastParameter()):
-            p = curve.Value(u)
-            points.append((p.X(), p.Y(), p.Z()))
-        explorer.Next()
-
-    if not points:
+    """
+    1e-3 of the shape's diagonal (its exact bounds: the ends of its edges
+    are no measure, a torus's or a revolution's closed edges all end where
+    they start, which asked for millions of triangles).
+    """
+    box = Bnd_Box()
+    BRepBndLib.AddOptimal_s(shape, box, False, False)
+    if box.IsVoid():
         return 0.01
-
-    points = np.asarray(points)
-    diagonal = float(np.linalg.norm(points.max(axis=0) - points.min(axis=0)))
+    lo, hi = box.CornerMin(), box.CornerMax()
+    diagonal = float(np.linalg.norm([hi.X() - lo.X(), hi.Y() - lo.Y(), hi.Z() - lo.Z()]))
     return max(diagonal * 1e-3, 1e-4)
 
 

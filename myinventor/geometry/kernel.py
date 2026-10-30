@@ -9,6 +9,8 @@
 #   B-spline as one B-spline edge), minus its holes;
 # - extrude: the faces swept along the sketch's normal by a distance
 #   (negative: the other way), several regions fused into one solid;
+# - revolve: the faces turned around an axis by an angle, fused into one
+#   solid;
 # - boolean: join (fuse), cut or intersect (common) of two shapes, for the
 #   features that change a body;
 # - volume, bounds, solids: exact properties for the checks, the window and
@@ -30,7 +32,7 @@ from OCP.Bnd import Bnd_Box
 from OCP.BRepCheck import BRepCheck_Analyzer
 from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
 from OCP.BRepGProp import BRepGProp
-from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism, BRepPrimAPI_MakeRevol
 from OCP.BRepTools import BRepTools
 from OCP.GC import GC_MakeArcOfCircle, GC_MakeArcOfParabola
 from OCP.GProp import GProp_GProps
@@ -39,7 +41,7 @@ from OCP.ShapeUpgrade import ShapeUpgrade_ShapeDivideContinuity, ShapeUpgrade_Un
 from OCP.TopAbs import TopAbs_SOLID
 from OCP.TopExp import TopExp_Explorer
 from OCP.TopoDS import TopoDS, TopoDS_Shape
-from OCP.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Parab, gp_Pnt, gp_Vec
+from OCP.gp import gp_Ax1, gp_Ax2, gp_Circ, gp_Dir, gp_Parab, gp_Pnt, gp_Vec
 
 from geometry.tessellate import body_from_shape
 
@@ -134,6 +136,30 @@ def extrude(frame, regions, distance):
     for region in regions:
         prism = BRepPrimAPI_MakePrism(region_face(frame, region), vector).Shape()
         solid = prism if solid is None else BRepAlgoAPI_Fuse(solid, prism).Shape()
+    unify = ShapeUpgrade_UnifySameDomain(solid, True, True, False)
+    unify.Build()
+    solid = unify.Shape()
+    _check_valid(solid)
+    return solid
+
+
+def revolve(frame, regions, point, direction, angle):
+    """
+    The regions turned around the axis through `point` (3,) mm along
+    `direction` by `angle` degrees (right hand around it; 360: all the way
+    round), fused: an OCP shape (mm).
+    """
+    if not regions:
+        raise ValueError("no profile")
+    axis = gp_Ax1(gp_Pnt(*map(float, point)), gp_Dir(*map(float, direction)))
+    full = abs(abs(angle) - 360.0) < 1e-9
+    solid = None
+    for region in regions:
+        face = region_face(frame, region)
+        maker = BRepPrimAPI_MakeRevol(face, axis) if full else \
+            BRepPrimAPI_MakeRevol(face, axis, float(np.radians(angle)))
+        turned = maker.Shape()
+        solid = turned if solid is None else BRepAlgoAPI_Fuse(solid, turned).Shape()
     unify = ShapeUpgrade_UnifySameDomain(solid, True, True, False)
     unify.Build()
     solid = unify.Shape()

@@ -66,6 +66,9 @@ def report(part, result):
         elif feature.TYPE == "extrude":
             row.update(sketch=feature["sketch"], profiles=[list(p) for p in feature.profiles],
                        distance=feature["distance"], operation=feature["operation"], body=feature["body"])
+        elif feature.TYPE == "revolve":
+            row.update(sketch=feature["sketch"], profiles=[list(p) for p in feature.profiles], axis=feature["axis"],
+                       angle=feature["angle"], operation=feature["operation"], body=feature["body"])
         features.append(row)
     bodies = []
     if result.shapes:
@@ -119,6 +122,9 @@ def text(data):
         elif f["type"] == "extrude":
             lines.append(f"    {f['operation']} body {f['body']!r} from {f['sketch']} {f['profiles']}, "
                          f"distance {f['distance']}")
+        elif f["type"] == "revolve":
+            lines.append(f"    {f['operation']} body {f['body']!r} from {f['sketch']} {f['profiles']}, "
+                         f"around {f['axis']} by {f['angle']} deg")
     lines.append("bodies:" if data["bodies"] else "bodies: none")
     for b in data["bodies"]:
         lo, hi = b["bounds"]

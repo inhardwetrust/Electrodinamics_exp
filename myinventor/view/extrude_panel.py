@@ -11,7 +11,10 @@
 #              distance is a number other than 0); Cancel (or Esc, or
 #              closing the panel) leaves without one.
 # The same panel edits an extrusion (its distance formula filled in, the
-# title "Edit Extrusion1"). The panel only shows and reports (applied(distance
+# title "Edit Extrusion1"), and serves Revolve (kind="revolve"): Profiles /
+# Axis buttons choose what a click in the view takes (selecting(which)), the
+# axis taken is shown, and Angle (degrees, 0 < |angle| <= 360) replaces
+# Distance; Apply also needs an axis. The panel only shows and reports (applied(distance
 # text), cancelled(), cleared() (Clear), changed() on any edit); the window does the rest, the
 # preview included.
 
@@ -21,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from model.expressions import ExpressionError, evaluate
+from model.revolve import angle_error
 
 ERROR_STYLE = "color: #c81e1e"
 OPERATIONS = (("new", "New solid"), ("join", "Join"), ("cut", "Cut"), ("intersect", "Intersect"))
@@ -31,8 +35,10 @@ class ExtrudePanel(QDialog):
     cancelled = Signal()
     cleared = Signal()
     changed = Signal()
+    selecting = Signal(str)         # "profiles" | "axis": what a click in the view takes (Revolve)
 
-    def __init__(self, parent, values, bodies=(), distance="10", operation=None, body=None, title="Extrude"):
+    def __init__(self, parent, values, bodies=(), distance="10", operation=None, body=None, title="Extrude",
+                 kind="extrude", axis=None):
         """
         values: the parameters' values, for evaluating the distance formula;
         bodies: the names of the bodies there are (to join, cut...);
@@ -43,6 +49,8 @@ class ExtrudePanel(QDialog):
         self.setWindowTitle(title)
         self.setModal(False)
         self.values = values
+        self.kind = kind
+        self._axis = axis                       # the axis taken (its label), or None
         self.profiles = QLabel()
         self.operation = QComboBox()
         for key, text in OPERATIONS:
@@ -62,7 +70,9 @@ class ExtrudePanel(QDialog):
         self.body.currentIndexChanged.connect(self._update)
         self.distance = QLineEdit(distance)
         self.distance.setToolTip("How far along the sketch's normal (mm): a number or a formula of the "
-                                 "parameters; negative: the other way")
+                                 "parameters; negative: the other way" if kind == "extrude" else
+                                 "How far around the axis (degrees): a number or a formula; 360: all the way "
+                                 "round; negative: the other way")
         self.value = QLabel()
         self.distance.textChanged.connect(self._update)
         self.clear_button = QPushButton("Clear")
@@ -74,10 +84,27 @@ class ExtrudePanel(QDialog):
         profiles.addWidget(self.profiles, 1)
         profiles.addWidget(self.clear_button)
         form = QFormLayout()
+        if kind == "revolve":
+            self.pick_profiles = QPushButton("Profiles")
+            self.pick_axis = QPushButton("Axis")
+            for button, which in ((self.pick_profiles, "profiles"), (self.pick_axis, "axis")):
+                button.setCheckable(True)
+                button.setAutoDefault(False)
+                button.clicked.connect(lambda _=False, which=which: self.select(which))
+            self.pick_profiles.setToolTip("Clicks in the view take or drop profiles")
+            self.pick_axis.setToolTip("A click in the view takes the axis: a straight line of any sketch, or an "
+                                      "origin axis")
+            picks = QHBoxLayout()
+            picks.addWidget(self.pick_profiles)
+            picks.addWidget(self.pick_axis)
+            form.addRow("Select:", picks)
         form.addRow("Profiles:", profiles)
+        if kind == "revolve":
+            self.axis = QLabel()
+            form.addRow("Axis:", self.axis)
         form.addRow("Operation:", self.operation)
         form.addRow("Body:", self.body)
-        form.addRow("Distance:", self.distance)
+        form.addRow("Distance:" if kind == "extrude" else "Angle:", self.distance)
         form.addRow("", self.value)
         self.apply_button = QPushButton("Apply")
         self.apply_button.setDefault(True)
@@ -94,6 +121,26 @@ class ExtrudePanel(QDialog):
         self._count = 0
         self._done = False
         self.set_profile_count(0)
+        if kind == "revolve":
+            self.set_axis(axis)
+            self.pick_profiles.setChecked(True)
+
+    def select(self, which):
+        """What a click in the view takes: "profiles" or "axis" (Revolve)."""
+        self.pick_profiles.setChecked(which == "profiles")
+        self.pick_axis.setChecked(which == "axis")
+        self.selecting.emit(which)
+
+    def selecting_axis(self):
+        return self.kind == "revolve" and self.pick_axis.isChecked()
+
+    def set_axis(self, label):
+        """The axis taken (shown by its label), or None."""
+        self._axis = label
+        if self.kind == "revolve":
+            self.axis.setText(label or "click a straight line or an origin axis")
+            self.axis.setStyleSheet("" if label else "color: gray")
+        self._update()
 
     def set_profile_count(self, count):
         self._count = count
@@ -109,21 +156,24 @@ class ExtrudePanel(QDialog):
         return None if self.operation_key() == "new" else self.body.currentText() or None
 
     def distance_value(self):
-        """The distance (mm), or the error text."""
+        """The distance (mm) or the angle (degrees), or the error text."""
         try:
             value = evaluate(self.distance.text(), self.values)
         except ExpressionError as error:
             return str(error)
+        if self.kind == "revolve":
+            return angle_error(value) or value
         return value if value != 0 else "the distance must not be 0"
 
     def _update(self):
         value = self.distance_value()
         ok = not isinstance(value, str)
-        self.value.setText(f"= {value:.6g} mm" if ok else value)
+        self.value.setText((f"= {value:.6g} mm" if self.kind == "extrude" else f"= {value:.6g}°") if ok else value)
         self.value.setStyleSheet("" if ok else ERROR_STYLE)
         self.body.setEnabled(self.operation_key() != "new")
         target_ok = self.operation_key() == "new" or self.body_name() is not None
-        self.apply_button.setEnabled(ok and target_ok and self._count > 0)
+        axis_ok = self.kind != "revolve" or self._axis is not None
+        self.apply_button.setEnabled(ok and target_ok and axis_ok and self._count > 0)
         self.changed.emit()
 
     def _apply(self):

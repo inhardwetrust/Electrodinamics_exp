@@ -183,9 +183,11 @@ regions cut where curves cross (model/profiles.py: one planar graph of all
 the curves, exact pieces, pieces named "L1:0"...; the whole loops keep their
 plain names for files and the AI).
 
+Done since: Revolve (model/revolve.py): profiles around a line of any
+sketch or an origin axis, the axis picked in the view.
+
 Next, in this order:
-1. Revolve.
-3. Manual primitives: arc, poly-arc, Bézier; copy / paste of generators.
+1. Manual primitives: arc, poly-arc, Bézier; copy / paste of generators.
 
 Later: patterns, fillets; RF primitives (a board with a layer stack, a
 line or CPW, a via fence, an SMA template); measure (picking and the A-B

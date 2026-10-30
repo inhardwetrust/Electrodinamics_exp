@@ -105,7 +105,7 @@ from PySide6.QtWidgets import (
 
 from app_settings import AppSettings
 from geometry.body import Geometry
-from geometry.kernel import extrude as extrude_shape, region_face
+from geometry.kernel import extrude as extrude_shape, region_face, revolve as revolve_shape
 from geometry.step_io import export_part
 from geometry.tessellate import body_from_shape
 from model.document import Document
@@ -113,6 +113,7 @@ from model.part import Part, PartError, color_rgb
 from model.part_file import EXTENSION, PartFileError
 from model.rebuild import rebuild
 from model.extrude import Extrude
+from model.revolve import Revolve, axis_of, check_side, onto_axis
 from model.profiles import find_regions, named_regions, whole_regions
 from model.expressions import evaluate
 from model.offsets import CAPS, offset_key
@@ -247,6 +248,7 @@ class MainWindow(QMainWindow):
         self.spline_tolerance = "50"    # µm: how far a spline made from a curve may be off it
         self.extrude_panel = None   # the Extrude command's panel while it runs
         self._extruding = None      # the extrusion being edited by it, or None (a new one)
+        self._sweep = "extrude"     # the command the panel runs: "extrude" | "revolve"
         self._rolled_back = False   # the view shows the bodies from before the edited extrusion
         self.picking_plane = False  # Start 2D Sketch waits for a plane
         self.view = GeometryView()
@@ -334,6 +336,10 @@ class MainWindow(QMainWindow):
         self.extrude_action = self._action("Extrude", self.start_extrude,
                                            tip="Extrude closed regions of a sketch into a new body")
         group.add_action(self.extrude_action)
+        self.revolve_action = self._action("Revolve", self.start_revolve,
+                                           tip="Revolve closed regions of a sketch around an axis (a straight line "
+                                               "of a sketch, or an origin axis)")
+        group.add_action(self.revolve_action)
         group = model.add_group("Inspect")
         self.measure_action = self._action("Measure", self._set_measure, checkable=True,
                                            tip="Measure: click picks point A, Shift + click point B")
@@ -1344,6 +1350,8 @@ class MainWindow(QMainWindow):
         wanted = {self.editing} | {k[1] for k in (self.view.hovered, self.view.selected)
                                    if k is not None and k[0] in ("feature", "entity")}
         wanted |= {name for name in used if self._failed_users(name)}
+        if self.extrude_panel is not None and self._sweep == "revolve":     # an axis may be in any of them
+            wanted |= set(used)
         shown = [(f.name, outputs[f.name]) for f in self.part.features
                  if f.TYPE == "sketch" and f.name in outputs and (f.name not in used or f.name in wanted)]
         # force: after a rebuild (their geometry changed); else only when the set of names changes
@@ -1359,11 +1367,15 @@ class MainWindow(QMainWindow):
         """{sketch name: the first feature that uses it} (an extrusion)."""
         used = {}
         for feature in self.part.features:
-            if feature.TYPE == "extrude":
+            if feature.TYPE in ("extrude", "revolve"):
                 used.setdefault(feature["sketch"], feature.name)
         return used
 
-    def start_extrude(self, edit=None):
+    def start_revolve(self, edit=None):
+        """3D Model > Revolve: as Extrude, with an axis to pick (Axis) and an angle (see start_extrude)."""
+        self.start_extrude(edit, sweep="revolve")
+
+    def start_extrude(self, edit=None, sweep=None):
         """
         3D Model > Extrude: the panel opens and the closed regions of the
         (visible) sketches can be picked in 3D; Apply makes the extrusion.
@@ -1379,6 +1391,8 @@ class MainWindow(QMainWindow):
         self._stop_picking_plane()
         self.finish_sketch()
         feature = self.part.feature(edit) if edit else None
+        self._sweep = feature.TYPE if feature is not None else (sweep or "extrude")
+        verb = "Revolve" if self._sweep == "revolve" else "Extrude"
         if feature is not None:
             sketches = [feature["sketch"]]
         else:
@@ -1398,7 +1412,7 @@ class MainWindow(QMainWindow):
                 items.append((("profile", name, region.key), built.frame, region, fill.vertices / MM, fill.triangles))
         if not items:
             where = f"{feature['sketch']}" if feature is not None else "a sketch"
-            self.show_error(f"Extrude needs a closed region in {where} (lines meeting at their ends, or a circle).")
+            self.show_error(f"{verb} needs a closed region in {where} (lines meeting at their ends, or a circle).")
             return
         self.view.select(None)
         self._on_view_select(None)
@@ -1412,24 +1426,63 @@ class MainWindow(QMainWindow):
             before = rebuild(rolled).bodies
             self.view.set_geometry(Geometry(before), reset=False)
             self._rolled_back = True
+            amount = feature["distance"] if self._sweep == "extrude" else feature["angle"]
+            axis_key = self._axis_key(feature) if self._sweep == "revolve" else None
             panel = ExtrudePanel(self, self.result.values, bodies=[b.name for b in before],
-                                 distance=feature["distance"], operation=feature["operation"],
-                                 body=feature["body"], title=f"Edit {edit}")
+                                 distance=amount, operation=feature["operation"], body=feature["body"],
+                                 title=f"Edit {edit}", kind=self._sweep,
+                                 axis=self._axis_label(axis_key) if axis_key else None)
             self.view.set_profile_selection([("profile", feature["sketch"], key) for key in feature.profiles])
+            if axis_key is not None:
+                self.view.set_axis_key(axis_key)
         else:
-            panel = ExtrudePanel(self, self.result.values, bodies=[b.name for b in self.result.bodies])
+            panel = ExtrudePanel(self, self.result.values, bodies=[b.name for b in self.result.bodies],
+                                 distance="10" if self._sweep == "extrude" else "360", kind=self._sweep,
+                                 title=verb)
             if len(items) == 1:                 # the only profile: taken at once (as Inventor does)
                 self.view.set_profile_selection([items[0][0]])
         panel.applied.connect(self._apply_extrude)
         panel.cancelled.connect(self._end_extrude)
         panel.cleared.connect(self._clear_profiles)
         panel.changed.connect(self._update_preview)
+        panel.selecting.connect(lambda which: self.view.set_axis_mode(which == "axis"))
+        self.view.on_axis = self._axis_picked
         self.extrude_panel = panel
+        self._show_sketches()
         self._profiles_picked(self.view.profile_selection)
         panel.show()
         self.extrude_action.setEnabled(False)
-        self.statusBar().showMessage(f"{'Edit ' + edit if edit else 'Extrude'}: click closed regions to take or "
-                                     "drop them · Apply · Esc: cancel")
+        self.revolve_action.setEnabled(False)
+        what = " · Axis: click a straight line or an origin axis" if self._sweep == "revolve" else ""
+        self.statusBar().showMessage(f"{'Edit ' + edit if edit else verb}: click closed regions to take or "
+                                     f"drop them{what} · Apply · Esc: cancel")
+
+    def _axis_key(self, feature):
+        """The view's key of a revolution's axis: ("entity", sketch, line) or ("datum", name)."""
+        owner, sep, name = feature["axis"].rpartition(":")
+        if sep:
+            return ("entity", owner, name)
+        if any(d.name == name for d in self.part.origin):
+            return ("datum", name)
+        return ("entity", feature["sketch"], name)
+
+    @staticmethod
+    def _axis_label(key):
+        return f"{key[2]} ({key[1]})" if key[0] == "entity" else key[1]
+
+    def _axis_text(self, key, sketch):
+        """An axis key as a revolution names it: "L3" (its own sketch), "Sketch2:L3", or "Y Axis"."""
+        if key[0] == "datum":
+            return key[1]
+        return key[2] if key[1] == sketch else f"{key[1]}:{key[2]}"
+
+    def _axis_picked(self, key):
+        """Revolve's axis taken in the view: shown, and clicks take profiles again."""
+        if self.extrude_panel is None:
+            return
+        self.extrude_panel.set_axis(self._axis_label(key))
+        self.extrude_panel.select("profiles")
+        self._update_preview()
 
     def _clear_profiles(self):
         """The panel's Clear: no profile selected, the preview gone; pick them again."""
@@ -1444,6 +1497,8 @@ class MainWindow(QMainWindow):
                 self.view.set_profile_selection([keys[-1]])
         if self.extrude_panel is not None:
             self.extrude_panel.set_profile_count(len(self.view.profile_selection))
+            if self._sweep == "revolve" and self.view.profile_selection and self.view.axis_key is None:
+                self.extrude_panel.select("axis")       # profiles taken: now the axis
         self._update_preview()
 
     def _update_preview(self):
@@ -1459,30 +1514,49 @@ class MainWindow(QMainWindow):
         built = self.result.outputs[keys[0][1]]
         regions = named_regions(built)
         try:
-            shape = extrude_shape(built.frame, [regions[k[2]] for k in keys], distance)
-        except (ValueError, RuntimeError, KeyError):
+            used = [regions[k[2]] for k in keys]
+            if self._sweep == "revolve":
+                if self.view.axis_key is None:
+                    self.view.set_preview(None)
+                    return
+                axis = axis_of(built, self._axis_text(self.view.axis_key, keys[0][1]), self.part, self.result.outputs)
+                check_side(built, used, axis)
+                shape = revolve_shape(built.frame, onto_axis(built, used, axis), axis[0], axis[1], distance)
+            else:
+                shape = extrude_shape(built.frame, used, distance)
+        except ValueError as error:             # the axis crosses a profile, is not in the plane...
+            self.view.set_preview(None)
+            self.statusBar().showMessage(f"{self._sweep.capitalize()}: {error}", 8000)
+            return
+        except (RuntimeError, KeyError):
             self.view.set_preview(None)
             return
         self.view.set_preview(body_from_shape("preview", shape), cut=panel.operation_key() == "cut")
 
     def _apply_extrude(self, distance):
         keys = list(self.view.profile_selection)
-        panel, edit = self.extrude_panel, self._extruding
+        panel, edit, sweep, axis_key = self.extrude_panel, self._extruding, self._sweep, self.view.axis_key
         operation, target = panel.operation_key(), panel.body_name()
         self._end_extrude()
+        if sweep == "revolve" and axis_key is None:
+            return
         if not keys:
             return
         profiles = [k[2] for k in keys]
+        sketch = keys[0][1]
+        amount = {"distance": distance} if sweep == "extrude" else {"angle": distance,
+                                                                       "axis": self._axis_text(axis_key, sketch)}
         if edit:
             feature = self.part.feature(edit)
             if operation == "new":              # keeps its own name if it made a body already
                 target = feature["body"] if feature["operation"] == "new" else self.part.free_body_name()
             feature.profiles = [tuple(sorted(p)) for p in profiles]
-            feature.values.update(distance=distance, operation=operation, body=target)
+            feature.values.update(operation=operation, body=target, **amount)
         else:
-            feature = Extrude(self.part.free_feature_name("Extrusion"), profiles=profiles, sketch=keys[0][1],
-                              distance=distance, operation=operation,
-                              body=target if operation != "new" else self.part.free_body_name())
+            kind, stem = (Extrude, "Extrusion") if sweep == "extrude" else (Revolve, "Revolution")
+            feature = kind(self.part.free_feature_name(stem), profiles=profiles, sketch=sketch,
+                           operation=operation, body=target if operation != "new" else self.part.free_body_name(),
+                           **amount)
             self.part.add_feature(feature)
         self._commit()
         error = self.result.feature_errors.get(feature.name)
@@ -1496,15 +1570,19 @@ class MainWindow(QMainWindow):
             panel.applied.disconnect()
             panel.cancelled.disconnect()
             panel.changed.disconnect()
+            panel.selecting.disconnect()
             panel.close()
         self.view.set_profile_mode(None)
         self.view.on_profiles = None
+        self.view.on_axis = None
         self.view.set_preview(None)
         if self._rolled_back:                   # the whole model again
             self._rolled_back = False
             self.view.set_geometry(Geometry(self.result.bodies), reset=False)
         self._extruding = None
         self.extrude_action.setEnabled(True)
+        self.revolve_action.setEnabled(True)
+        self._show_sketches()                   # the sketches shown for an axis hide again
         self._on_pick(self.view.picks)
 
     def delete_feature(self, name):
@@ -1540,6 +1618,9 @@ class MainWindow(QMainWindow):
             return actions + [("Delete", lambda: self.delete_feature(name))]
         if kind == "feature" and self.part.feature(name).TYPE == "extrude":
             return [("Edit Extrusion", lambda: self.start_extrude(edit=name)),
+                    ("Delete", lambda: self.delete_feature(name))]
+        if kind == "feature" and self.part.feature(name).TYPE == "revolve":
+            return [("Edit Revolution", lambda: self.start_extrude(edit=name)),
                     ("Delete", lambda: self.delete_feature(name))]
         return []
 
@@ -1630,7 +1711,7 @@ class MainWindow(QMainWindow):
         kind = self.part.feature(key[1]).TYPE
         if kind == "sketch":
             self.edit_sketch(key[1])
-        elif kind == "extrude":
+        elif kind in ("extrude", "revolve"):
             self.start_extrude(edit=key[1])
 
     # =====================================================
@@ -1699,6 +1780,10 @@ class MainWindow(QMainWindow):
             elif feature.TYPE == "extrude":
                 what = {"new": "into", "join": "joined to", "cut": "cut from", "intersect": "intersected with"}
                 tip = (f"extrusion of {feature['sketch']} by {feature['distance']} mm "
+                       f"{what[feature['operation']]} {feature['body']}")
+            elif feature.TYPE == "revolve":
+                what = {"new": "into", "join": "joined to", "cut": "cut from", "intersect": "intersected with"}
+                tip = (f"revolution of {feature['sketch']} by {feature['angle']} deg around {feature['axis']} "
                        f"{what[feature['operation']]} {feature['body']}")
             else:
                 tip = feature.TYPE
@@ -1835,6 +1920,13 @@ class MainWindow(QMainWindow):
                 verb = {"new": "makes", "join": "joins", "cut": "cuts", "intersect": "intersects"}[feature["operation"]]
                 lines += [f"of {feature['sketch']}: {len(feature.profiles)} profile(s)",
                           f"distance = {feature['distance']} mm", f"{verb} {feature['body']}"]
+                body = next((b for b in self.result.bodies if b.name == feature["body"]), None)
+                if body is not None and feature.name in self.result.outputs:
+                    lines.append(f"{body.name} now: {body.volume / MM ** 3:.6g} mm³")
+            elif feature.TYPE == "revolve":
+                verb = {"new": "makes", "join": "joins", "cut": "cuts", "intersect": "intersects"}[feature["operation"]]
+                lines += [f"of {feature['sketch']}: {len(feature.profiles)} profile(s)",
+                          f"around {feature['axis']}", f"angle = {feature['angle']} deg", f"{verb} {feature['body']}"]
                 body = next((b for b in self.result.bodies if b.name == feature["body"]), None)
                 if body is not None and feature.name in self.result.outputs:
                     lines.append(f"{body.name} now: {body.volume / MM ** 3:.6g} mm³")

@@ -57,7 +57,8 @@ Compatibility with Inventor or any other CAD is not a goal.
   `checks/check_sketch_polyline.py`, `checks/check_cli.py`,
   `checks/check_deparametrize.py`, `checks/check_curves.py`,
   `checks/check_sketch_mode_3d.py`, `checks/check_offset.py`,
-  `checks/check_profile_cuts.py`, `checks/check_body_rename.py`.
+  `checks/check_profile_cuts.py`, `checks/check_body_rename.py`,
+  `checks/check_revolve.py`.
 - Without the window: `main.py name.part.toml --report [--json]
   [--export-step out.step]` (`cli.py`: rebuild, report, STEP; no Qt).
   The skill `.claude/skills/mycad/SKILL.md` teaches an AI to draw by
@@ -135,6 +136,12 @@ Compatibility with Inventor or any other CAD is not a goal.
   BREP text and read it back from memory (`BRepTools.Read_s` takes a
   `BytesIO`): `kernel._bspline`. Conics have their own `gp_*` (`gp_Parab`
   + `GC_MakeArcOfParabola`).
+- `BRepPrimAPI_MakeRevol` fails ("command not done") on a profile whose
+  fitted B-spline side ends a hair across the axis: put what lies within
+  1e-6 mm of the axis on it first (`revolve.onto_axis`).
+- Size a tessellation by the exact bounds, not by the edges' ends: a torus
+  or a revolution has only closed edges (their ends coincide), and a 1e-4 mm
+  deflection asked OCC for millions of triangles (a silent crash).
 - `BRepGProp.VolumeProperties_s` is off on a B-spline face of many spans
   (5e-5 by default, ±1.5 % with a tolerance). Split a copy at its knots
   first (`ShapeUpgrade_ShapeDivideContinuity`, C3): `kernel.volume`.

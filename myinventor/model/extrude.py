@@ -135,26 +135,35 @@ class Extrude(Feature):
         return data
 
     def build(self, ctx):
-        sketch = ctx.outputs.get(self["sketch"])
-        if sketch is None or not hasattr(sketch, "frame"):
-            raise ValueError(f"{self['sketch']!r} is not a sketch")
-        regions = named_regions(sketch)
-        missing = [p for p in self.profiles if p not in regions]
-        if missing:
-            raise ValueError(f"profile {' '.join(missing[0])} is not a closed region of {self['sketch']} any more")
+        sketch, used = chosen_regions(ctx, self["sketch"], self.profiles)
         distance = ctx.evaluate(self["distance"], "distance")
-        operation, body = self["operation"], self["body"]
-        if operation == "new" and body in ctx.shapes:
-            raise ValueError(f"a body {body!r} exists already")
-        if operation != "new" and body not in ctx.shapes:
-            raise ValueError(f"no body {body!r} above it to {operation}")
-        used = [regions[p] for p in self.profiles]
         tool = ctx.kernel.extrude(sketch.frame, used, distance)
-        if operation == "new":
-            ctx.shapes[body] = tool
-        else:
-            try:
-                ctx.shapes[body] = ctx.kernel.boolean(operation, ctx.shapes[body], tool)
-            except ValueError as error:
-                raise ValueError(f"{operation} {body}: {error}") from None
-        return ExtrudeResult(tool, body, used, sketch.frame, distance, operation)
+        apply_to_body(ctx, self["operation"], self["body"], tool)
+        return ExtrudeResult(tool, self["body"], used, sketch.frame, distance, self["operation"])
+
+
+def chosen_regions(ctx, sketch_name, profiles):
+    """(the sketch's result, [Region] of these profile keys); ValueError naming a profile that is gone."""
+    sketch = ctx.outputs.get(sketch_name)
+    if sketch is None or not hasattr(sketch, "frame"):
+        raise ValueError(f"{sketch_name!r} is not a sketch")
+    regions = named_regions(sketch)
+    missing = [p for p in profiles if p not in regions]
+    if missing:
+        raise ValueError(f"profile {' '.join(missing[0])} is not a closed region of {sketch_name} any more")
+    return sketch, [regions[p] for p in profiles]
+
+
+def apply_to_body(ctx, operation, body, tool):
+    """A swept tool made into body `body` ("new") or joined / cut / intersected with it, in ctx.shapes."""
+    if operation == "new" and body in ctx.shapes:
+        raise ValueError(f"a body {body!r} exists already")
+    if operation != "new" and body not in ctx.shapes:
+        raise ValueError(f"no body {body!r} above it to {operation}")
+    if operation == "new":
+        ctx.shapes[body] = tool
+        return
+    try:
+        ctx.shapes[body] = ctx.kernel.boolean(operation, ctx.shapes[body], tool)
+    except ValueError as error:
+        raise ValueError(f"{operation} {body}: {error}") from None

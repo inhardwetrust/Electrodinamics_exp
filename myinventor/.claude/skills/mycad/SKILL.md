@@ -210,6 +210,28 @@ name bodies by meaning (`Substrate`, `Patch`, `Ground`). To rename one in the
 file, change it in every feature's `body` and in its `[[body]]` row (the
 window's Rename does that in one step); no quotes in a name.
 
+### Revolution (`type = "revolve"`)
+
+`sketch`, `profiles` (as for an extrusion), `axis` = a line of that sketch
+(usually a construction line: `"L5"`), a line of another sketch above
+(`"Sketch2:L1"`), or an origin axis (`"X Axis"`, `"Y Axis"`, `"Z Axis"`), in
+the sketch's plane and not across any profile (touching it is fine);
+`angle` (degrees, a formula, default `"360"`; negative: the other way, by
+the right hand around the axis's direction, a line from its start to its
+end), `operation`, `body` as for an extrusion. A parabolic reflector: the
+parabola from the axis to D/2, an `offset` for its thickness (the parabola
+side exact), a construction line on the axis, revolved 360:
+
+    [[feature]]
+    name = "Dish"
+    type = "revolve"
+    sketch = "Profile"
+    profiles = [["Reflector.offset"]]
+    axis = "L1"
+    angle = "360"
+    operation = "new"
+    body = "Reflector"
+
 ## Conventions for RF structures
 
 - The board on the XY plane from z = 0 up by `h`; copper on its top as a

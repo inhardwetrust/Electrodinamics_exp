@@ -75,6 +75,11 @@
 # found under the cursor by the ray's hit on its sketch's plane (the nearest
 # such hit wins).
 #
+# Axis (set_axis_mode, within profile mode): a click takes a straight line
+# of any sketch shown, or an origin axis (shown meanwhile): on_axis(key),
+# ("entity", sketch, line) or ("datum", name); it hovers green, the one
+# taken (axis_key) blue. Bodies do not hide lines meanwhile.
+#
 # Preview (set_preview): what a feature command would add (see-through
 # amber) or cut away (red), until it is applied or cancelled.
 #
@@ -781,6 +786,9 @@ class GeometryView:
         self.profile_mode = False
         self.profile_selection = []     # keys of the selected profiles
         self.on_profiles = None         # callback(keys) after a click changed the selection
+        self.axis_mode = False          # profile mode picks an axis instead (set_axis_mode)
+        self.axis_key = None            # the axis taken: ("entity", sketch, line) or ("datum", name)
+        self.on_axis = None             # callback(key) after a click took an axis
         self.shown_profiles = {}        # key -> "hover" | "selected" | None, as drawn
         self.preview_body = None        # the Body shown as a feature's preview, or None
         self.preview_cut = False        # drawn as a cut (red)
@@ -889,10 +897,12 @@ class GeometryView:
 
     def _mouse_move(self, event):
         if self.profile_mode and event.button is None and not event.is_dragging:
-            key = self.profile_at(event.pos)
+            key = self.axis_at(event.pos) if self.axis_mode else self.profile_at(event.pos)
             if key != self.hovered:
                 self.hovered = key
                 self._style_profiles()
+                if self.axis_mode:
+                    self._restyle()
             return
         if self._drag is not None and event.is_dragging and 1 in event.buttons:
             self._drag_move(event.pos)
@@ -988,6 +998,13 @@ class GeometryView:
             return
         if np.linalg.norm(np.array(event.pos[:2], float) - press) >= CLICK_PX:
             return                      # a drag: rotated or panned
+        if self.profile_mode and self.axis_mode:
+            key = self.axis_at(event.pos)
+            if key is not None:
+                self.set_axis_key(key)
+                if self.on_axis is not None:
+                    self.on_axis(key)
+            return
         if self.profile_mode:
             key = self.profile_at(event.pos)
             if key is not None:
@@ -1175,6 +1192,32 @@ class GeometryView:
             behind = self._picker.ray_hit(transform, pos, self._visible_bodies())
         hit = pick_datum(transform, pos, rows, behind)
         return hit[0] if hit is not None else None
+
+    def axis_at(self, pos):
+        """An axis under `pos`: ("entity", sketch, line) of a shown sketch's line, ("datum", name) of an axis."""
+        rows = [(("datum", d.name), "axis", d.origin / SCENE_UNIT, d.direction, d.u, d.v, self._datums[d.name].half)
+                for d in self._datum_list if d.kind == "axis"]
+        for visual in self._sketch_geometry.values():
+            lines = set(visual.line_names)
+            rows += [row for row in visual.rows(editing=True) if row[0][2] in lines and row[1] == "axis"]
+        if not rows:
+            return None
+        hit = pick_datum(self._transform(), pos, rows, np.inf)
+        return hit[0] if hit is not None else None
+
+    def set_axis_mode(self, on):
+        """Profile mode picks an axis (origin axes shown meanwhile), or profiles again."""
+        self.axis_mode = bool(on)
+        self._forced = {d.name for d in self._datum_list if d.kind == "axis"} if on else set()
+        self.hovered = None
+        self._style_profiles()
+        self._restyle()
+
+    def set_axis_key(self, key):
+        """The axis taken (drawn selected), or None."""
+        self.axis_key = key
+        self.selection = [] if key is None else [key]
+        self._restyle()
 
     def key_at(self, pos):
         """What a click at `pos` selects: a datum, else a body's face, else None."""
@@ -1445,6 +1488,9 @@ class GeometryView:
         self.profile_mode = items is not None
         self.profile_selection = []
         self.hovered = None
+        if items is None:                       # leaving: no axis either
+            self.axis_mode, self.axis_key, self._forced = False, None, set()
+            self.selection = []
         for key, frame, region, vertices, triangles in items or []:
             mesh = scene.visuals.Mesh(vertices=np.asarray(vertices, np.float32), faces=np.asarray(triangles),
                                       color=PROFILE_HOVER_COLOR, parent=self.root)
