@@ -155,6 +155,36 @@ and diameter, a spiral, a meander), and changes when they change.
   profile, like a polyline's outline), and Revolve around an axis: a
   parabolic reflector is a parabola, thickened, revolved.
 
+## Control by Claude (the window's control channel)
+
+Claude drives the user's open window, so the user sees each step (the
+same protocol as customcst's: one client, `../customcst/tools/ui.py
+--app mycad`, drives both).
+- `view/control.py` `ControlServer`: a QTcpServer on 127.0.0.1, a free
+  port, a random token, both in `control.json` beside the app settings
+  (`MYCAD_CONTROL` overrides; tests move it with `MYCAD_SETTINGS`). One
+  JSON line per request and per answer, handled in the GUI thread. The
+  last window opened owns the file; closing removes it if still its.
+- Commands: `describe`, `status` (file, modified, locked, the sketch
+  edited, the panel open, and `cli.report()`), `screenshot`, `lock`,
+  `unlock`, `open`, `reload`, `set NAME=FORMULA ...` (one undo step, the
+  report back; a formula that does not evaluate changes nothing), `save`,
+  `export_step`, `view`, `fit`, `select kind name`, `undo`, `redo`. No
+  command opens a dialog: the window's `*_quiet` methods return the error
+  text.
+- Two modes. Normal: the user works; Claude reads (`status`,
+  `screenshot`), every change is refused. Locked (`lock`, or `main.py
+  PART --locked`): a yellow banner, the ribbon and the side panels off,
+  the window's shortcuts cleared (a disabled ribbon leaves its actions'
+  shortcuts working: they are the window's), the 3D view only turns,
+  pans, zooms and hovers (`GeometryView.look_only`), the disk watch does
+  not reload (Claude writes the file and sends `reload`). "Take control
+  back" unlocks at once; Claude's next change is refused.
+- `lock` is refused while the user is in the middle of something (a
+  sketch, a command panel, a drag, a dialog, a field being edited) or has
+  unsaved edits (Claude may write the file: they save or discard first).
+- Check: `checks/check_control.py`.
+
 ## Where to look
 
 - **build123d / CadQuery**: Python APIs over the same OCP. Study how they

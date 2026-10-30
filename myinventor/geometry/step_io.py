@@ -11,6 +11,12 @@
 #     filled into the file's MANIFOLD_SOLID_BREP('...' entities afterwards
 #     (a body of several solids: each solid carries the body's name, and
 #     customcst merges solids named like their part back into one body);
+#   - names are text of ISO 10303-21: an apostrophe doubled, a backslash
+#     doubled, a character beyond ASCII escaped (\X\F6 for ö, \X2\041F\X0\
+#     for П): written raw (UTF-8) they read back mangled (VolumenkÃ¶rper16);
+#     OCC's writer takes the names it writes (PRODUCT) as UTF-8 text but
+#     writes them raw, so the whole file is escaped afterwards (a STEP file
+#     is ASCII: anything beyond is a name);
 #   - the document unit is millimeters, like the shapes;
 #   - OCCT prints transfer statistics to stdout: silenced.
 # The file is written next to its place and moved over it at the end, so a
@@ -39,6 +45,22 @@ from geometry.kernel import solid_count, volume
 
 MM = 1e-3
 SOLID_NAME = re.compile(r"MANIFOLD_SOLID_BREP\('[^']*'")
+NON_ASCII = re.compile(r"[^\x00-\x7f]+")
+
+
+def _quoted(name):
+    r"""A name inside a STEP string's quotes (ISO 10303-21): ' and \ doubled; beyond ASCII: _escape, later."""
+    return name.replace("\\", "\\\\").replace("'", "''")
+
+
+def _escape(char):
+    r"""One character beyond ASCII as ISO 10303-21 writes it: \X\HH (Latin-1), \X2\HHHH\X0\, \X4\...\X0\."""
+    code = ord(char)
+    if code <= 0xFF:
+        return "\\X\\%02X" % code
+    if code <= 0xFFFF:
+        return "\\X2\\%04X\\X0\\" % code
+    return "\\X4\\%08X\\X0\\" % code
 
 
 def _silence_occt():
@@ -99,7 +121,7 @@ def write_step(path, bodies):
             builder.Add(compound, solid)
         names += [name] * len(solids)
         label = shape_tool.AddShape(compound, False)
-        TDataStd_Name.Set_s(label, TCollection_ExtendedString(name))
+        TDataStd_Name.Set_s(label, TCollection_ExtendedString(name, True))     # True: the str is UTF-8
         if color is not None:
             color_tool.SetColor(label, Quantity_Color(*map(float, color), Quantity_TOC_RGB),
                                 XCAFDoc_ColorType.XCAFDoc_ColorGen)
@@ -116,8 +138,9 @@ def write_step(path, bodies):
         if len(SOLID_NAME.findall(text)) != len(names):
             raise IOError("unexpected STEP output: the solid count differs")
         it = iter(names)
-        text = SOLID_NAME.sub(lambda m: "MANIFOLD_SOLID_BREP('" + next(it).replace("'", "") + "'", text)
-        with open(temp, "w", encoding="utf-8") as f:
+        text = SOLID_NAME.sub(lambda m: "MANIFOLD_SOLID_BREP('" + _quoted(next(it)) + "'", text)
+        text = NON_ASCII.sub(lambda m: "".join(map(_escape, m.group(0))), text)
+        with open(temp, "w", encoding="ascii") as f:
             f.write(text)
         _check_back(temp, bodies)
         os.replace(temp, path)

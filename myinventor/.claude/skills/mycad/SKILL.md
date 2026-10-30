@@ -49,6 +49,41 @@ hand, no OCC scripts): write the part file, check it, export.
 Do not write into the user's existing part files without being asked; a new
 design goes into a new file.
 
+## Driving the open window
+
+When the user watches the part in the myCad window, drive the window
+itself through its control channel (customcst's client, one for both
+apps; run from this folder):
+
+    ../.venv/Scripts/python.exe ../customcst/tools/ui.py --app mycad status
+    ../.venv/Scripts/python.exe ../customcst/tools/ui.py --app mycad lock "widening the patch"
+    ../.venv/Scripts/python.exe ../customcst/tools/ui.py --app mycad set patch_w=18 "feed_y=-14 - 2"
+    ../.venv/Scripts/python.exe ../customcst/tools/ui.py --app mycad save
+    ../.venv/Scripts/python.exe ../customcst/tools/ui.py --app mycad unlock "look at the patch: 18 mm now"
+
+- `status` (always allowed): the file, `modified`, `locked`, and
+  `report`: the same as `--report --json`. `describe` lists the commands.
+- `lock` first: the user then only looks (a yellow banner; "Take control
+  back" is theirs). It is refused while they are in a sketch, a command
+  panel or a dialog, or have unsaved edits: ask them to finish or save.
+- Then change by `set NAME=FORMULA ...` (several at once: one undo step;
+  the answer is the new report: check its numbers as in step 3; a
+  formula that does not evaluate changes nothing), or by writing the
+  part file and sending `reload` (locked, the window does not reload by
+  itself). Show what changed: `select kind=feature name=CopperExt`,
+  `view name=top`, `fit`, `screenshot path=...` (absolute paths).
+- `save` writes the file (and its STEP if the user turned STEP on Save
+  on); `export_step path=...` writes the STEP where customcst reads it.
+  Save before `unlock`: unsaved edits stay in the window, not on disk.
+- `unlock "what to look at"` when done.
+- An answer "not in control": the user took control back. Stop and ask;
+  never lock again by yourself. Exit code 2: no window open: work on the
+  file with the CLI as above.
+
+Variants of a sweep without touching the file: `main.py PART --set
+NAME=FORMULA [--set ...] --export-step out.step --report --json` (the
+formula for that run only; an unknown name: exit 2).
+
 ## Make it editable: parameters
 
 Put every meaningful size into a `[[parameter]]` (with a `comment`) and use

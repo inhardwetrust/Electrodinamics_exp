@@ -88,6 +88,14 @@
 # (view/geometry_view.py), shown with the distance in the status bar.
 #
 # Dialogs go through ask_* methods, so the checks can answer them.
+#
+# Claude drives the window through its control channel (view/control.py,
+# the client ../customcst/tools/ui.py --app mycad). Locked (set_locked),
+# Claude is in control: a yellow banner says so, its button gives the
+# control back; the ribbon, the browser and the panels are off and the
+# window's shortcuts cleared; the 3D view only turns, pans, zooms and
+# hovers (GeometryView.look_only); the disk watch does not reload. The
+# commands use the *_quiet methods: no dialog, an error text instead.
 # The window's size and the recent files are app settings (app_settings.py,
 # MYCAD_SETTINGS for tests).
 
@@ -100,8 +108,8 @@ import numpy as np
 from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QTimer
 from PySide6.QtGui import QAction, QBrush, QColor, QGuiApplication, QIcon, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QColorDialog, QComboBox, QDockWidget, QFileDialog, QFormLayout, QInputDialog, QLineEdit, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton, QTabWidget,
-    QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QApplication, QCheckBox, QColorDialog, QComboBox, QDockWidget, QFileDialog, QFormLayout, QInputDialog, QLineEdit, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton, QTabWidget,
+    QSizePolicy, QToolBar, QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from app_settings import AppSettings
@@ -119,7 +127,7 @@ from model.workplane import WorkPlane
 from model.importstep import Import, body_names
 from model.transforms import GROUP, Mirror, Move, expand
 from model.profiles import find_regions, named_regions, whole_regions
-from model.expressions import evaluate
+from model.expressions import evaluate, evaluate_parameters
 from model.offsets import CAPS, offset_key
 from model.sketch import OFFSET_KINDS, Sketch, SketchPolyline, SketchSpline
 from model.curves import KINDS, CurveError
@@ -137,6 +145,7 @@ BEND_PARAMETER = {
     "chamfer": ("Setback", "the width (along the center line)"),
     "miter": ("Miter radius", "half the width (a full bevel)"),
 }
+from view.control import ControlServer
 from view.extrude_panel import ExtrudePanel
 from view.workplane_panel import WorkPlanePanel
 from view.move_panel import MirrorPanel, MovePanel
@@ -274,6 +283,8 @@ class MainWindow(QMainWindow):
         self._sweep = "extrude"     # the command the panel runs: "extrude" | "revolve"
         self._rolled_back = False   # the view shows the bodies from before the edited extrusion
         self.picking_plane = False  # Start 2D Sketch waits for a plane
+        self.locked = False         # Claude is in control (set_locked, view/control.py)
+        self._shortcuts = {}        # while locked: each window action's shortcuts, put back on unlock
         self.view = GeometryView()
         self.view.on_pick = self._on_pick
         self.view.on_select = self._on_view_select
@@ -288,6 +299,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.view.canvas.native)
         self.view_buttons = ViewButtons(self.view)        # standard views over the 3D view
 
+        self._build_lock_bar()
         self._build_ribbon()
         self._build_browser()
         self._set_document(Document())
@@ -302,6 +314,9 @@ class MainWindow(QMainWindow):
         self.disk_timer.setInterval(DISK_POLL_MS)
         self.disk_timer.timeout.connect(self.poll_disk)
         self.disk_timer.start()
+        self.control = ControlServer(self)      # Claude's commands (../customcst/tools/ui.py --app mycad)
+        if self.control.error:
+            self.statusBar().showMessage(f"control channel off: {self.control.error}", 10000)
 
     # =====================================================
     # Layout
@@ -321,6 +336,23 @@ class MainWindow(QMainWindow):
         action.setToolTip(tip or text)
         self.addAction(action)
         return action
+
+    def _build_lock_bar(self):
+        """While Claude is in control (set_locked): a banner over the window (customcst's look)."""
+        self.lock_bar = bar = QToolBar("Control")
+        bar.setMovable(False)
+        bar.setStyleSheet("QToolBar { background: #f2c94c; } QLabel { color: #1a1a1a; font-weight: bold; }")
+        self.lock_label = QLabel()
+        bar.addWidget(self.lock_label)
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        bar.addWidget(spacer)
+        self.take_back_button = take = QPushButton("Take control back")
+        take.setToolTip("The window is yours again; Claude's next command that changes something is refused")
+        take.clicked.connect(lambda: self.set_locked(False))
+        bar.addWidget(take)
+        self.addToolBar(bar)
+        bar.setVisible(False)
 
     def _build_ribbon(self):
         self.ribbon = Ribbon()
@@ -681,8 +713,8 @@ class MainWindow(QMainWindow):
         reported (Save asks before overwriting it); a file that does not read
         is reported and the part stays as it is.
         """
-        if not self.doc.changed_on_disk():
-            return
+        if self.locked or not self.doc.changed_on_disk():
+            return                              # locked: Claude reloads by command
         stamp = self.doc.disk_stamp()
         if stamp is None or stamp == self._disk_seen:
             return
@@ -788,12 +820,19 @@ class MainWindow(QMainWindow):
         return self._write(path) if path else False
 
     def _write(self, path):
+        error = self.write_quiet(path)
+        if error:
+            self.show_error(f"Cannot save the part:\n{error}")
+            return False
+        return True
+
+    def write_quiet(self, path):
+        """Saves to path (and the STEP if STEP on Save is on): the error text, or None."""
         try:
             self._carry_imports(path)
             self.doc.save(path)
         except (OSError, PartFileError) as error:
-            self.show_error(f"Cannot save the part:\n{error}")
-            return False
+            return str(error)
         self._remember(self.doc.path)
         self._fill_tree()                   # the part's name comes from the file
         self._update_title()
@@ -806,7 +845,7 @@ class MainWindow(QMainWindow):
             except (OSError, ValueError) as error:
                 message += f"; the STEP was not written: {error}"
         self.statusBar().showMessage(message, 10000)
-        return True
+        return None
 
     # =====================================================
     # STEP import
@@ -2600,6 +2639,127 @@ class MainWindow(QMainWindow):
             self.start_extrude(edit=key[1])
 
     # =====================================================
+    # Control by Claude (view/control.py): locked, the user only looks
+    # =====================================================
+
+    def set_locked(self, locked, message=""):
+        """
+        Locked: the ribbon, the browser and the panels are off, the window's
+        shortcuts cleared (a disabled ribbon leaves them working), the 3D
+        view only for looking; a banner says who is in control, its button
+        gives the control back to the user.
+        """
+        if locked:
+            self.lock_label.setText(f"  Claude is in control: {message}" if message else "  Claude is in control")
+        if locked == self.locked:
+            return
+        self.locked = locked
+        if locked:
+            self._shortcuts = {action: action.shortcuts() for action in self.actions()}
+            for action in self._shortcuts:
+                action.setShortcuts([])
+        else:
+            for action, shortcuts in self._shortcuts.items():
+                action.setShortcuts(shortcuts)
+            self._shortcuts = {}
+        for widget in (self.ribbon, self.side_tabs):
+            widget.setEnabled(not locked)
+        self.view.look_only = locked
+        self.lock_bar.setVisible(locked)
+
+    def open_panel(self):
+        """The command panel open (extrude, revolve, workplane, move, mirror), or None."""
+        if self.extrude_panel is not None:
+            return self._sweep
+        if self.workplane_panel is not None:
+            return "workplane"
+        if self.move_panel is not None:
+            return type(self.move_panel).__name__.replace("Panel", "").lower()
+        return None
+
+    def user_busy(self):
+        """What the user is in the middle of (lock waits), or "" if nothing."""
+        if self.editing is not None:
+            return f"editing the sketch {self.editing}"
+        panel = self.open_panel()
+        if panel:
+            return f"the {panel} panel is open"
+        if self.picking_plane or self._picking_axis:
+            return "picking in 3D"
+        if self._dragged is not None or self.view._drag is not None or self.view._box is not None:
+            return "dragging"
+        if QApplication.activeModalWidget() is not None or QApplication.activePopupWidget() is not None:
+            return "a dialog or a menu is open"
+        if self.tree.state() == QAbstractItemView.EditingState \
+                or self.parameters.table.state() == QAbstractItemView.EditingState:
+            return "editing a field"
+        return ""
+
+    def open_quiet(self, path):
+        """Opens a part without dialogs: the error text (the window as it was), or None."""
+        if self.doc.modified:
+            return "the open part has unsaved edits: save them first"
+        try:
+            doc = Document.open(path)
+        except PartFileError as error:
+            return f"does not read: {error}"
+        self._set_document(doc)
+        self._remember(doc.path)
+        return None
+
+    def reload_quiet(self):
+        """The open file again (one undo step), the camera kept: the error text, or None."""
+        if self.doc.path is None:
+            return "the part has no file"
+        try:
+            self.doc.reload()
+        except PartFileError as error:
+            return f"does not read, the part kept as it was: {error}"
+        self._disk_seen = None
+        self._refresh()
+        return None
+
+    def save_quiet(self):
+        """Save without dialogs: the error text, or None."""
+        if self.doc.path is None:
+            return "the part has no file yet (open one; the user saves a new part once)"
+        if self.doc.changed_on_disk():
+            return ("the file changed on disk since it was read: reload it first (that drops the edits "
+                    "made since), or write the file and reload")
+        return self.write_quiet(self.doc.path)
+
+    def set_parameters_quiet(self, formulas):
+        """
+        Parameter formulas {name: text} as one undo step, then rebuilt. A
+        name that is not a parameter, or a formula that does not evaluate:
+        the error text, nothing changed.
+        """
+        names = [p.name for p in self.part.parameters]
+        missing = [name for name in formulas if name not in names]
+        if missing:
+            return f"no parameter named {missing}; parameters: {names}"
+        before = evaluate_parameters([(p.name, p.formula) for p in self.part.parameters])[1]
+        for name, formula in formulas.items():
+            self.part.parameter(name).formula = formula
+        errors = evaluate_parameters([(p.name, p.formula) for p in self.part.parameters])[1]
+        broken = {name: error for name, error in errors.items() if name in formulas or name not in before}
+        if broken:
+            self.doc.revert()
+            return "; ".join(f"{name}: {error}" for name, error in broken.items()) + " (nothing changed)"
+        self._commit()
+        return None
+
+    def select_row(self, key):
+        """Selects a browser row as a click does (its highlight); False if there is none."""
+        row = self._rows.get(key)
+        if row is None:
+            return False
+        self.tree.clearSelection()
+        self.tree.setCurrentItem(row)
+        self.tree.scrollToItem(row)
+        return True
+
+    # =====================================================
     # Parameters
     # =====================================================
 
@@ -3506,6 +3666,7 @@ class MainWindow(QMainWindow):
         if not self._may_leave():
             event.ignore()
             return
+        self.control.close()
         normal = self.normalGeometry() if self.isMaximized() else self.geometry()
         self.app_settings.window = {
             "x": normal.x(), "y": normal.y(), "width": normal.width(), "height": normal.height(),

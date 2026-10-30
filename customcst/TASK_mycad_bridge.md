@@ -45,13 +45,17 @@ C. The skill: DONE. `.claude/skills/antenna-design/SKILL.md` section 8
 
 ## myCad's part
 
-- `--set NAME=FORMULA` in the CLI (for the batch form).
+- `--set NAME=FORMULA` in the CLI (for the batch form): DONE
+  (`main.py PART --set NAME=FORMULA ... --export-step X`; an unknown
+  name: exit 2; `checks/check_cli.py`).
 - Non-ASCII body names in the exported STEP: myCad writes them raw
   (UTF-8) into `MANIFOLD_SOLID_BREP('...')`, customcst reads
   `Volumenkörper16` back as `VolumenkÃ¶rper16`. ISO 10303-21 wants them
   encoded (`\X\F6`, or `\X2\00F6\X0\`); the connector's own file has
   `\X\F6` and reads right. To fix in myCad's `geometry/step_io.py`, with
-  a check that reads the name back through customcst.
+  a check that reads the name back through customcst. DONE: the file is
+  escaped as a whole (`\X\F6`, `\X2\041F\X0\`), customcst reads
+  `Volumenkörper16` back (`checks/check_step_export.py`).
 
 ## Checked here
 

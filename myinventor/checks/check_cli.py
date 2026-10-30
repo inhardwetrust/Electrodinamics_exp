@@ -12,6 +12,9 @@
 #   - a parameter change in the file moves everything (the substrate wider);
 #   - a failing feature: exit 1, the report names it, the STEP still has
 #     the bodies built; an unreadable file: exit 2, nothing written;
+#   - --set NAME=FORMULA (as a process): the variant built and exported
+#     (the substrate 50 wide, the feed to its edge), the file unchanged; an
+#     unknown name or no '=': exit 2, nothing written;
 #   - main.py runs it as a process, without Qt.
 #
 #   python checks/check_cli.py
@@ -174,6 +177,28 @@ def main():
     check("main.py --report as a process: exit 0, the report, no Qt loaded",
           proc.returncode == 0 and "bodies:" in proc.stdout and "PySide6" not in proc.stderr,
           proc.stdout[-200:] + proc.stderr[-200:] if proc.returncode else "")
+
+    def main_py(*args):
+        proc = subprocess.run([sys.executable, os.path.join(ROOT, "main.py"), *args],
+                              capture_output=True, text=True, encoding="utf-8", errors="replace")
+        return proc.returncode, proc.stdout + proc.stderr
+
+    path = copy()
+    before = open(path, "rb").read()
+    variant = os.path.join(TMP, "zz_sub_w_50.step")
+    code, out = main_py(path, "--set", "sub_w=50", "--set", "h = 2", "--export-step", variant, "--report", "--json")
+    data = json.loads(out[:out.rindex("}") + 1]) if "{" in out else {}
+    sizes = {b["name"]: b["size"] for b in data.get("bodies", [])}
+    check("--set sub_w=50 --set 'h = 2': the variant (substrate 50 x 40 x 2), exported", code == 0
+          and sizes.get("Substrate") == [50, 40, 2] and os.path.getsize(variant) > 1000
+          and next(p for p in data["parameters"] if p["name"] == "sub_w")["formula"] == "50", f"{code} {sizes}")
+    check("  the part file unchanged", open(path, "rb").read() == before)
+    other = os.path.join(TMP, "never2.step")
+    code, out = main_py(path, "--set", "width=3", "--export-step", other)
+    check("--set of no parameter: exit 2, the parameters named, nothing written", code == 2 and "sub_w" in out
+          and not os.path.exists(other), out)
+    code, out = main_py(path, "--set", "sub_w", "--report")
+    check("--set without '=': exit 2", code == 2 and "NAME=FORMULA" in out, out)
 
     print("FAILED: " + ", ".join(FAILED) if FAILED else "all checks passed")
     return 1 if FAILED else 0

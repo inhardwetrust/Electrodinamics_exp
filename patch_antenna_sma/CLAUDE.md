@@ -12,10 +12,13 @@ Russian; files here are in English.
       ../.venv/Scripts/python.exe ../myinventor/main.py model/patch.part.toml --report [--json] \
           [--export-step model/patch.step] [--set NAME=FORMULA ...]
 
-  (`--set` overrides a parameter for that run only; being added.) The user
-  keeps the part open in the myCad window: it reloads on every write, so
-  write the file in meaningful steps (not 30 tiny ones), and never while
-  the window has unsaved edits of theirs (the window then only warns: ask).
+  (`--set` overrides a parameter for that run only.) The user keeps the
+  part open in the myCad window: drive that window through its control
+  channel (`../customcst/tools/ui.py --app mycad lock / set / save /
+  export_step / unlock`, the skill's "Driving the open window"), so they
+  see each step. Without the lock the window reloads the file on every
+  write: then write it in meaningful steps (not 30 tiny ones), and never
+  while it has unsaved edits of theirs (the window then only warns: ask).
 - customcst (`../customcst/`): read its skill
   `../customcst/.claude/skills/antenna-design/SKILL.md` (goal, sweeps,
   convergence, the final run, the server rules) and the bridge section

@@ -61,14 +61,21 @@ Compatibility with Inventor or any other CAD is not a goal.
   `checks/check_revolve.py`, `checks/check_workplane.py`, `checks/check_import.py`,
   `checks/check_groups.py`, `checks/check_move.py`, `checks/check_mirror.py`,
   `checks/check_import_faces.py`, `checks/check_feature_highlight.py`,
-  `checks/check_arc.py`.
+  `checks/check_arc.py`, `checks/check_control.py`.
 - Without the window: `main.py name.part.toml --report [--json]
   [--export-step out.step]` (`cli.py`: rebuild, report, STEP; no Qt).
   The skill `.claude/skills/mycad/SKILL.md` teaches an AI to draw by
   writing part files and checking them this way; its example is
   `examples/patch_antenna.part.toml` (check_cli.py checks both, including
   the skill's table of sketch-plane axes). The window reloads its open file
-  when another program changes it (`MainWindow.poll_disk`).
+  when another program changes it (`MainWindow.poll_disk`). `--set
+  NAME=FORMULA` changes a parameter for that run only (sweep variants).
+- Claude drives the open window through its control channel
+  (`view/control.py`, the client `../customcst/tools/ui.py --app mycad`,
+  shared with customcst; DESIGN.md "Control by Claude"): `lock` (the user
+  only looks), `set`, `save`, `reload`, `view`... `unlock`. Window
+  actions' shortcuts stay alive when their ribbon is disabled: the lock
+  clears them.
 - A check that imports helpers from another check runs that module's top
   too, which points `MYCAD_SETTINGS` to its own temp file (still never the
   user's): read the path with `app_settings.settings_path()`.

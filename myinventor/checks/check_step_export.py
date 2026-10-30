@@ -10,6 +10,8 @@
 #     exactly, Post on top (z up to 8); no temporary file is left;
 #   - a body of two separate solids (a join of disjoint profiles) reads back
 #     as one body;
+#   - names beyond ASCII (Volumenkörper16, Плата'1) are escaped as ISO
+#     10303-21 wants (the file stays ASCII) and read back as written;
 #   - the window:
 #       File > Export (Ctrl+E) asks for a path and writes there;
 #       with no body it says so;
@@ -127,6 +129,17 @@ def check_writer():
     got = customcst_reads(path)
     check("a body of two separate solids reads back as one body", list(got) == ["Pads"]
           and math.isclose(got["Pads"]["volume"], 4 + math.pi, rel_tol=1e-2), f"{got}")
+
+    # Names beyond ASCII (an imported connector's Volumenkörper16): escaped as ISO 10303-21 wants
+    bodies = bodies_of(build(Part()))
+    names = ["Volumenkörper16", "Плата'1"]
+    path = os.path.join(TMP, "names.step")
+    write_step(path, [(name, shape, color) for name, (_, shape, color) in zip(names, bodies)])
+    raw = open(path, "rb").read()
+    got = customcst_reads(path)
+    check(r"names beyond ASCII: the file is ASCII, ö as \X\F6, П as \X2\041F\X0\ ",
+          raw.isascii() and rb"Volumenk\X\F6rper16" in raw and rb"\X2\041F\X0\ ".strip() in raw)
+    check("  customcst reads them back as written (an apostrophe too)", sorted(got) == sorted(names), f"{list(got)}")
 
 
 def main():

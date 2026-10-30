@@ -97,6 +97,9 @@
 # selecting; middle drags still turn the camera. Delete (on_delete) is for
 # the window: it deletes the selection.
 #
+# look_only (Claude is in control, view/control.py): the camera turns,
+# pans and zooms and hover shows, but no click, key or drag does anything.
+#
 # Measure mode (set_measure): a left click without a drag (the cursor moved
 # less than CLICK_PX) picks a point of the model (view/picking.py: a CAD
 # vertex, a point on an edge, or on a face). Two points, A and B:
@@ -747,6 +750,7 @@ class GeometryView:
         self.editing_sketch = None      # name of the sketch in sketch mode
         self.tool = None                # a drawing tool (view/sketch_tools.py) or None
         self.on_delete = None           # callback(): the Delete key
+        self.look_only = False          # Claude is in control: the camera turns, hover shows, nothing else
         self.on_drag = None             # callback(key, (2,) mm moved or None, "start" | "move" | "end" | "cancel")
         self.on_insert = None           # callback(key, (2,) sketch mm): a double click on a sketch entity
         self._drag = None               # a left drag on a sketch entity: {"keys", "start" (2,) mm, "started"}
@@ -895,6 +899,8 @@ class GeometryView:
         self.canvas.events.key_press.connect(self._escape)
 
     def _escape(self, event):
+        if self.look_only:
+            return
         if event.key == keys.DELETE and self.on_delete is not None and self.tool is None:
             self.on_delete()
             event.handled = True
@@ -957,6 +963,10 @@ class GeometryView:
                 self.on_hover(key)
 
     def _mouse_press(self, event):
+        if self.look_only:                      # the camera still turns (its own events), nothing is picked
+            self._press = self._right_press = None
+            self._drag = self._box = None
+            return
         self._press = np.array(event.pos[:2], float) if event.button == 1 else None
         self._right_press = np.array(event.pos[:2], float) if event.button == 2 else None
         self._drag = self._box = None
@@ -1013,6 +1023,8 @@ class GeometryView:
         return drag is not None and drag["started"]
 
     def _mouse_release(self, event):
+        if self.look_only:
+            return
         if event.button == 2:
             press, self._right_press = self._right_press, None
             if press is not None and np.linalg.norm(np.asarray(event.pos[:2], float) - press) < CLICK_PX                     and self.on_context is not None and not self.profile_mode and self.tool is None                     and self.editing_sketch is None and not self.measure:
@@ -1182,6 +1194,8 @@ class GeometryView:
         self._restyle()
 
     def _double_click(self, event):
+        if self.look_only:
+            return
         if self.measure and event.button == 1 and any(self.picks) and self.pick_at(event.pos) is None:
             self.set_picks([None, None])
             return
@@ -1711,6 +1725,14 @@ class GeometryView:
         camera.center = tuple(center)
         camera.scale_factor = 1.25 * size
         camera.set_orientation(25.0, -50.0)
+
+    def fit(self):
+        """The whole model in view as Reset view frames it, the direction of view kept."""
+        lo, hi = self._bounds
+        camera = self.view.camera
+        camera.center = tuple(0.5 * (lo + hi))
+        camera.scale_factor = 1.25 * (float(np.linalg.norm(hi - lo)) or 1.0)
+        camera.view_changed()
 
     def look_from(self, name):
         """A standard view (STANDARD_VIEWS: Top, Bottom, Front, Back, Left, Right), framed as Reset view."""

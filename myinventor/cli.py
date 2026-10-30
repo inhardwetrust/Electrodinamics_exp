@@ -7,7 +7,9 @@
 #   python main.py name.part.toml --report                 the report (text)
 #   python main.py name.part.toml --report --json          the same as JSON
 #   python main.py name.part.toml --export-step out.step   rebuild, write STEP
-#   (both flags may go together)
+#   python main.py name.part.toml --set NAME=FORMULA ...   a parameter's formula
+#       for this run only (the file is not written): a variant of a sweep
+#   (the flags may go together)
 #
 # The report: the parameters (formula -> value, or the error), each feature
 # (ok or why it failed; a sketch: its curves and its profiles, each with its
@@ -17,7 +19,7 @@
 #
 # Exit code: 0 all built, 1 a parameter or a feature failed (the report says
 # which; a STEP is still written of the bodies built), 2 the file could not
-# be read or the STEP not written.
+# be read, --set names no parameter, or the STEP was not written.
 
 import json
 import os
@@ -168,13 +170,19 @@ def text(data):
     return "\n".join(lines)
 
 
-def run(path, want_report, as_json, step_path, out=sys.stdout):
-    """Returns the exit code (see the top)."""
+def run(path, want_report, as_json, step_path, out=sys.stdout, formulas=None):
+    """Returns the exit code (see the top). formulas: {parameter: formula} for this run only."""
     try:
         part = load(path)
     except PartFileError as error:
         print(f"cannot read the part: {error}", file=out)
         return 2
+    names = [p.name for p in part.parameters]
+    for name, formula in (formulas or {}).items():
+        if name not in names:
+            print(f"--set {name}: no such parameter; parameters: {', '.join(names) or 'none'}", file=out)
+            return 2
+        part.parameter(name).formula = formula
     result = rebuild(part, folder=os.path.dirname(os.path.abspath(path)))
     data = report(part, result)
     if want_report:

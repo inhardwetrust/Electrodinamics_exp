@@ -138,3 +138,12 @@ Read first (they are the reference, copy what fits):
 - `--set NAME=FORMULA` in the CLI.
 - Non-ASCII body names written into STEP as ISO 10303-21 escapes
   (`Volumenkörper16` now reads back in customcst as `VolumenkÃ¶rper16`).
+
+## Status (the myCad session, 2026-10-30)
+
+DONE: `view/control.py` (the commands above, `select kind name`, undo /
+redo), the lock in `MainWindow.set_locked`, `main.py PART --locked`,
+`checks/check_control.py` (through `../customcst/tools/ui.py --app mycad`),
+the docs (CLAUDE.md, DESIGN.md "Control by Claude", the skill's "Driving
+the open window"). From the bridge task: `--set` and the non-ASCII names,
+done too.
