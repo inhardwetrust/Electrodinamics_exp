@@ -12,6 +12,11 @@
 #                    [[body]]
 #                    name = "Solid1"
 #                    color = "#c87533"
+#   groups       [Group]: named sets of bodies, flat (a body in one group at
+#                most): moved, hidden... together. [[group]] in the file:
+#                    [[group]]
+#                    name = "SMA"
+#                    bodies = ["SMA:Shell", "SMA:Pin"]
 # The bodies come from the rebuild (model/rebuild.py), not from here.
 #
 # Names: parameters have their own namespace (formulas see only them);
@@ -30,7 +35,7 @@ import numpy as np
 
 from model.expressions import ExpressionError, name_error, names, rename
 from model.features import FEATURE_TYPES, FeatureError
-from model import extrude, revolve, sketch, workplane  # noqa: F401  (register the feature types)
+from model import extrude, importstep, revolve, sketch, workplane  # noqa: F401  (register the feature types)
 
 DATUM_KINDS = ("plane", "axis", "point")
 COLOR = re.compile(r"#[0-9a-fA-F]{6}\Z")
@@ -94,6 +99,13 @@ def origin_datums():
 
 
 @dataclass
+class Group:
+    """A named set of bodies (by name; a body in one group at most)."""
+    name: str
+    bodies: list
+
+
+@dataclass
 class Parameter:
     name: str
     formula: str
@@ -106,6 +118,7 @@ class Part:
     origin: list = field(default_factory=origin_datums)
     features: list = field(default_factory=list)        # [Feature]
     bodies: dict = field(default_factory=dict)          # body name -> {"color": "#rrggbb"}
+    groups: list = field(default_factory=list)          # [Group]
 
     # =====================================================
     # Lookup
@@ -139,15 +152,18 @@ class Part:
 
     def free_body_name(self, stem="Solid"):
         """Solid1, Solid2...: a body name no feature makes yet (as Inventor names bodies)."""
-        taken = {f["body"] for f in self.features if "body" in f.values}
+        taken = set(self.body_names())
         n = 1
         while f"{stem}{n}" in taken:
             n += 1
         return f"{stem}{n}"
 
     def body_names(self):
-        """The bodies the features make or change, in history order."""
-        return list(dict.fromkeys(f["body"] for f in self.features if "body" in f.values))
+        """The bodies the features make or change (an import: all it makes), in history order."""
+        names = []
+        for f in self.features:
+            names += f.made_bodies() if hasattr(f, "made_bodies") else ([f["body"]] if "body" in f.values else [])
+        return list(dict.fromkeys(names))
 
     def rename_body(self, old, new):
         """
@@ -169,8 +185,66 @@ class Part:
         for f in self.features:
             if f.values.get("body") == old:
                 f.values["body"] = new
+            if hasattr(f, "rename_body"):
+                f.rename_body(old, new)
         if old in self.bodies:
             self.bodies[new] = self.bodies.pop(old)
+        for g in self.groups:
+            g.bodies = [new if b == old else b for b in g.bodies]
+
+    # =====================================================
+    # Groups
+    # =====================================================
+
+    def group(self, name):
+        for g in self.groups:
+            if g.name == name:
+                return g
+        raise KeyError(name)
+
+    def group_of(self, body):
+        """The group a body is in, or None."""
+        return next((g for g in self.groups if body in g.bodies), None)
+
+    def free_group_name(self, stem="Group"):
+        taken = {g.name for g in self.groups}
+        n = 1
+        while f"{stem}{n}" in taken:
+            n += 1
+        return f"{stem}{n}"
+
+    def add_to_group(self, name, bodies):
+        """These bodies into group `name` (made if new), out of the group they were in; empty groups go."""
+        _check_group_name(name)
+        bodies = [b for b in bodies]
+        for g in self.groups:
+            g.bodies = [b for b in g.bodies if b not in bodies]
+        try:
+            group = self.group(name)
+        except KeyError:
+            group = Group(name, [])
+            self.groups.append(group)
+        group.bodies += [b for b in bodies if b not in group.bodies]
+        self.groups = [g for g in self.groups if g.bodies]
+        return group
+
+    def remove_from_group(self, bodies):
+        for g in self.groups:
+            g.bodies = [b for b in g.bodies if b not in bodies]
+        self.groups = [g for g in self.groups if g.bodies]
+
+    def rename_group(self, old, new):
+        new = new.strip()
+        if new == old:
+            return
+        _check_group_name(new)
+        if any(g.name == new for g in self.groups):
+            raise PartError(f"a group {new!r} already exists")
+        self.group(old).name = new
+
+    def ungroup(self, name):
+        """The group goes; its bodies stay."""
+        self.groups = [g for g in self.groups if g.name != name]
 
     def free_feature_name(self, stem):
         """Sketch1, Sketch2...: the first one not taken (as Inventor names them)."""
@@ -277,6 +351,8 @@ class Part:
         rows = [{"name": name, **props} for name, props in self.bodies.items() if props]
         if rows:
             data["body"] = rows
+        if self.groups:
+            data["group"] = [{"name": g.name, "bodies": list(g.bodies)} for g in self.groups]
         return data
 
     # =====================================================
@@ -304,7 +380,7 @@ class Part:
     @classmethod
     def from_dict(cls, data):
         """A validated part from plain data; PartError names what is wrong and where."""
-        _keys(data, "the file", allowed={"origin", "parameter", "feature", "body"})
+        _keys(data, "the file", allowed={"origin", "parameter", "feature", "body", "group"})
         part = cls()
 
         origin = data.get("origin", {})
@@ -378,7 +454,41 @@ class Part:
                 part.set_body_color(name, row.get("color"))
             except PartError as error:
                 raise PartError(f"{where} ({name}): {error}") from None
+
+        rows = data.get("group", [])
+        if not isinstance(rows, list):
+            raise PartError("group must be an array of tables ([[group]])")
+        for i, row in enumerate(rows, 1):
+            where = f"group {i}"
+            if not isinstance(row, dict):
+                raise PartError(f"{where} must be a table")
+            _keys(row, where, allowed={"name", "bodies"}, required={"name", "bodies"})
+            name, bodies = row["name"], row["bodies"]
+            if not isinstance(name, str):
+                raise PartError(f"{where}: name must be a string")
+            where = f"{where} ({name})"
+            try:
+                _check_group_name(name)
+            except PartError as error:
+                raise PartError(f"{where}: {error}") from None
+            if any(g.name == name for g in part.groups):
+                raise PartError(f"{where}: the name is taken")
+            if not isinstance(bodies, list) or not bodies or not all(isinstance(b, str) for b in bodies):
+                raise PartError(f"{where}: bodies must be a list of body names")
+            for b in bodies:
+                other = part.group_of(b)
+                if other is not None or bodies.count(b) > 1:
+                    raise PartError(f"{where}: {b!r} is in {other.name if other else 'it'} already "
+                                    "(a body is in one group at most)")
+            part.groups.append(Group(name, list(bodies)))
         return part
+
+
+def _check_group_name(name):
+    if not isinstance(name, str) or not name.strip():
+        raise PartError("a group needs a name")
+    if "'" in name or any(ord(c) < 32 for c in name):
+        raise PartError(f"{name!r}: no quotes or control characters in a group's name")
 
 
 def _names_or_empty(formula):

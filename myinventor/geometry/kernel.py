@@ -193,6 +193,19 @@ def _check_valid(shape):
         raise ValueError("the result is not a valid solid (a self-crossing or degenerate profile?)")
 
 
+def read_step(path):
+    """[(name, kind, shape mm, color)] of a STEP file's bodies (geometry/step_io.py read_bodies)."""
+    from geometry.step_io import read_bodies
+
+    return read_bodies(path)
+
+
+def file_sha256(path):
+    from geometry.step_io import file_sha256 as sha
+
+    return sha(path)
+
+
 def body(name, shape, color=None):
     """A Body (meters, tessellated) of an OCP shape in mm."""
     return body_from_shape(name, shape, color=color)

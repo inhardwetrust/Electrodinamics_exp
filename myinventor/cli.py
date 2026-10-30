@@ -20,6 +20,7 @@
 # be read or the STEP not written.
 
 import json
+import os
 import sys
 
 from model.part_file import PartFileError, load
@@ -66,6 +67,8 @@ def report(part, result):
         elif feature.TYPE == "extrude":
             row.update(sketch=feature["sketch"], profiles=[list(p) for p in feature.profiles],
                        distance=feature["distance"], operation=feature["operation"], body=feature["body"])
+        elif feature.TYPE == "import":
+            row.update(file=feature["file"], bodies=list(feature.bodies))
         elif feature.TYPE == "workplane":
             row.update(base=feature["base"], offset=feature["offset"], axis=feature["axis"], angle=feature["angle"])
         elif feature.TYPE == "revolve":
@@ -83,7 +86,8 @@ def report(part, result):
                            "bounds": [[round(float(v), 6) for v in lo], [round(float(v), 6) for v in hi]],
                            "size": [round(float(v), 6) for v in hi - lo],
                            "color": part.body_color(name)})
-    return {"parameters": parameters, "features": features, "bodies": bodies,
+    groups = [{"name": g.name, "bodies": list(g.bodies)} for g in part.groups]
+    return {"parameters": parameters, "features": features, "bodies": bodies, "groups": groups,
             "ok": not result.errors and not result.feature_errors}
 
 
@@ -124,6 +128,8 @@ def text(data):
         elif f["type"] == "extrude":
             lines.append(f"    {f['operation']} body {f['body']!r} from {f['sketch']} {f['profiles']}, "
                          f"distance {f['distance']}")
+        elif f["type"] == "import":
+            lines.append(f"    {f['file']}: {', '.join(f['bodies'])}")
         elif f["type"] == "workplane":
             how = f"turned {f['angle']} deg around {f['axis']}" if f["axis"] else f"offset {f['offset']} mm"
             lines.append(f"    from {f['base']}, {how}")
@@ -137,6 +143,8 @@ def text(data):
                      f"size {' x '.join(f'{v:g}' for v in b['size'])} mm, "
                      f"from ({', '.join(f'{v:g}' for v in lo)}) to ({', '.join(f'{v:g}' for v in hi)})"
                      + (f", color {b['color']}" if b["color"] else ""))
+    for g in data["groups"]:
+        lines.append(f"group {g['name']}: {', '.join(g['bodies'])}")
     lines.append("ok" if data["ok"] else "NOT OK: see the errors above")
     return "\n".join(lines)
 
@@ -148,7 +156,7 @@ def run(path, want_report, as_json, step_path, out=sys.stdout):
     except PartFileError as error:
         print(f"cannot read the part: {error}", file=out)
         return 2
-    result = rebuild(part)
+    result = rebuild(part, folder=os.path.dirname(os.path.abspath(path)))
     data = report(part, result)
     if want_report:
         print(json.dumps(data, indent=2) if as_json else text(data), file=out)

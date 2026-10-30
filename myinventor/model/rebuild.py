@@ -26,6 +26,7 @@ class Result:
     outputs: dict = field(default_factory=dict)         # feature -> what its build returned
     bodies: list = field(default_factory=list)          # Body, named, for the view and STEP
     shapes: dict = field(default_factory=dict)          # body name -> OCP shape (mm): exact, for STEP
+    colors: dict = field(default_factory=dict)          # body name -> (r, g, b): its own, else an import's
     upto: str = None                                    # built only up to this feature (no bodies), or None
 
 
@@ -36,6 +37,8 @@ class BuildContext:
     outputs: dict
     shapes: dict = field(default_factory=dict)          # body name -> OCP shape (mm), in the order made
     parameter_errors: dict = field(default_factory=dict)
+    folder: str = None                                  # the part file's folder (an import's file is in it)
+    colors: dict = field(default_factory=dict)          # body name -> (r, g, b) by default (an import's)
 
     def evaluate(self, formula, what):
         """
@@ -66,11 +69,14 @@ def _color(text):
     return None if text is None else color_rgb(text)
 
 
-def rebuild(part, upto=None):
-    """The part's Result; upto: only the features up to that one (inclusive), the bodies not tessellated."""
+def rebuild(part, upto=None, folder=None):
+    """
+    The part's Result; upto: only the features up to that one (inclusive),
+    the bodies not tessellated; folder: the part file's (imports' files).
+    """
     result = Result(upto=upto)
     result.values, result.errors = evaluate_parameters([(p.name, p.formula) for p in part.parameters])
-    ctx = BuildContext(part, result.values, result.outputs, parameter_errors=result.errors)
+    ctx = BuildContext(part, result.values, result.outputs, parameter_errors=result.errors, folder=folder)
 
     for feature in part.features:
         failed = [ref for ref in feature.references() if ref in result.feature_errors]
@@ -88,7 +94,8 @@ def rebuild(part, upto=None):
             result.shapes = dict(ctx.shapes)
             return result
     # The bodies as the whole history left them, tessellated once.
-    result.bodies = [ctx.kernel.body(name, shape, _color(part.body_color(name)))
+    result.colors = {name: _color(part.body_color(name)) or ctx.colors.get(name) for name in ctx.shapes}
+    result.bodies = [ctx.kernel.body(name, shape, result.colors[name])
                      for name, shape in ctx.shapes.items()] if ctx.shapes else []
     result.shapes = dict(ctx.shapes)
     return result

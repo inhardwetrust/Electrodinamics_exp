@@ -126,7 +126,7 @@ def check_window():
     settle()
     row = window._rows[("body", "Copper")]
     actions = window.context_actions(row)
-    check("the body's right-click menu: Rename...", [t for t, _ in actions] == ["Rename..."], f"{actions}")
+    check("the body's right-click menu: Rename... first", [t for t, _ in actions][:1] == ["Rename..."], f"{actions}")
     window.view.set_visible("Copper", False)
     row.setCheckState(0, Qt.Unchecked)
     window.view.select(("body", "Copper"))

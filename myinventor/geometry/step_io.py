@@ -1,7 +1,9 @@
 # step_io.py
 #
 # Writing the part's bodies to STEP, for customcst (which reads STEP with
-# names and colors through XCAF: customcst/geometry/step_io.py read_step).
+# names and colors through XCAF: customcst/geometry/step_io.py read_step),
+# and reading a STEP file's bodies for an Import (read_bodies: the same
+# reading as customcst's, without its tessellation; kept per file content).
 # Taken from customcst (write_step, kicad_step._write) with its lessons:
 #   - each body is written as a compound: a solid written alone, if located,
 #     becomes an instance of an unnamed part ('SOLID');
@@ -15,21 +17,23 @@
 # reader (customcst re-reading after a Save) never sees half a file; before
 # that it is read back and its solids and volume compared.
 
+import hashlib
 import os
 import re
 
 from OCP.BRep import BRep_Builder
 from OCP.IFSelect import IFSelect_RetDone
 from OCP.Quantity import Quantity_Color, Quantity_TOC_RGB
-from OCP.STEPCAFControl import STEPCAFControl_Writer
+from OCP.STEPCAFControl import STEPCAFControl_Reader, STEPCAFControl_Writer
 from OCP.STEPControl import STEPControl_AsIs, STEPControl_Reader
 from OCP.TCollection import TCollection_ExtendedString
 from OCP.TDataStd import TDataStd_Name
 from OCP.TDocStd import TDocStd_Document
-from OCP.TopAbs import TopAbs_SOLID
+from OCP.TopAbs import TopAbs_FACE, TopAbs_SHELL, TopAbs_SOLID
 from OCP.TopExp import TopExp_Explorer
 from OCP.TopoDS import TopoDS, TopoDS_Compound
-from OCP.XCAFDoc import XCAFDoc_ColorType, XCAFDoc_DocumentTool
+from OCP.XCAFDoc import XCAFDoc_ColorType, XCAFDoc_DocumentTool, XCAFDoc_ShapeTool
+from OCP.XCAFPrs import XCAFPrs_DocumentExplorer, XCAFPrs_DocumentExplorerFlags_OnlyLeafNodes
 
 from geometry.kernel import solid_count, volume
 
@@ -66,7 +70,9 @@ def export_part(path, part, result):
 
     if not result.shapes:
         raise ValueError("the part has no body yet")
-    write_step(path, [(name, shape, color_rgb(part.body_color(name)) if part.body_color(name) else None)
+    colors = getattr(result, "colors", {})
+    write_step(path, [(name, shape, colors.get(name) or (color_rgb(part.body_color(name))
+                                                          if part.body_color(name) else None))
                       for name, shape in result.shapes.items()])
     failed = list(result.feature_errors)
     return f"without the failed {', '.join(failed)}" if failed else ""
@@ -118,6 +124,143 @@ def write_step(path, bodies):
     finally:
         if os.path.exists(temp):
             os.remove(temp)
+
+
+# =====================================================
+# Reading (an Import)
+# =====================================================
+
+_READ = {}                  # sha256 of a file's content -> its bodies (read once per content)
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def read_bodies(path):
+    """
+    The bodies of a STEP file: [(name, kind, OCP shape in mm, placed, (r, g, b) or None)],
+    in the file's order: each solid ("solid"), then each shell or face
+    outside a solid ("sheet"); solids named like their own part are one
+    body (a copper layer of pieces), names from the file (part names; in a
+    multi-body part the bodies' own), made unique. ValueError if it does not
+    read. Kept per content (a rebuild after every edit reads it once).
+    """
+    path = os.fspath(path)
+    if not os.path.isfile(path):
+        raise FileNotFoundError(path)
+    key = file_sha256(path)
+    if key not in _READ:
+        _READ[key] = _read(path)
+    return _READ[key]
+
+
+def _read(path):
+    _silence_occt()
+    doc = TDocStd_Document(TCollection_ExtendedString("XmlXCAF"))
+    XCAFDoc_DocumentTool.SetLengthUnit_s(doc, MM)   # the shapes in mm (OCP 8 cannot tell the file's unit)
+    reader = STEPCAFControl_Reader()
+    reader.SetNameMode(True)
+    reader.SetColorMode(True)
+    if reader.ReadFile(path) != IFSelect_RetDone or not reader.Transfer(doc):
+        raise ValueError(f"cannot read the STEP file {os.path.basename(path)}")
+    transfer = reader.ChangeReader().WS().TransferReader()
+    bodies, taken = [], set()
+    for part_name, shape, location, color in _leaf_shapes(doc):
+        parts = _split(shape)
+        names = [_body_name(transfer, part, part_name, n, len(parts)) for n, (_, part) in enumerate(parts)]
+        for name, kind, part in _merge_part_named(part_name, names, parts):
+            bodies.append((_unique(name, taken), kind, part.Moved(location), color))
+    if not bodies:
+        raise ValueError(f"no solid or surface in {os.path.basename(path)}")
+    return bodies
+
+
+def _leaf_shapes(doc):
+    """(part name, unlocated shape, location, color) of every leaf of the assembly tree (customcst's)."""
+    explorer = XCAFPrs_DocumentExplorer(doc, XCAFPrs_DocumentExplorerFlags_OnlyLeafNodes)
+    index = 0
+    while explorer.More():
+        node = explorer.Current()       # keep the node alive while using its fields
+        index += 1
+        name = _label_name(node.RefLabel) or f"body{index}"
+        shape = XCAFDoc_ShapeTool.GetShape_s(node.RefLabel)
+        color = None
+        style = node.Style
+        if style.IsSetColorSurf():
+            c = style.GetColorSurf()
+            color = (c.Red(), c.Green(), c.Blue())
+        yield name, shape, node.Location, color
+        explorer.Next()
+
+
+def _label_name(label):
+    attribute = TDataStd_Name()
+    if label.FindAttribute(TDataStd_Name.GetID_s(), attribute):
+        return attribute.Get().ToExtString().strip()
+    return ""
+
+
+def _split(shape):
+    """[(kind, shape)]: each solid, then each shell or face outside a solid."""
+    parts = []
+    for kind, what, outside in (("solid", TopAbs_SOLID, None), ("sheet", TopAbs_SHELL, TopAbs_SOLID),
+                                ("sheet", TopAbs_FACE, TopAbs_SHELL)):
+        explorer = TopExp_Explorer(shape, what) if outside is None else TopExp_Explorer(shape, what, outside)
+        while explorer.More():
+            parts.append((kind, explorer.Current()))
+            explorer.Next()
+    return parts
+
+
+def _body_name(transfer, part, part_name, index, count):
+    """
+    A single-body part is named after the part; in a multi-body part each
+    body keeps its own name from the file (MANIFOLD_SOLID_BREP('port'...)),
+    read through the STEP entity (walking XCAF sub-labels crashes OCP 8).
+    """
+    if count == 1:
+        return part_name
+    entity = transfer.EntityFromShapeResult(part, 1)
+    name = entity.Name().ToCString().strip() if entity is not None and hasattr(entity, "Name") else ""
+    return name or f"{part_name}#{index + 1}"
+
+
+def _merge_part_named(part_name, names, parts):
+    """[(name, kind, shape)]: the solids named like their part become one compound (as written by write_step)."""
+    groups, order = {}, []
+    for name, (kind, part) in zip(names, parts):
+        key = (name, kind) if kind == "solid" and name == part_name else (name, kind, len(order))
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(part)
+    merged = []
+    for key in order:
+        shapes = groups[key]
+        if len(shapes) == 1:
+            merged.append((key[0], key[1], shapes[0]))
+            continue
+        compound = TopoDS_Compound()
+        builder = BRep_Builder()
+        builder.MakeCompound(compound)
+        for shape in shapes:
+            builder.Add(compound, shape)
+        merged.append((key[0], key[1], compound))
+    return merged
+
+
+def _unique(name, taken):
+    candidate, n = name, 2
+    while candidate in taken:
+        candidate = f"{name}_{n}"
+        n += 1
+    taken.add(candidate)
+    return candidate
 
 
 def _check_back(path, bodies):

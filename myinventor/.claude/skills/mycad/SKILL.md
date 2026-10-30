@@ -103,6 +103,8 @@ tables, in order:
     [[parameter]]   name, formula, comment (optional)
     [[feature]]     in history order; a feature may use only features above it
     [[body]]        name, color = "#rrggbb" (optional, per body)
+    [[group]]       name, bodies = [...]: bodies that move / hide together (flat: a body in one
+                    group at most; an import makes one of its bodies)
 
 Reading is strict: an unknown key, a wrong type or a missing reference is an
 error naming the place (exit 2). The full format with every key is in the
@@ -213,6 +215,16 @@ A body's name is its id (STEP names the solid after it, customcst reads it):
 name bodies by meaning (`Substrate`, `Patch`, `Ground`). To rename one in the
 file, change it in every feature's `body` and in its `[[body]]` row (the
 window's Rename does that in one step); no quotes in a name.
+
+### Import (`type = "import"`)
+
+The bodies of a STEP file (a connector, a housing): `file` (relative to the
+part file's folder: put it in `<part name>.files/`), `sha256` (its content;
+`""` skips the check), `bodies` (one name per body of the file, in its
+order: the report of a first try names them; customcst-style `"SMA:Pin"`).
+They are bodies like any other (join / cut them, rename them, color them;
+their colors come from the file). A file that changed since its sha256 is
+built but marked failed; the window's Reload accepts it.
 
 ### Work plane (`type = "workplane"`)
 

@@ -185,7 +185,16 @@ plain names for files and the AI).
 
 Done since: Revolve (model/revolve.py): profiles around a line of any
 sketch or an origin axis, the axis picked in the view; sketches on its
-planar faces; work planes (model/workplane.py: Offset, Angle).
+planar faces; work planes (model/workplane.py: Offset, Angle); STEP import
+(model/importstep.py: the file copied into <part>.files, its bodies named
+in the part, kept per content); groups of bodies ([[group]], flat).
+
+Decided (next): transforms (move / rotate / mirror) are post-features, a
+section after the features ([[transform]]), applied to the bodies as built
+(as an imported STEP's), in order, a body or a group each; a body of a
+group is moved before the group (local, then global). Modeling never sees
+the placement (a hole where a placed part will be: from the same
+parameters; "jumps in time" later if needed).
 
 Next, in this order:
 1. Manual primitives: arc, poly-arc, Bézier; copy / paste of generators.

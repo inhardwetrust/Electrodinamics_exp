@@ -93,6 +93,7 @@
 
 import math
 import os
+import re
 
 import numpy as np
 
@@ -115,6 +116,7 @@ from model.rebuild import rebuild
 from model.extrude import Extrude
 from model.revolve import Revolve, axis_of, check_side, onto_axis
 from model.workplane import WorkPlane
+from model.importstep import Import, body_names
 from model.profiles import find_regions, named_regions, whole_regions
 from model.expressions import evaluate
 from model.offsets import CAPS, offset_key
@@ -322,6 +324,10 @@ class MainWindow(QMainWindow):
         group.add_action(self.save_action)
         group.add_action(self._action("Save As...", self.save_as, QKeySequence.SaveAs,
                                       "Save the part to another file"))
+        group = file.add_group("Import")
+        group.add_action(self._action("Import STEP...", self.import_dialog, tip=(
+            "The bodies of a STEP file (a connector...) as bodies of the part: the file is copied next to the "
+            "part file (<name>.files), names and colors kept")))
         group = file.add_group("Export")
         group.add_action(self._action("Export...", self.export_dialog, "Ctrl+E",
                                       "Export the bodies to a STEP file (names and colors kept)"))
@@ -523,8 +529,8 @@ class MainWindow(QMainWindow):
         """
         names = [f.name for f in self.part.features]
         if self.editing is None or self._frozen is None or self.editing not in names:
-            return rebuild(self.part)
-        result = rebuild(self.part, upto=self.editing)
+            return rebuild(self.part, folder=self._folder())
+        result = rebuild(self.part, upto=self.editing, folder=self._folder())
         later = set(names[names.index(self.editing) + 1:])
         frozen = self._frozen
         result.outputs.update({n: out for n, out in frozen.outputs.items() if n in later})
@@ -552,9 +558,13 @@ class MainWindow(QMainWindow):
     def _is_workplane(self, name):
         return any(f.name == name and f.TYPE == "workplane" for f in self.part.features)
 
+    def _folder(self):
+        """The part file's folder (imported files live next to it), or None before it is saved."""
+        return os.path.dirname(self.doc.path) if self.doc.path else None
+
     def full_result(self):
         """The Result of the whole part (rebuilt if a sketch being edited holds 3D back): for STEP."""
-        return self.result if self.result.upto is None else rebuild(self.part)
+        return self.result if self.result.upto is None else rebuild(self.part, folder=self._folder())
 
     def show_result(self, result, reset_view=False):
         self.result = result
@@ -570,7 +580,7 @@ class MainWindow(QMainWindow):
             if self.editing not in result.outputs:     # undone, deleted, or it fails now
                 self.finish_sketch(refresh=False)
                 if result.upto is not None:
-                    self.show_result(rebuild(self.part), reset_view)   # the whole part again
+                    self.show_result(rebuild(self.part, folder=self._folder()), reset_view)   # all again
                     return
         self._update_title()
         self._on_pick(self.view.picks)
@@ -705,6 +715,7 @@ class MainWindow(QMainWindow):
 
     def _write(self, path):
         try:
+            self._carry_imports(path)
             self.doc.save(path)
         except (OSError, PartFileError) as error:
             self.show_error(f"Cannot save the part:\n{error}")
@@ -722,6 +733,109 @@ class MainWindow(QMainWindow):
                 message += f"; the STEP was not written: {error}"
         self.statusBar().showMessage(message, 10000)
         return True
+
+    # =====================================================
+    # STEP import
+    # =====================================================
+
+    def ask_import_path(self):
+        start = self._folder() or ""
+        path, _ = QFileDialog.getOpenFileName(self, "Import STEP", start, STEP_FILTER)
+        return path or None
+
+    def import_dialog(self):
+        """File > Import STEP: asks for the file (the part must be saved: the file is copied next to it)."""
+        if self.doc.path is None:
+            self.show_error("Save the part first: an imported STEP file is copied next to the part file.")
+            return None
+        path = self.ask_import_path()
+        return self.import_step(path) if path else None
+
+    def import_step(self, source):
+        """
+        A STEP file's bodies into the part: copied into <name>.files next to
+        the part file, an Import feature named after it (its bodies
+        "<feature>:<name in the file>"); one undo step. Returns its name.
+        """
+        import shutil
+
+        from geometry.step_io import file_sha256, read_bodies
+
+        self.finish_sketch()
+        try:
+            read = read_bodies(source)
+        except (OSError, ValueError) as error:
+            self.show_error(f"Cannot import {os.path.basename(source)}:\n{error}")
+            return None
+        folder = self._folder()
+        files = self.doc.name + ".files"
+        os.makedirs(os.path.join(folder, files), exist_ok=True)
+        stem, ext = os.path.splitext(os.path.basename(source))
+        sha, target, n = file_sha256(source), os.path.join(files, stem + ext), 2
+        while os.path.exists(os.path.join(folder, target)) and file_sha256(os.path.join(folder, target)) != sha:
+            target, n = os.path.join(files, f"{stem}_{n}{ext}"), n + 1       # another file of that name there
+        if not os.path.exists(os.path.join(folder, target)):
+            shutil.copyfile(source, os.path.join(folder, target))
+        name = re.sub(r"[^A-Za-z0-9_]+", "_", stem).strip("_") or "Import"
+        if name[0].isdigit():
+            name = "Import_" + name
+        name = name if name not in self.part.object_names() else self.part.free_feature_name(name)
+        bodies = body_names(name, read)
+        taken = set(self.part.body_names())
+        bodies = [b if b not in taken else f"{b}_{name}" for b in bodies]
+        self.part.add_feature(Import(name, file=target.replace(os.sep, "/"), sha256=sha, bodies=bodies))
+        group = name if all(g.name != name for g in self.part.groups) else self.part.free_group_name(name)
+        self.part.add_to_group(group, bodies)       # its bodies move, turn, hide together
+        self._commit()
+        error = self.result.feature_errors.get(name)
+        if error:
+            self.show_error(f"{name} failed: {error}")
+        else:
+            self.statusBar().showMessage(f"imported {os.path.basename(source)}: {len(bodies)} bodies "
+                                         f"({', '.join(bodies)}), the file copied to {target}", 10000)
+        return name
+
+    def reload_import(self, name):
+        """Reload: the import takes its file as it is now (its content, and as many bodies as it has)."""
+        from geometry.step_io import file_sha256, read_bodies
+
+        feature = self.part.feature(name)
+        path = feature.path(self._folder())
+        try:
+            read = read_bodies(path)
+        except (OSError, ValueError) as error:
+            self.show_error(f"Cannot reload {feature['file']}:\n{error}")
+            return False
+        feature.values["sha256"] = file_sha256(path)
+        if len(read) != len(feature.bodies):        # bodies came or went: name them anew, the old names first
+            fresh = body_names(name, read)
+            group = next((self.part.group_of(b) for b in feature.bodies if self.part.group_of(b)), None)
+            feature.bodies = feature.bodies[:len(read)] + fresh[len(feature.bodies):]
+            if group is not None:                   # the new ones join its group
+                self.part.add_to_group(group.name, [b for b in feature.bodies if self.part.group_of(b) is None])
+        self._commit()
+        self.statusBar().showMessage(f"{name}: reloaded {feature['file']}", 8000)
+        return True
+
+    def _carry_imports(self, path):
+        """Save As elsewhere or under another name: the imports' files copied to <new name>.files, renamed."""
+        import shutil
+
+        old = self._folder()
+        new_folder = os.path.dirname(os.path.abspath(path))
+        new_files = os.path.basename(path)[:-len(EXTENSION)] + ".files" if path.lower().endswith(EXTENSION) \
+            else os.path.splitext(os.path.basename(path))[0] + ".files"
+        for feature in self.part.features:
+            if feature.TYPE != "import" or old is None:
+                continue
+            source = feature.path(old)
+            target = new_files + "/" + os.path.basename(feature["file"])
+            if os.path.normcase(os.path.abspath(source)) == os.path.normcase(os.path.join(new_folder, target)):
+                continue
+            os.makedirs(os.path.join(new_folder, new_files), exist_ok=True)
+            if os.path.isfile(source):
+                shutil.copyfile(source, os.path.join(new_folder, target))
+            feature.values["file"] = target
 
     # =====================================================
     # STEP export
@@ -916,7 +1030,7 @@ class MainWindow(QMainWindow):
         for action in self.tool_actions:
             action.setChecked(False)
         self.editing = name
-        self._frozen = self.result if self.result.upto is None else rebuild(self.part)
+        self._frozen = self.result if self.result.upto is None else rebuild(self.part, folder=self._folder())
         self.view.select(None)
         self._show_sketches(force=True)         # a sketch an extrusion used shows while edited
         self.view.set_sketch(built.frame, name)
@@ -1489,7 +1603,7 @@ class MainWindow(QMainWindow):
                 trial.features[index] = feature
             else:
                 trial.add_feature(feature)
-            built = rebuild(trial, upto=feature.name)
+            built = rebuild(trial, upto=feature.name, folder=self._folder())
             if feature.name in built.feature_errors:
                 raise ValueError(built.feature_errors[feature.name])
             f = built.outputs[feature.name].plane_frame()
@@ -1623,7 +1737,7 @@ class MainWindow(QMainWindow):
             # Roll back: the bodies as they were just before this feature.
             rolled = Part.from_dict(self.part.to_dict())
             rolled.features = rolled.features[:[f.name for f in rolled.features].index(edit)]
-            before = rebuild(rolled).bodies
+            before = rebuild(rolled, folder=self._folder()).bodies
             self.view.set_geometry(Geometry(before), reset=False)
             self._rolled_back = True
             amount = feature["distance"] if self._sweep == "extrude" else feature["angle"]
@@ -1807,7 +1921,12 @@ class MainWindow(QMainWindow):
                     ("Copy as Spline", lambda: self.curve_to_spline(sketch_name, curve, keep=True))]
         kind, name = key
         if kind == "body":
-            return [("Rename...", lambda: self.rename_body_dialog(name))]
+            actions = [("Rename...", lambda: self.rename_body_dialog(name)), ("Group...", lambda: self.group_dialog(name))]
+            if self.part.group_of(name) is not None:
+                actions.append(("Remove from Group", lambda: self.remove_from_group(name)))
+            return actions
+        if kind == "group":
+            return [("Rename...", lambda: self.rename_group_dialog(name)), ("Ungroup", lambda: self.ungroup(name))]
         if kind == "body_color":
             return [("Pick a color...", lambda: self.pick_body_color(name)),
                     ("Default color", lambda: self.set_body_color(name, None))]
@@ -1824,6 +1943,8 @@ class MainWindow(QMainWindow):
         if kind == "feature" and self.part.feature(name).TYPE == "extrude":
             return [("Edit Extrusion", lambda: self.start_extrude(edit=name)),
                     ("Delete", lambda: self.delete_feature(name))]
+        if kind == "feature" and self.part.feature(name).TYPE == "import":
+            return [("Reload", lambda: self.reload_import(name)), ("Delete", lambda: self.delete_feature(name))]
         if kind == "feature" and self.part.feature(name).TYPE == "revolve":
             return [("Edit Revolution", lambda: self.start_extrude(edit=name)),
                     ("Delete", lambda: self.delete_feature(name))]
@@ -1868,6 +1989,54 @@ class MainWindow(QMainWindow):
         self.part.set_body_color(name, color)
         self._commit()
 
+    def _group_members(self, name):
+        """The built bodies of group `name`."""
+        built = {b.name for b in self.result.bodies}
+        try:
+            return [b for b in self.part.group(name).bodies if b in built]
+        except KeyError:
+            return []
+
+    def group_dialog(self, body):
+        """Group... (a body's menu): asks which group (an existing one or a new name) it goes into."""
+        current = self.part.group_of(body)
+        names = ", ".join(g.name for g in self.part.groups)
+        label = f"Group of {body} (an existing group{': ' + names if names else ''}, or a new name):"
+        answer = self.ask_text(f"Group {body}", label, current.name if current else self.part.free_group_name())
+        if answer is not None and answer.strip():
+            self.group_bodies(answer.strip(), [body])
+
+    def group_bodies(self, name, bodies):
+        """Bodies into group `name` (made if new; out of their old group); one undo step."""
+        try:
+            self.part.add_to_group(name, bodies)
+        except PartError as error:
+            self.statusBar().showMessage(f"Group: {error}", 8000)
+            return False
+        self._commit()
+        self.statusBar().showMessage(f"{', '.join(bodies)} in group {name}", 5000)
+        return True
+
+    def remove_from_group(self, body):
+        self.part.remove_from_group([body])
+        self._commit()
+
+    def rename_group_dialog(self, name):
+        new = self.ask_text(f"Rename {name}", "New name of the group:", name)
+        if new is None:
+            return
+        try:
+            self.part.rename_group(name, new)
+        except PartError as error:
+            self.statusBar().showMessage(f"Rename {name}: {error}", 8000)
+            return
+        self._commit()
+
+    def ungroup(self, name):
+        """The group goes; its bodies stay (one undo step)."""
+        self.part.ungroup(name)
+        self._commit()
+
     def rename_body_dialog(self, name):
         """Rename (the body's right-click menu, double click, F2): asks for the new name."""
         new = self.ask_text(f"Rename {name}", "New name of the body:", name)
@@ -1905,11 +2074,16 @@ class MainWindow(QMainWindow):
         key = self._key_of(self.tree.currentItem())
         if key is not None and key[0] == "body":
             self.rename_body_dialog(key[1])
+        elif key is not None and key[0] == "group":
+            self.rename_group_dialog(key[1])
 
     def _row_double_clicked(self, item):
         key = self._key_of(item)
         if key is not None and key[0] == "body":
             _later(lambda: self.rename_body_dialog(key[1]))
+            return
+        if key is not None and key[0] == "group":
+            _later(lambda: self.rename_group_dialog(key[1]))
             return
         if key is not None and key[0] == "datum" and self._is_workplane(key[1]):
             _later(lambda: self.start_work_plane(edit=key[1]))
@@ -1997,6 +2171,8 @@ class MainWindow(QMainWindow):
                 what = {"new": "into", "join": "joined to", "cut": "cut from", "intersect": "intersected with"}
                 tip = (f"extrusion of {feature['sketch']} by {feature['distance']} mm "
                        f"{what[feature['operation']]} {feature['body']}")
+            elif feature.TYPE == "import":
+                tip = f"import of {feature['file']}: {', '.join(feature.bodies)}\nRight click: Reload"
             elif feature.TYPE == "revolve":
                 what = {"new": "into", "join": "joined to", "cut": "cut from", "intersect": "intersected with"}
                 tip = (f"revolution of {feature['sketch']} by {feature['angle']} deg around {feature['axis']} "
@@ -2026,11 +2202,28 @@ class MainWindow(QMainWindow):
                         "not in profiles). Select: its arguments. Right click: Convert / Copy as Spline.", c.visible)
         bodies = self.result.bodies if self.result is not None else []
         if bodies:
-            group = _group_item(None, f"Solid Bodies ({len(bodies)})")
-            root.insertChild(0, group)          # first, as in Inventor
+            folder = _group_item(None, f"Solid Bodies ({len(bodies)})")
+            root.insertChild(0, folder)         # first, as in Inventor
+            built = {b.name for b in bodies}
+            parents = {}                        # body name -> its group's row
+            for g in self.part.groups:          # each group a folder of its bodies (those built)
+                members = [b for b in g.bodies if b in built]
+                if not members:
+                    continue
+                key = ("group", g.name)
+                shown = any(self.view._visible.get(b, True) for b in members)
+                row = _checkable(folder, g.name, key, f"group of {len(members)} bodies. Tick: all shown. "
+                                 "Select: all selected. Double click: rename. Right click: Rename, Ungroup",
+                                 shown)
+                font = row.font(0)
+                font.setItalic(True)
+                row.setFont(0, font)
+                self._rows[key] = row
+                parents.update({b: row for b in members})
             for body in bodies:
                 key = ("body", body.name)
-                row = _checkable(group, body.name, key, "Tick: shown in 3D. Select: selected. "
+                parent = parents.get(body.name, folder)
+                row = _checkable(parent, body.name, key, "Tick: shown in 3D. Select: selected. "
                                  "Open it for its properties.", self.view._visible.get(body.name, True))
                 self._rows[key] = row
                 # Its properties, one row each (the color now; a material later).
@@ -2045,6 +2238,9 @@ class MainWindow(QMainWindow):
         root.setExpanded(True)
         for i in range(root.childCount()):
             root.child(i).setExpanded(True)
+        for key, row in self._rows.items():     # groups open
+            if key[0] == "group":
+                row.setExpanded(True)
         for feature in self.part.features:      # sketches with curves: open, the curves' rows in sight
             if feature.TYPE == "sketch" and feature.curves:
                 self._rows[("feature", feature.name)].setExpanded(True)
@@ -2065,6 +2261,14 @@ class MainWindow(QMainWindow):
         if key is None:
             return
         on = item.checkState(0) == Qt.Checked
+        if key[0] == "group":                   # all its bodies (as a body's tick: the view only)
+            self.tree.blockSignals(True)
+            for b in self._group_members(key[1]):
+                self.view.set_visible(b, on)
+                if ("body", b) in self._rows:
+                    self._rows[("body", b)].setCheckState(0, Qt.Checked if on else Qt.Unchecked)
+            self.tree.blockSignals(False)
+            return
         if key[0] == "entity":                  # a curve's row: after this signal (the tree is rebuilt)
             QTimer.singleShot(0, lambda: self.set_curve_visible(key[1], key[2], on))
         elif key[0] == "datum" and self._is_workplane(key[1]):
@@ -2079,6 +2283,10 @@ class MainWindow(QMainWindow):
 
     def _item_selected(self, item):
         key = self._key_of(item)
+        if key is not None and key[0] == "group":
+            self.view.select_keys([("body", b) for b in self._group_members(key[1])])
+            self._show_info(key)
+            return
         if self._plane_picked(key):
             return
         self.view.select(key)
@@ -2126,6 +2334,11 @@ class MainWindow(QMainWindow):
             self.info.setText("")
         elif key[0] == "face":
             self.info.setText(self._face_info(key))
+        elif key[0] == "group":
+            members = self._group_members(key[1])
+            volume = sum(b.volume for b in self.result.bodies if b.name in members and b.kind == "solid")
+            self.info.setText(f"<b>{key[1]}</b> (group)<br>{len(members)} bodies: {', '.join(members)}"
+                              f"<br>volume: {volume / MM ** 3:.6g} mm³")
         elif key[0] == "datum" and self._is_workplane(key[1]):
             self.info.setText(self._work_plane_info(key[1]))
         elif key[0] == "datum":
@@ -2144,6 +2357,8 @@ class MainWindow(QMainWindow):
                 body = next((b for b in self.result.bodies if b.name == feature["body"]), None)
                 if body is not None and feature.name in self.result.outputs:
                     lines.append(f"{body.name} now: {body.volume / MM ** 3:.6g} mm³")
+            elif feature.TYPE == "import":
+                lines += [f"of {feature['file']}", f"{len(feature.bodies)} bodies: {', '.join(feature.bodies)}"]
             elif feature.TYPE == "revolve":
                 verb = {"new": "makes", "join": "joins", "cut": "cuts", "intersect": "intersects"}[feature["operation"]]
                 lines += [f"of {feature['sketch']}: {len(feature.profiles)} profile(s)",
