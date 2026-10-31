@@ -317,6 +317,14 @@ def spline_points(edge, tolerance=1e-3, checks=64):
     parameter) until none is.
     """
     at, t0, t1 = edge_function(edge)
+    return fit_points(at, t0, t1, tolerance, checks)
+
+
+def fit_points(at, t0, t1, tolerance=1e-3, checks=64):
+    """
+    spline_points of any curve: at(ts) -> (N, 2) mm for parameters t0..t1
+    (a body edge projected into a sketch, geometry/project.py).
+    """
     ts = list(np.linspace(t0, t1, 5))
     while len(ts) <= MAX_SPANS:
         p = at(np.array(ts))

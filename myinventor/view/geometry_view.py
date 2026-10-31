@@ -1337,6 +1337,13 @@ class GeometryView:
         hit = self._picker.face_at(self._transform(), pos, self._visible_bodies())
         return None if hit is None else ("face", *hit)
 
+    def body_face_at(self, pos):
+        """("face", body, CAD face index) under `pos` even in sketch mode (Project Geometry), or None."""
+        if self._picker is None:
+            return None
+        hit = self._picker.face_at(self._transform(), pos, self._visible_bodies())
+        return None if hit is None else ("face", *hit)
+
     def face_triangles(self, key):
         """(K, 3, 3) mm: the triangles of a ("face", body, index) key."""
         visual = self._bodies.get(key[1])

@@ -186,6 +186,22 @@ enclosed region). A side past the radius of curvature fails, naming it.
 **Construction** geometry is never part of a profile (helpers, axes for
 Revolve).
 
+**Projected geometry** (Sketch > Project Geometry, in the window): a click
+on a body face projects its edges straight onto the sketch's plane as
+ordinary entities with plain numbers (no link to the face: it does not
+follow later changes):
+- straight edges: lines;
+- circles and arcs in a plane parallel to the sketch: circles and
+  center arcs, exactly;
+- anything else (a circle seen at an angle is an ellipse, B-splines):
+  a spline through points within the spline tolerance (50 µm);
+- a circle seen edge-on: its segment; an edge along the normal: nothing.
+
+Ends within 1 µm of a sketch point use it, so the loops close and meet
+the sketch's own lines; what is already there is not drawn twice. The
+bodies are the ones modeling sees (unplaced). In a file you write, draw
+the same geometry yourself (from the same parameters).
+
 ## 6. Sketch planes and their axes
 
 `plane =`:
@@ -426,8 +442,8 @@ What the user can do by hand (to talk about it, and to know what they see):
 - **Ribbon** File (New, Open, Recent, Save, Save As, Import STEP, Export,
   STEP on Save), 3D Model (Start 2D Sketch, Extrude, Revolve, Work Plane,
   Move, Rotate, Mirror, Measure, view switches), Sketch (Line, Point,
-  Circle, Arc, Polyline, Spline, Curve, Construction, Copy / Cut / Paste,
-  Look At, Finish Sketch).
+  Circle, Arc, Polyline, Spline, Curve, Project Geometry, Construction,
+  Copy / Cut / Paste, Look At, Finish Sketch).
 - **Browser** (left): the origin, the features (a sketch under the
   feature using it), the bodies (groups, colors, eyes), the placement.
   Selecting a feature lights what it made (blue; a cut's removed volume
@@ -577,7 +593,10 @@ A STEP file's bodies: `geometry.step_io.read_bodies(path)` →
 
 ## 18. Not there yet
 
-No Combine (a body with a body after the fact), no fillets, chamfers or
+No Combine (a body with a body after the fact), no associative projection
+(a projected face does not follow its body; projecting placed bodies,
+"retrospective projection", is next), no ellipse or free B-spline entity
+(projected ones become interpolating splines), no fillets, chamfers or
 patterns, no constraint solver (formulas instead), no sketch on curved
 faces, no poly-arc or Bézier, no copy / paste of arcs and generators, no
 "jump in time" (features never see the placement). The window cannot add

@@ -116,6 +116,7 @@ from model.traces import BENDS, TraceError, outline
 
 MM = 1e-3
 CIRCLE_SEGMENTS = 96        # a circle drawn (and picked) as this many segments
+PROJECT_JOIN_MM = 1e-3      # a projected end this close to a point (1 um, as profiles join ends) uses it
 
 
 @dataclass
@@ -748,6 +749,62 @@ class Sketch(Feature):
         else:
             self.curves.remove(curve)
         return spline
+
+    def add_projection(self, items, points, construction=False):
+        """
+        Geometry projected from body faces (geometry/project.py), as plain
+        numbers: items ("line", a, b), ("circle", c, r), ("arc", c, r, from,
+        to) and ("spline", (K, 2) points, closed), sketch mm. `points`: the
+        sketch's evaluated points {name: (2,) mm}: an end within 1 um of one
+        (or of an end added here) uses it, so projected loops close and meet
+        the sketch's own lines; a line already drawn between the same two
+        points is not drawn again. Returns the names of the new entities.
+        """
+        known = {n: np.asarray(xy, dtype=float) for n, xy in points.items()}
+
+        def point(xy):
+            xy = np.asarray(xy, dtype=float)
+            for name, at in known.items():
+                if np.linalg.norm(at - xy) <= PROJECT_JOIN_MM:
+                    return name
+            name = self.add_point(_plain(xy[0]), _plain(xy[1]))
+            known[name] = xy
+            return name
+
+        added = []
+        order = {"arc": 0, "circle": 1, "line": 2, "spline": 3}     # arcs first: lines then end on their ends
+        for item in sorted(items, key=lambda i: order[i[0]]):
+            if item[0] == "line":
+                a, b = point(item[1]), point(item[2])
+                if a == b or any({line.start, line.end} == {a, b} for line in self.lines):
+                    continue
+                added.append(self.add_line(a, b, construction))
+            elif item[0] == "circle":
+                center, radius = point(item[1]), _plain(item[2])
+                if any(c.center == center and c.radius == radius for c in self.circles):
+                    continue
+                added.append(self.add_circle(center, radius, construction))
+            elif item[0] == "arc":
+                _, center, radius, start, end = item
+                if any(a.kind == "center" and a.center == point(center) and a.radius == _plain(radius)
+                       and (a.start_angle, a.end_angle) == (_plain(start), _plain(end)) for a in self.arcs):
+                    continue
+                name = self.add_arc(kind="center", center=point(center), radius=_plain(radius),
+                                    start_angle=_plain(start), end_angle=_plain(end), construction=construction)
+                for end_name, angle in zip(end_points(name), (start, end)):     # its ends join what meets them
+                    known[end_name] = np.asarray(center, float) + radius * np.array(
+                        [math.cos(math.radians(angle)), math.sin(math.radians(angle))])
+                added.append(name)
+            else:
+                _, xy, closed = item
+                names = [point(p) for p in (xy[:-1] if closed else xy)]
+                names += names[:1] if closed else []
+                if len(set(names)) < 2:
+                    continue
+                spline = self.free_name("Spline")
+                self.splines.append(SketchSpline(spline, names, construction))
+                added.append(spline)
+        return added
 
     def line(self, name):
         return next(line for line in self.lines if line.name == name)

@@ -38,6 +38,11 @@
 # PointTool (Sketch > Point), as Inventor's Point: every click puts an
 # explicit point (add_point((x, y) mm), the window); a click on an existing
 # point puts nothing; Esc leaves the tool.
+#
+# ProjectTool (Sketch > Project Geometry), as Inventor's: the body face
+# under the cursor lights up (even under the sketch: GeometryView
+# body_face_at); a click projects its edges into the sketch (the window,
+# geometry/project.py), one undo step per face; Esc leaves the tool.
 
 import numpy as np
 
@@ -317,6 +322,30 @@ class PointTool(SketchTool):
             return                              # off the plane, or a point is there already
         self.add_point(hit[0][1])
         self.move(pos)
+
+
+class ProjectTool(SketchTool):
+    """Project Geometry: the body face under the cursor lights up; a click projects its edges into the sketch."""
+    name = "Project"
+
+    def __init__(self, view, sketch, sketch_result, project, on_exit):
+        """project(("face", body, index)): the window projects that face (one undo step)."""
+        super().__init__(view, sketch, sketch_result, on_exit)
+        self.project = project
+
+    def move(self, pos):
+        key = self.view.body_face_at(pos)
+        if key != self.view.hovered:
+            self.view.set_hover(key)
+
+    def click(self, pos):
+        key = self.view.body_face_at(pos)
+        if key is not None:
+            self.project(key)
+
+    def remove(self):
+        super().remove()
+        self.view.set_hover(None)
 
 
 class LineTool(SketchTool):

@@ -231,6 +231,13 @@ group is moved before the group (local, then global). Modeling never sees
 the placement (a hole where a placed part will be: from the same
 parameters; "jumps in time" later if needed).
 
+Done: Project Geometry (geometry/project.py, Sketch.add_projection): a body
+face's edges into the edited sketch as plain lines, exact circles and arcs
+(parallel to the plane), splines for the rest (ellipses, B-splines). Static:
+no link to the face. Next: retrospective projection (faces of placed bodies
+into a sketch, which modeling sees unplaced), then maybe associative
+projection (an entity that follows a named face).
+
 Next, in this order:
 1. Manual primitives: poly-arc, Bézier (the arc is done: from its center or
    through three points); copy / paste of generators and arcs.

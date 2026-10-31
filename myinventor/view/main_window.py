@@ -73,6 +73,8 @@
 # - Ctrl+C / Ctrl+X / Ctrl+V (Sketch > Clipboard) copy, cut and paste the
 #   selected sketch geometry; a paste hangs on the cursor until a click puts
 #   it (view/sketch_tools.py PasteTool);
+# - Sketch > Project Geometry: a click on a body face projects its edges
+#   into the sketch (project_face; view/sketch_tools.py ProjectTool);
 # - Delete deletes the selection: a sketch line (with its end points no
 #   other line uses) or point (with its lines), or a feature nothing uses.
 #
@@ -150,7 +152,8 @@ from view.extrude_panel import ExtrudePanel
 from view.workplane_panel import WorkPlanePanel
 from view.move_panel import MirrorPanel, MovePanel
 from view.sketch_tools import (
-    ALIGN_PX, CURVE_SNAP_PX, SNAP_PX, ArcTool, CircleTool, LineTool, PasteTool, PointTool, SplineTool, TraceTool, align,
+    ALIGN_PX, CURVE_SNAP_PX, SNAP_PX, ArcTool, CircleTool, LineTool, PasteTool, PointTool, ProjectTool, SplineTool,
+    TraceTool, align,
     curve_snap,
     fmt_mm, radius_snap,
 )
@@ -180,6 +183,8 @@ ARC_HINTS = {
              "Esc: drop the clicks, again: leave Arc"}
 CIRCLE_HINT = "Circle: click the center, then a point on the circle · Esc: drop the center, again: leave Circle"
 PASTE_HINT = "Paste: click where the copy goes (it hangs on the cursor by its middle) · Esc: cancel"
+PROJECT_HINT = ("Project Geometry: click a face of a body: its edges come into the sketch (lines, circles, arcs; "
+                "other curves as splines) · Esc: leave")
 PICK_PLANE_HINT = "Start 2D Sketch: select a plane or a flat face of a body (in 3D or in the browser), Esc: cancel"
 FACE_TOLERANCE = 1e-6           # m and normal components: a body face lies on a feature's face plane
 ERROR_COLOR = QColor(200, 30, 30)
@@ -467,9 +472,14 @@ class MainWindow(QMainWindow):
                                          tip="A generated curve (a parabola; the arrow: other kinds), set by its "
                                              "arguments in the properties")
         group.add_action(self.curve_action, self.curve_menu)
+        self.project_action = self._action(
+            "Project Geometry", self._set_project_tool, checkable=True,
+            tip="Click faces of bodies: their edges, projected onto the sketch's plane, become sketch geometry "
+                "(plain numbers: lines, circles and arcs exactly, other curves as splines within the tolerance)")
+        group.add_action(self.project_action)
         self.tool_actions = (self.line_action, self.point_action, self.circle_action, self.arc_action,
                              self.trace_action,
-                             self.spline_action)
+                             self.spline_action, self.project_action)
         group = sketch.add_group("Format")
         self.construction_action = self._action(
             "Construction", self._construction_toggled, checkable=True,
@@ -1267,6 +1277,62 @@ class MainWindow(QMainWindow):
             self._spline = sketch.add_spline(a, b, construction=self.construction_mode)
         self._commit()
         return a, b
+
+    def _set_project_tool(self, on):
+        self._set_tool(on, self.project_action, lambda: ProjectTool(
+            self.view, self.editing, self._edited_result, self.project_face,
+            on_exit=lambda: self.project_action.setChecked(False)))
+
+    def project_face(self, key):
+        """
+        Project Geometry: the edges of body face `key` (("face", body, index),
+        as the view shows it: unplaced) projected into the edited sketch as
+        plain geometry (geometry/project.py, Sketch.add_projection); curves
+        that are no line, circle or arc become splines within the spline
+        tolerance (µm, as Convert to Spline). One undo step; returns the new
+        entities' names.
+        """
+        from geometry.project import face_of, project_faces
+        from model.curves import fit_points
+        from model.features import FeatureError
+
+        shapes = (self._frozen if self._frozen is not None else self.result).shapes
+        shape = shapes.get(key[1])
+        if self.editing is None or shape is None:
+            return []
+        built = self.result.outputs[self.editing]
+        frame = built.frame
+        try:
+            tolerance = float(self.spline_tolerance) * 1e-3
+        except ValueError:
+            tolerance = 0.05
+        items, failed = [], 0
+        for item in project_faces([face_of(shape, key[2])], frame.origin / MM, frame.u, frame.v):
+            if item[0] != "curve":
+                items.append(item)
+                continue
+            try:
+                xy = fit_points(*item[1:], tolerance=tolerance)
+            except CurveError:
+                failed += 1
+                continue
+            items.append(("spline", xy, len(xy) > 3 and bool(np.allclose(xy[0], xy[-1], atol=1e-6))))
+        sketch = self.part.feature(self.editing)
+        try:
+            added = sketch.add_projection(items, built.points, self.construction_mode)
+        except (FeatureError, PartError) as error:
+            self.doc.revert()
+            self.statusBar().showMessage(f"face {key[2]} of {key[1]} not projected: {error}", 10000)
+            return []
+        self._commit()
+        kinds = {}
+        for name in added:
+            kind = "spline" if name.startswith("Spline") else {"L": "line", "C": "circle", "A": "arc"}[name[0]]
+            kinds[kind] = kinds.get(kind, 0) + 1
+        what = ", ".join(f"{n} {k}{'s' if n > 1 else ''}" for k, n in kinds.items()) or "nothing new"
+        self.statusBar().showMessage(f"face {key[2]} of {key[1]} projected: {what}"
+                                     + (f"; {failed} curve(s) left out (no spline fits)" if failed else ""), 10000)
+        return added
 
     def _set_circle_tool(self, on):
         self._set_tool(on, self.circle_action, lambda: CircleTool(
@@ -3635,7 +3701,7 @@ class MainWindow(QMainWindow):
             tool = self.view.tool
             hints = {LineTool: LINE_HINT, PointTool: POINT_HINT, CircleTool: CIRCLE_HINT, PasteTool: PASTE_HINT,
                      ArcTool: ARC_HINTS[self.arc_method],
-                     TraceTool: TRACE_HINT, SplineTool: SPLINE_HINT}
+                     TraceTool: TRACE_HINT, SplineTool: SPLINE_HINT, ProjectTool: PROJECT_HINT}
             hint = f"{self.editing}: " + (hints[type(tool)] if tool is not None
                                           else "Finish Sketch to leave it · " + HINT)
         self.statusBar().showMessage("   ".join(parts) if parts else hint)
