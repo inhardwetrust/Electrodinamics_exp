@@ -345,14 +345,28 @@ in the conversation; never stop or delete their runs.
 - The window: Run on server = push (STEP + .toml into `<path>/models/`) +
   start `run.py` there under nohup; the window follows it (every 15 s) and
   fetches the finished run into `model.results/` as the next "Run N".
-  Fetch takes finished runs (a done run, all taken: the model's files on
-  the server are deleted); Stop stops it; Clean server... (Remote tab)
-  lists the models kept there and deletes the ticked (never a running
-  one). One run at a time per server
+  Fetch takes finished runs; Stop stops it. One run at a time per server
   (`run.lock`).
+- **The server keeps nothing it does not need.** After a fetch of a done
+  run whose every run file there is taken, the model's files on the server
+  go (STEP, .toml, log, status, `model.results/`); the next Run on server
+  pushes them again. A failure to delete is only reported (the runs are
+  taken). Left behind: failed or stopped runs, runs never fetched, old
+  models. **Clean server...** (Remote tab) lists `models/` by model (size,
+  run files there, state) and deletes the ticked; a model whose run goes
+  is never deleted. From Python: `sync.server_models(config)` →
+  [ServerModel name, files, size, runs, state, active],
+  `sync.clean(config, [names])` → {deleted, skipped}. Deleting is the
+  user's call: ask before cleaning models that still have run files.
+- **The code there.** The user copies the code to the server by hand
+  (the server has no git). An older code there fails on a newer project
+  file: "cannot read the model: ... [farfield]: unknown key 'f0'", or an
+  ImportError, or worse, computes the old physics. Then tell the user the
+  server needs the current code; `remote_tasks.py sync-code` (it backs the
+  old code up first, keeps the 3 newest backups) only when they ask.
 - Scripts (`.claude/skills/antenna-design/scripts/remote_tasks.py`):
   `status` (run.lock, runs, zz_ folders, disk), `sync-code` (backup +
-  upload of the code: the server must run the same code), `sweep NAME --
+  upload of the git-tracked code), `sweep NAME --
   ARGS` (sweep.py there in `zz_NAME/`), `wait-sweep`, `clean`, `launch
   STEP` / `wait-run STEP` / `fetch STEP` (as the window, recorded so the
   window shows the pending run).
@@ -520,8 +534,9 @@ design project's own README (`../patch_antenna_sma/`).
   side tilt the beam and cut the efficiency.
 - Every STEP export changes its bytes: the last run turns outdated even
   for the same geometry.
-- On the server: old code there computes old physics or fails at import:
-  `sync-code` after code changes.
+- On the server: old code there fails on a newer .toml ("unknown key"),
+  at import, or computes old physics: it needs the current code (the user
+  copies it, or `sync-code` when they ask; section 11).
 
 ## 17. Not there yet
 

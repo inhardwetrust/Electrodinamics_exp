@@ -95,8 +95,14 @@ Fix and dry-run again until clean. Never run with a short you do not mean.
 - Local (`run.py MODEL.step`, or ▶ Simulate): small models, a first look.
 - The server (REFERENCE 11): anything of millions of cells or a final
   run, only when the user allowed server work in this conversation.
-  `remote_tasks.py status` first (another run holds the machine?);
-  `sync-code` after code changes. One run at a time there.
+  `remote_tasks.py status` first (another run holds the machine?). One
+  run at a time there. The server's code is the user's to update (they
+  copy it by hand); `sync-code` only when they ask.
+- The server cleans itself: a done run, once fetched, takes its model's
+  files there with it. Tails of failed or stopped runs stay: Clean
+  server... in the Remote tab (or `sync.clean`), after asking the user,
+  never a model whose run goes. Never touch the server while the user's
+  own run goes there (status: run.lock).
 - Do not change the model's STEP or .toml while its run goes: the result
   comes back outdated.
 
@@ -138,3 +144,6 @@ In Russian, short:
   side it cannot be avoided (REFERENCE 16).
 - The window refuses a command: read the error text; it names the reason
   (not locked, cannot run, a transfer going on...).
+- The server's run fails at once with "unknown key" or an ImportError:
+  the server has older code than this one (REFERENCE 11). Tell the user;
+  update it only when they ask.

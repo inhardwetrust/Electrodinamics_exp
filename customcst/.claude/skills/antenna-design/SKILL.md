@@ -88,9 +88,11 @@ S=.claude/skills/antenna-design/scripts
 `sweep.py` prints per variant: S11 minimum and at f0, Z_in at f0, D, G,
 realized G, efficiency, the beam direction, the front asymmetry of the E
 and H planes. The same script runs locally (`scripts/sweep.py FOLDER ...`).
-Sync the code after any change to solver/, project/, tools/ that the run
-needs; a server with old code fails at import or, worse, computes old
-physics.
+The server must run the current code (solver/, project/, tools/): the
+user copies it by hand; `sync-code` only when they ask. A server with old
+code fails on a newer .toml ("unknown key"), at import or, worse,
+computes old physics. A sweep uploads its own sweep.py and
+make_test_models.py, not the rest.
 
 Knobs and what they do (patch on FR4, from our runs):
 - the resonance scales as 1 / L (the resonant length); formulas land 5-10 %
