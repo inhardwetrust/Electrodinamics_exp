@@ -79,7 +79,8 @@ SECTIONS = {
                               "S-matrix. One port: one run (faster), only its column of S "
                               "(e.g. S11, S21); the other ports still absorb as matched loads."),
             ),
-            note="auto padding = λ/4 in air at the center frequency",
+            note="padding 0 = auto: λ/4 in air at the center frequency, λ/2 at the lowest "
+                 "far-field frequency when the far field is on",
         ),
         Section(
             "mesh", "Mesh",
@@ -145,11 +146,35 @@ def accuracy_db(settings):
     return float(settings["simulation"]["accuracy"])
 
 
-def padding_m(settings):
-    """Air around the model in meters (auto: λ0/4 at the center frequency)."""
+def auto_padding(settings):
+    """
+    (meters, why) of the auto padding: λ0/2 at the lowest far-field
+    frequency when the far field is on (its box in air, away from the near
+    field), else λ0/4 at the band's center (the absorber out of the near
+    field: enough for S).
+    """
+    far = farfield_frequencies(settings)
+    if far:
+        f = min(far)
+        return C0 / (f * GHZ) / 2.0, f"λ/2 at {f:g} GHz, far field on"
     sim = settings["simulation"]
-    if sim["padding"] > 0:
-        return sim["padding"] * MM
+    f = 0.5 * (sim["f_min"] + sim["f_max"])
+    return C0 / (f * GHZ) / 4.0, f"λ/4 at {f:g} GHz"
 
-    f_center = 0.5 * (sim["f_min"] + sim["f_max"]) * GHZ
-    return C0 / f_center / 4.0
+
+def padding_m(settings):
+    """Air around the model in meters (0 in the project: auto_padding)."""
+    if settings["simulation"]["padding"] > 0:
+        return settings["simulation"]["padding"] * MM
+    return auto_padding(settings)[0]
+
+
+def far_field_padding_mm(settings):
+    """
+    The auto padding in mm when the far field sets it (padding 0, far field
+    on), else None: the run fingerprint takes it in then, as the far field
+    is otherwise not in it (result_file.fingerprint).
+    """
+    if settings["simulation"]["padding"] > 0 or not farfield_frequencies(settings):
+        return None
+    return round(auto_padding(settings)[0] / MM, 6)

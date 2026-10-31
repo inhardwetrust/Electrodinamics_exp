@@ -125,7 +125,7 @@ def _simulate(args, step, status, stage):
             pass
 
     from project.project_file import ProjectError
-    from project.settings import EXCITE_ALL, accuracy_db, farfield_frequencies
+    from project.settings import EXCITE_ALL, accuracy_db, auto_padding, farfield_frequencies
     from solver import fdtd_kernels
     from solver.result_file import fingerprint, format_duration, save_result
     from solver.simulation import parameters, port_names, prepare, problem, simulate
@@ -176,6 +176,11 @@ def _simulate(args, step, status, stage):
           + (f", {threads} threads" if threads else ""))
     if farfield_frequencies(project.settings):
         print(f"far field  at {', '.join(f'{f:g}' for f in farfield_frequencies(project.settings))} GHz")
+    if sim["padding"] > 0:
+        print(f"padding    {sim['padding']:g} mm")
+    else:
+        meters, why = auto_padding(project.settings)
+        print(f"padding    auto {meters * 1e3:.1f} mm ({why})")
 
     model_fingerprint = fingerprint(project)
     if args.dry_run:

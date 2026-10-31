@@ -17,7 +17,9 @@
 #
 # Fingerprint: SHA-256 of the STEP file's bytes plus the project's body
 # types, parameter values, hole rules and [simulation] / [mesh] settings
-# (not [view], not [farfield]: it does not change S). When it differs from the current model, a run is still
+# (not [view], not [farfield]: it does not change S), plus the auto padding
+# when the far field sets it (padding 0, far field on: λ/2 instead of λ/4,
+# another domain). When it differs from the current model, a run is still
 # shown but marked as outdated.
 #
 # An older single-result file (model.npz, format 1) is moved into the folder
@@ -31,7 +33,7 @@ import time
 
 import numpy as np
 
-from project.settings import NOT_IN_FINGERPRINT
+from project.settings import NOT_IN_FINGERPRINT, far_field_padding_mm
 
 FORMAT_VERSION = 2
 
@@ -87,6 +89,9 @@ def fingerprint(project):
                      if name not in NOT_IN_FINGERPRINT},
         "holes": [sorted(project.hole_diameters.items()), sorted(project.hole_single.items())],
     }
+    padding = far_field_padding_mm(project.settings)
+    if padding is not None:             # the far field widens the auto padding: the domain changes
+        inputs["far_field_padding_mm"] = padding
     digest.update(json.dumps(inputs, sort_keys=True, ensure_ascii=False).encode("utf-8"))
     return digest.hexdigest()
 

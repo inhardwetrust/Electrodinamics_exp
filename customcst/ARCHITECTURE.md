@@ -1095,8 +1095,16 @@ Checks: `checks/check_result_file.py` covers:
   field is computed and the frequencies stay (`farfield_frequencies()`
   returns []: the one place every caller reads them); while off they are
   not checked against the band, so ticking it on with one outside is
-  refused. A monitors preset switches it on. The tick saves without a new
-  mesh.
+  refused. A monitors preset switches it on.
+- The auto padding follows it (`settings.auto_padding`): padding 0 is
+  λ/2 at the lowest far-field frequency with the far field on, λ/4 at the
+  band's center without (the old rule). The run fingerprint, which leaves
+  [farfield] out, then takes that padding in (`far_field_padding_mm`: only
+  for padding 0 with the far field on, so every older fingerprint stays
+  the same). A far-field edit makes a new mesh only when it changes the
+  padding (`MainWindow._farfield_edited` against `_padding_meshed`). The
+  tree's Simulation section shows "padding now: auto ... mm (why)"; the
+  dry run prints it.
   It is not in the fingerprint (`settings.NOT_IN_FINGERPRINT`): it does
   not change S, and a run keeps the frequencies it was made with. Editing
   it saves the project without a new mesh.

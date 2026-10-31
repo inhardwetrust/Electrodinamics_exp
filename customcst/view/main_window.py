@@ -44,7 +44,8 @@ from view.remote_panel import RemotePanel, RemoteRunner
 from view.results_panel import ResultsPanel
 from view.tdr_window import TdrWindow
 from view.view_buttons import ViewButtons
-from project.settings import EXCITE_ALL, NOT_IN_FINGERPRINT, accuracy_db, farfield_frequencies
+from project.settings import (EXCITE_ALL, NOT_IN_FINGERPRINT, accuracy_db, auto_padding, farfield_frequencies,
+                              padding_m)
 from solver.result_file import (delete_result, fingerprint, format_duration, list_results,
                                 rename_result, results_dir, save_result)
 from view.sim_runner import SimulationRunner
@@ -166,6 +167,7 @@ class MainWindow(QMainWindow):
         self.remote.finished.connect(self._remote_finished)
         self.remote.failed.connect(self._remote_failed)
         self._remote_operation = None
+        self._padding_meshed = None             # padding_m() of the mesh built (a far-field edit may change it)
         self._clean_names = []                  # the server's models Clean server deletes
         self.remote_watch = RemoteRunner(self)  # the open model's server run, read quietly
         self.remote_watch.finished.connect(self._remote_watched)
@@ -1158,6 +1160,7 @@ class MainWindow(QMainWindow):
         self.view.set_vias(self.via_bodies)
 
         columns = {**self.ports, **self.elements}       # bodies that need a line on their axis
+        self._padding_meshed = padding_m(self.project.settings) if self.project else None
         self.mesh = (build_grid(self.geometry, self.project, columns, self.waveports, self.via_bodies)
                      if self.project else None)
         self.materials = None
@@ -1905,6 +1908,7 @@ class MainWindow(QMainWindow):
         if name == "simulation":
             self._fill_monitors()
             self._fill_results()
+            self._update_padding_row()
 
     def _setting_row(self, parent, name, param):
         """A row of a [name] setting: editable value, or a check box for a switch."""
@@ -2111,6 +2115,31 @@ class MainWindow(QMainWindow):
         for column in range(3):
             self.tree.resizeColumnToContents(column)
 
+    def _update_padding_row(self):
+        """Simulation > "padding now: auto ... mm (why)" while the padding is auto, after the section's note."""
+        section = self._tree_item("section", "simulation")
+        if section is None or self.project is None:
+            return
+        rows = [section.child(i) for i in range(section.childCount())]
+        row = next((r for r in rows if r.data(0, Qt.UserRole) == ("note", "padding", None)), None)
+        text = None
+        if self.project.settings["simulation"]["padding"] == 0:
+            meters, why = auto_padding(self.project.settings)
+            text = f"padding now: auto {meters * 1e3:.1f} mm ({why})"
+        self.tree.blockSignals(True)
+        if row is not None and text is None:
+            section.removeChild(row)
+        elif text is not None:
+            if row is None:
+                row = QTreeWidgetItem([text])
+                row.setData(0, Qt.UserRole, ("note", "padding", None))
+                row.setForeground(0, QColor("gray"))
+                notes = [i for i, r in enumerate(rows) if r.data(0, Qt.UserRole) == ("note", "simulation", None)]
+                section.insertChild(notes[-1] + 1 if notes else len(rows), row)
+                row.setFirstColumnSpanned(True)
+            row.setText(0, text)
+        self.tree.blockSignals(False)
+
     def _preset_row(self, parent, kind):
         """A grey row: the preset whose values these settings have (right click: apply / save one)."""
         if self.project is None or self.geometry is None:
@@ -2140,8 +2169,7 @@ class MainWindow(QMainWindow):
         if kind == "mesh":
             self._after_edit()                  # a new mesh
         else:
-            self._save()                        # the far field changes no mesh, no S
-            QTimer.singleShot(0, self._fill_monitors)
+            self._farfield_edited()
         self.statusBar().showMessage(f"{kind} preset {name} applied", 5000)
         return None
 
@@ -2795,6 +2823,7 @@ class MainWindow(QMainWindow):
         self._fill_section(self._tree_item("section", "mesh"))
         self._fill_holes()
         self._fill_monitors()                   # the ports may have changed
+        self._update_padding_row()              # the band or the padding may have changed
         self._resize_columns()
         self._show_summary()
         self._fill_materials()
@@ -3002,8 +3031,7 @@ class MainWindow(QMainWindow):
                 item.setText(1, _fmt_value(checked))
                 self.tree.blockSignals(False)
                 if owner in NOT_IN_FINGERPRINT:
-                    self._save()                # no new mesh
-                    QTimer.singleShot(0, self._fill_monitors)
+                    self._farfield_edited()
                 else:
                     self._after_edit()
             return
@@ -3030,10 +3058,21 @@ class MainWindow(QMainWindow):
         self.tree.blockSignals(False)
 
         if changed and role == "setting" and owner in NOT_IN_FINGERPRINT:
-            self._save()                        # no new mesh: it changes no material, no port
-            QTimer.singleShot(0, self._fill_monitors)
+            self._farfield_edited()
         elif changed:
             self._after_edit()
+
+    def _farfield_edited(self):
+        """
+        A far-field setting changed: saved; a new mesh only when the auto
+        padding follows it (padding 0: λ/2 with the far field, λ/4 without).
+        """
+        if self._padding_meshed is not None and abs(self._padding_meshed - padding_m(self.project.settings)) > 1e-12:
+            self._after_edit()                  # another domain
+        else:
+            self._save()                        # no new mesh: it changes no material, no port
+            QTimer.singleShot(0, self._fill_monitors)
+            self._update_padding_row()
 
     def _save(self):
         self.project.view = self._view_state()      # the display goes along

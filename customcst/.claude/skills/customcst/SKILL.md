@@ -46,10 +46,10 @@ only change a value:
 - every body a type; dielectrics a material, f_ref = the design frequency;
 - the band ±20-30 % around it; `excite` all, or the one port you need;
 - the mesh: 20-30 cells/λ, 4 per feature for a first look;
-- an antenna: accuracy -50. Tuning by S11: padding 0 (auto, λ/4) and the
-  far field off (`[farfield] enabled = false`, the frequencies kept): 2-3x
-  fewer cells. The run with the pattern: padding ~λ/2 at the lowest
-  far-field frequency, far field on, its frequencies inside the band;
+- an antenna: accuracy -50, padding 0 (auto). Tuning by S11: the far
+  field off (`[farfield] enabled = false`, the frequencies kept): auto is
+  λ/4, 2-3x fewer cells. The run with the pattern: the far field on, its
+  frequencies inside the band: auto becomes λ/2 at the lowest of them;
 - `save()`. Never write into the user's own models or their .toml from a
   test: copy them to the scratchpad. A new model of yours goes where the
   task says (a design project's `sim/`, or `models/` for examples).

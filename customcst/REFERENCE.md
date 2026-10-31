@@ -274,7 +274,8 @@ hexahedral mesh:
   result).
 - **Boundaries**: 8 CPML cells outside the domain on every side (open
   space). The domain is the model's box plus `padding` of air on every
-  side (auto: λ/4 at the center frequency), except a waveguide port's
+  side (auto: λ/4 at the center frequency, λ/2 at the lowest far-field
+  frequency with the far field on), except a waveguide port's
   side, which ends at its plane.
 - **Excitation**: `excite = "all"`: one run per port, the full S-matrix.
   One port's name: one run, its column (S11, S21...); the other ports are
@@ -283,12 +284,16 @@ hexahedral mesh:
   `accuracy` dB below its peak (after the pulse): -40 usual, -50 / -60 for
   resonant structures and narrow bands (an antenna: -50). Also stops after
   30 pulse lengths.
-- **Padding for S11 only**: λ/4 (auto, padding 0) keeps the absorber out
-  of the antenna's near field (~λ/2π); λ/2 is for the far field (its box
-  in air, away from the near field). Tuning by S11: padding 0 and
-  `[farfield] enabled = false` (2-3x fewer cells); the final run with the
-  pattern: ~λ/2 and on. Check once that λ/4 and λ/2 give the same S11
-  minimum (< ~0.5 %).
+- **Padding**: λ/4 keeps the absorber out of the antenna's near field
+  (~λ/2π): enough for S11; λ/2 is for the far field (its box in air, away
+  from the near field). **Auto (padding 0) does both**: λ/4 at the band's
+  center with the far field off, λ/2 at the lowest far-field frequency
+  with it on (`settings.auto_padding`; the tree's "padding now" row and
+  the dry run's `padding` line show it). Tuning by S11: padding 0 and
+  `[farfield] enabled = false` (2-3x fewer cells); the final run: the far
+  field on, padding still 0. Then the fingerprint takes the auto padding
+  in (another domain), so runs made without the far field show outdated.
+  Check once that λ/4 and λ/2 give the same S11 minimum (< ~0.5 %).
 - **Far field** (`[farfield] frequencies`, `enabled`, ARCHITECTURE "Far field"): a
   Huygens box 2 cells inside the meshed domain collects E and H on its
   faces at those frequencies during the run. **It must lie in air**: keep
