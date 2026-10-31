@@ -2890,7 +2890,10 @@ class MainWindow(QMainWindow):
                 self._after_edit()
             return
 
-        text = item.text(1).strip().replace(",", ".")
+        schema = OBJECT_TYPES[self.project.get(owner).type] if role == "param" else SECTIONS[owner]
+        text = item.text(1).strip()
+        if not schema.param(param).numbers:
+            text = text.replace(",", ".")       # a decimal comma; in a list of numbers it separates them
         try:
             if role == "param":
                 self.project.set_value(owner, param, text)
