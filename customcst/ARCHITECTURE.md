@@ -1091,6 +1091,12 @@ Checks: `checks/check_result_file.py` covers:
 `solver/farfield.py`, checked by `checks/check_farfield.py`.
 - Project `[farfield] frequencies = "5.5, 5.757"` (GHz, within f min ..
   f max, "" = off), in the tree under Simulation > Monitors > Far field.
+  `[farfield] enabled` (the tree's "on" tick, default true): off, no far
+  field is computed and the frequencies stay (`farfield_frequencies()`
+  returns []: the one place every caller reads them); while off they are
+  not checked against the band, so ticking it on with one outside is
+  refused. A monitors preset switches it on. The tick saves without a new
+  mesh.
   It is not in the fingerprint (`settings.NOT_IN_FINGERPRINT`): it does
   not change S, and a run keeps the frequencies it was made with. Editing
   it saves the project without a new mesh.

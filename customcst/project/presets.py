@@ -215,7 +215,8 @@ def apply(project, kind, values):
     if kind == "mesh":
         updates = [("mesh", key, value) for key, value in values.items()]
     else:
-        updates = [("farfield", "frequencies", frequencies(project.settings, values))]
+        updates = [("farfield", "frequencies", frequencies(project.settings, values)),
+                   ("farfield", "enabled", True)]           # a monitors preset is asked for: on
     saved = project.settings
     try:
         for section, key, value in updates:

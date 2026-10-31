@@ -1940,7 +1940,8 @@ class MainWindow(QMainWindow):
         far = _group_item(item, "Far field", "farfield", SECTIONS["farfield"].params[0].tooltip)
         for param in SECTIONS["farfield"].params:
             self._setting_row(far, "farfield", param)
-        self._note_row(far, "farfield", "empty: off; D, G and efficiency under Results > the run", "gray")
+        self._note_row(far, "farfield", "off, or no frequencies: none computed; D, G and efficiency "
+                                        "under Results > the run", "gray")
         self._preset_row(far, "monitors")
         far.setExpanded(True)
         item.setExpanded(True)
@@ -2988,11 +2989,23 @@ class MainWindow(QMainWindow):
         if role == "setting" and SECTIONS[owner].param(param).boolean:
             checked = item.checkState(1) == Qt.Checked
             if checked != self.project.settings[owner][param]:
-                self.project.set_setting(owner, param, checked)
+                try:
+                    self.project.set_setting(owner, param, checked)
+                except ValueError as error:         # e.g. far field on with frequencies outside the band
+                    self.statusBar().showMessage(str(error), 6000)
+                    checked = self.project.settings[owner][param]
+                    self.tree.blockSignals(True)
+                    item.setCheckState(1, Qt.Checked if checked else Qt.Unchecked)
+                    self.tree.blockSignals(False)
+                    return
                 self.tree.blockSignals(True)
                 item.setText(1, _fmt_value(checked))
                 self.tree.blockSignals(False)
-                self._after_edit()
+                if owner in NOT_IN_FINGERPRINT:
+                    self._save()                # no new mesh
+                    QTimer.singleShot(0, self._fill_monitors)
+                else:
+                    self._after_edit()
             return
 
         schema = OBJECT_TYPES[self.project.get(owner).type] if role == "param" else SECTIONS[owner]

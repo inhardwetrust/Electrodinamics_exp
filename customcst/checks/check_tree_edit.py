@@ -7,7 +7,10 @@
 #     semicolons separate, all values kept, sorted, in the .toml;
 #   - a list with a value outside f min .. f max: refused, the old value
 #     shown again;
-#   - a body parameter with a decimal comma (eps_r "4,4" -> 4.4).
+#   - a body parameter with a decimal comma (eps_r "4,4" -> 4.4);
+#   - Far field > on: unticked, no far field is computed, the frequencies
+#     kept, saved, no new mesh; frequencies outside the band may be typed
+#     while off, then ticking it on is refused (the tick goes back).
 #
 #   python checks/check_tree_edit.py
 
@@ -94,6 +97,29 @@ def main():
         type_in("param", "board", "eps_r", "4,4")
         check("a body parameter with a decimal comma: eps_r 4,4 -> 4.4",
               window.project.get("board").values["eps_r"] == 4.4)
+
+        from project.settings import farfield_frequencies
+        window.wait_for_mesh()
+        mesh = window.mesh
+        item = row("setting", "farfield", "enabled")
+        item.setCheckState(1, Qt.Unchecked)
+        for _ in range(5):
+            app.processEvents()
+        settings = window.project.settings
+        check("far field off: none computed, the frequencies kept", not settings["farfield"]["enabled"]
+              and farfield_frequencies(settings) == [] and settings["farfield"]["frequencies"] == "5.7, 5.8, 6")
+        check("  saved, no new mesh", Project.load(step).settings["farfield"]["enabled"] is False
+              and window.mesh is mesh and not window.mesh_busy())
+        type_in("setting", "farfield", "frequencies", "5.7, 9")
+        check("off: frequencies outside the band may be typed",
+              window.project.settings["farfield"]["frequencies"] == "5.7, 9")
+        row("setting", "farfield", "enabled").setCheckState(1, Qt.Checked)
+        for _ in range(5):
+            app.processEvents()
+        item = row("setting", "farfield", "enabled")
+        check("  then on is refused, the tick goes back", not window.project.settings["farfield"]["enabled"]
+              and item.checkState(1) == Qt.Unchecked and "outside" in window.statusBar().currentMessage(),
+              window.statusBar().currentMessage())
     finally:
         window.close()
         app.processEvents()

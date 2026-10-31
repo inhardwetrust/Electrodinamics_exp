@@ -109,6 +109,9 @@ def module_checks(folder):
     presets.apply(project, "monitors", spread)
     check("with f0 5.757: 5.6419, 5.757, 5.8721", project.settings["farfield"]["frequencies"]
           == "5.6419, 5.757, 5.8721", project.settings["farfield"]["frequencies"])
+    project.set_setting("farfield", "enabled", False)
+    presets.apply(project, "monitors", spread)
+    check("a monitors preset switches the far field on", project.settings["farfield"]["enabled"] is True)
     check("matching names the monitors preset",
           presets.matching(project, "monitors", presets.all_presets(step, "monitors")) == "f0 ±2 %")
     back = presets.from_project(project, "monitors")

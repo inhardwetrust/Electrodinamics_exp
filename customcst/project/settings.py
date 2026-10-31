@@ -19,6 +19,7 @@
 #   slanted = true              # refine the step around slanted metal faces
 #
 #   [farfield]
+#   enabled = true              # off: no far field, the frequencies kept (a quick S11 run)
 #   frequencies = "5.5, 5.757"  # GHz, the far-field monitor's ("" = off; within f min .. f max)
 #   f0 = 5.757                  # GHz, what a monitors preset's offsets refer to (0 = the band's center)
 #
@@ -99,6 +100,9 @@ SECTIONS = {
         Section(
             "farfield", "Far field",
             params=(
+                Param("enabled", "on", True, boolean=True,
+                      tooltip="Off: the run computes no far field (no box, faster with less padding); "
+                              "the frequencies stay for later"),
                 Param("frequencies", "frequencies", "", minimum=1e-3, unit="GHz", numbers=True,
                       tooltip="The antenna's radiation pattern at these frequencies (comma separated, "
                               "within f min .. f max; empty: off). A box in the air around the model "
@@ -129,7 +133,9 @@ def check_settings(settings):
 
 
 def farfield_frequencies(settings):
-    """The far-field monitor's frequencies in GHz ([] = off)."""
+    """The far-field monitor's frequencies in GHz ([] = off: switched off, or none)."""
+    if not settings.get("farfield", {}).get("enabled", True):
+        return []
     text = settings.get("farfield", {}).get("frequencies", "")
     return [float(part) for part in text.split(",") if part.strip()]
 

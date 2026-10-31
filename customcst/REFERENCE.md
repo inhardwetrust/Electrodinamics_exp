@@ -112,6 +112,7 @@ min_step = 0.0                 # mm, fixpoints closer merge; 0 = auto
 slanted = true                 # refine the step around slanted metal
 
 [farfield]
+enabled = true         # false: no far field computed, the frequencies kept (quick S11 runs)
 frequencies = "5.6, 5.757, 5.9"   # GHz, within f_min..f_max; "" = off
 f0 = 5.757             # GHz, what a monitors preset's offsets refer to; 0 = the band's center
 
@@ -282,7 +283,13 @@ hexahedral mesh:
   `accuracy` dB below its peak (after the pulse): -40 usual, -50 / -60 for
   resonant structures and narrow bands (an antenna: -50). Also stops after
   30 pulse lengths.
-- **Far field** (`[farfield] frequencies`, ARCHITECTURE "Far field"): a
+- **Padding for S11 only**: λ/4 (auto, padding 0) keeps the absorber out
+  of the antenna's near field (~λ/2π); λ/2 is for the far field (its box
+  in air, away from the near field). Tuning by S11: padding 0 and
+  `[farfield] enabled = false` (2-3x fewer cells); the final run with the
+  pattern: ~λ/2 and on. Check once that λ/4 and λ/2 give the same S11
+  minimum (< ~0.5 %).
+- **Far field** (`[farfield] frequencies`, `enabled`, ARCHITECTURE "Far field"): a
   Huygens box 2 cells inside the meshed domain collects E and H on its
   faces at those frequencies during the run. **It must lie in air**: keep
   the model inside the padding (~λ/2 at the lowest far-field frequency is
