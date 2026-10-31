@@ -216,11 +216,11 @@ Names and the connector:
   read the exported STEP's body names back (`read_step`) before assigning.
 - A coax connector's port is its end cylinder, type `waveport`
   (REFERENCE 5); the dry run says whether it is found. Its plane ends the
-  domain on that side with no padding, so the far-field box there runs
-  through the connector: not validated yet. For the pattern, check the
-  run's "body crosses the far-field box" line, and compare once with the
-  same antenna fed by a lumped port at the board edge before trusting
-  the back and the connector-side figures.
+  domain on that side with no padding, so the coax runs through the
+  far-field box: the box leaves the coax's inside out (REFERENCE 16), the
+  efficiency is right, the pattern's level ~0.2 dB low. Still check the
+  run's "body crosses the far-field box" line: other metal (the
+  connector's body, the board) reaching the box is not left out.
 - Conductors may touch or overlap (a pin on the line, solder on a pad):
   PEC merges. Two dielectrics in one place: the later body wins cell by
   cell; avoid it.

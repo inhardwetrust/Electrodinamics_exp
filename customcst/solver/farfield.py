@@ -37,10 +37,24 @@
 # so directivity D = 4 pi U / P_rad (P_rad = U integrated over the sphere),
 # gain G = 4 pi U / p_acc, realized gain = 4 pi U / p_inc, efficiency
 # p_rad / p_acc. theta is measured from +z, phi from +x toward +y.
+#
+# A waveguide port's line crosses the box: its plane is the domain end on
+# that side (no padding), so the coax of a connector runs through the box
+# face on its way to the port. Inside its shield flows the feed power,
+# into the box: counted, it made the radiated power (and the efficiency)
+# negative and put the guided wave into the pattern. On the face parallel
+# to the port plane, on its side, the cells inside the port's mode region
+# (a coax port: its circle; nodes where the mode's potential is defined)
+# and the metal joined to them on the face (the shield) are left out of
+# the currents and the flux: what remains is the outside, the shield's
+# outer surface included (a cable radiates too). A box port's mode covers
+# the whole plane (the board reaches the domain end): nothing can be left
+# out, and the board crossing the box stays reported.
 
 import math
 
 import numpy as np
+from scipy import ndimage
 
 from project.settings import C0
 from solver.sparams import port_waves
@@ -71,7 +85,7 @@ def _take(array, index):
 class FarFieldBox:
     """Collects the tangential fields on the Huygens box during a run (see the header)."""
 
-    def __init__(self, solver, frequencies, gap=FAR_FIELD_GAP):
+    def __init__(self, solver, frequencies, gap=FAR_FIELD_GAP, exclude_ports=True):
         self.frequencies = np.asarray(frequencies, dtype=np.float64)
         self.omega = 2.0 * math.pi * self.frequencies
         pulse = solver.pulse
@@ -91,6 +105,10 @@ class FarFieldBox:
             u, v = _cyclic(axis)
             for node, sign in ((lo[axis], -1.0), (hi[axis], 1.0)):
                 self.faces.append(self._face(solver, axis, u, v, node, sign))
+        self.excluded = {}                  # waveguide port -> cells of the box left out (its line)
+        if exclude_ports:
+            for port in getattr(solver.materials, "waveports", []):
+                self._exclude_port(solver, port)
         self.cut = self._material_on_box(solver)
         self.reset()
 
@@ -106,23 +124,69 @@ class FarFieldBox:
             "axis": axis, "u": u, "v": v, "node": node, "sign": sign,
             "position": float(lines[axis][node]),
             "cu": cu, "cv": cv, "area": du[:, None] * dv[None, :],
+            "out": np.zeros((len(cu), len(cv)), dtype=bool),      # cells left out (a port's line)
             # H at the plane from the cells node-1 and node (linear in the distance)
             "h_weights": (above / (below + above), below / (below + above)),
             "cells_u": slice(self.lo[u], self.hi[u]), "cells_v": slice(self.lo[v], self.hi[v]),
             "nodes_u": slice(self.lo[u], self.hi[u] + 1), "nodes_v": slice(self.lo[v], self.hi[v] + 1),
         }
 
+    def _exclude_port(self, solver, port):
+        """Leaves a waveguide port's line out of the face it crosses (see the header)."""
+        mode = port.mode
+        if mode is None or mode.phi is None:
+            return
+        side = -1.0 if port.index == 0 else 1.0
+        face = next(f for f in self.faces if f["axis"] == port.axis and f["sign"] == side)
+        u, v = face["u"], face["v"]
+        inside = np.isfinite(mode.phi)                  # the mode's region: nodes (in mode.u_axis, v_axis order)
+        if (mode.u_axis, mode.v_axis) != (u, v):
+            inside = inside.T                           # -> the face's (u, v) order
+        if inside.all():
+            return                                      # a box port: the whole plane
+        cells = inside[:-1, :-1] & inside[1:, :-1] & inside[:-1, 1:] & inside[1:, 1:]
+        first_u, first_v = solver.inner[u][0], solver.inner[v][0]
+        region = cells[self.lo[u] - first_u:self.hi[u] - first_u, self.lo[v] - first_v:self.hi[v] - first_v]
+        # the metal on the face joined to the region: the shield, cut through
+        metal = self._metal_cells(solver, face)
+        labels, _ = ndimage.label(region | metal)
+        joined = np.isin(labels, np.unique(labels[region & (labels > 0)]))
+        out = region | (joined & metal)
+        face["out"] |= out
+        self.excluded[port.name] = int(out.sum())
+
+    def _metal_cells(self, solver, face):
+        """(nu, nv) bool: the face's cells whose four in-plane E edges are all PEC."""
+        a, u, v, node = face["axis"], face["u"], face["v"], face["node"]
+        pec_u = self._uv(_take(solver.cb[u], {a: node, u: face["cells_u"], v: face["nodes_v"]}), u, v) == 0
+        pec_v = self._uv(_take(solver.cb[v], {a: node, u: face["nodes_u"], v: face["cells_v"]}), u, v) == 0
+        return pec_u[:, :-1] & pec_u[:, 1:] & pec_v[:-1, :] & pec_v[1:, :]
+
     def _material_on_box(self, solver):
-        """E edges in the box's faces that are not plain vacuum (a body crosses the box)."""
+        """
+        E edges in the box's faces that are not plain vacuum (a body crosses
+        the box), not counting those of the cells left out (a port's line).
+        """
         count = 0
         for face in self.faces:
             a, u, v, node = face["axis"], face["u"], face["v"], face["node"]
+            out = face["out"]
             for comp, along in ((u, "cells_u"), (v, "cells_v")):
                 other = "nodes_v" if comp == u else "nodes_u"
                 index = {a: node, comp: face[along], (v if comp == u else u): face[other]}
-                eps = _take(solver.eps[comp], index)
-                cb = _take(solver.cb[comp], index)
-                count += int(np.count_nonzero((np.abs(eps / EPS0 - 1.0) > 1e-6) | (cb == 0)))
+                eps = self._uv(_take(solver.eps[comp], index), u, v)
+                cb = self._uv(_take(solver.cb[comp], index), u, v)
+                bad = (np.abs(eps / EPS0 - 1.0) > 1e-6) | (cb == 0)
+                # an edge borders two cells across it: left out when either is
+                if comp == u:                           # (nu, nv + 1): cells j-1 and j along v
+                    near = np.zeros(bad.shape, dtype=bool)
+                    near[:, :-1] |= out
+                    near[:, 1:] |= out
+                else:                                   # (nu + 1, nv): cells i-1 and i along u
+                    near = np.zeros(bad.shape, dtype=bool)
+                    near[:-1, :] |= out
+                    near[1:, :] |= out
+                count += int(np.count_nonzero(bad & ~near))
         return count
 
     def reset(self):
@@ -184,7 +248,8 @@ class FarFieldBox:
         for face in self.faces:
             # (E x H*) . e_axis = E_u H_v* - E_v H_u*
             flux = face["e_u"] * np.conj(face["h_v"]) - face["e_v"] * np.conj(face["h_u"])
-            total += 0.5 * face["sign"] * np.real(np.sum(flux * face["area"][None], axis=(1, 2)))
+            area = np.where(face["out"], 0.0, face["area"])
+            total += 0.5 * face["sign"] * np.real(np.sum(flux * area[None], axis=(1, 2)))
         return total
 
     def _patches(self, index, wavelength):
@@ -193,7 +258,7 @@ class FarFieldBox:
         positions, currents_j, currents_m = [], [], []
         for face in self.faces:
             a, u, v, s = face["axis"], face["u"], face["v"], face["sign"]
-            area = face["area"]
+            area = np.where(face["out"], 0.0, face["area"])      # a port's line left out
             # J = n x H: J_u = -s H_v, J_v = s H_u;  M = -n x E: M_u = s E_v, M_v = -s E_u
             parts = {
                 "j_u": -s * face["h_v"][index], "j_v": s * face["h_u"][index],
@@ -441,5 +506,6 @@ def far_field(box, solver):
         "p_acc": 0.5 * (np.abs(a) ** 2 - np.abs(b) ** 2),
         "p_inc": 0.5 * np.abs(a) ** 2,
         "cut_edges": np.array(box.cut),
+        "excluded_cells": np.array(sum(box.excluded.values())),
         "stride": np.array(box.stride),
     }

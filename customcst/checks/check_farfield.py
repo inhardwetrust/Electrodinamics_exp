@@ -32,7 +32,29 @@
 # frequencies, the way the window and run.py do, and the far field is read
 # back from the saved run file (solver/result_file.py).
 #
-#   python checks/check_farfield.py      (~30 s)
+# Fed through a coax (a connector's case): a waveguide port at the end of a
+# lossless PTFE coax (z 0..20 mm) coming up through a ground disk (r 30 mm,
+# 1 mm thick, on the coax's top), its inner conductor a 25 mm monopole
+# above the disk. The port plane ends the domain, so the coax crosses the
+# box face there. (Without the disk the shield's outside carries a strong
+# wave down the cable into the absorber: through the box but never to the
+# far field, the sphere then gets half the box flux: a cable, not the box.)
+# Three boxes in one run:
+#   - the port's line left out (the default): the box is in air otherwise,
+#     radiated = accepted (lossless, within 2 %); the sphere gets 94-95 % of
+#     the box flux (within 6 %): the shield's outside current crosses the
+#     box face (a conductor through the surface), the 15 mm of cable inside
+#     the box are not quite represented;
+#   - the same with the box face just under the disk (gap 8 cells, 3 mm
+#     below it): almost no cable inside, sphere = box flux within 3 % (at
+#     3 GHz the ratio went 0.946, 0.962, 0.983, 0.996 for gaps 2, 4, 6, 8:
+#     the shortfall is the cable inside; this close to the disk's edge its
+#     near field leaves +-2.5 % across the band);
+#   - nothing left out (the old way): the feed power through the coax
+#     inside the box spoils the balance (radiated 4-6 % of the accepted:
+#     off by > 20 %), and the crossing is reported.
+#
+#   python checks/check_farfield.py      (~1 min)
 
 import math
 import os
@@ -48,11 +70,15 @@ import numpy as np                                                       # noqa:
 from OCP.BRepPrimAPI import BRepPrimAPI_MakeCone, BRepPrimAPI_MakeCylinder  # noqa: E402
 from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt                                # noqa: E402
 
+from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut                             # noqa: E402
+
 from discretize.materials import discretize                              # noqa: E402
 from geometry.step_io import read_step, write_step                       # noqa: E402
 from mesh.rectilinear import build_grid                                  # noqa: E402
 from project.project_file import Project                                 # noqa: E402
-from solver.farfield import beamwidth, cut, intensity, summary, surface  # noqa: E402
+from solver.farfield import (FarFieldBox, beamwidth, cut, far_field, intensity, summary,  # noqa: E402
+                             surface)
+from solver.fdtd import FdtdSolver                                       # noqa: E402
 from solver.result_file import read_result, write_result                 # noqa: E402
 from solver.simulation import simulate                                   # noqa: E402
 
@@ -220,11 +246,66 @@ def half_wave_dipole(ff, length):
         check(f"{label} radiated = accepted (lossless)", abs(efficiency - 1) < 0.02, f"{efficiency:.4f}")
 
 
+def coax_fed(folder):
+    """A monopole fed through a coax whose waveguide port ends the domain: two boxes, one run."""
+    path = os.path.join(folder, "coax_monopole.step")
+    inner, diel, outer = 0.635, 2.11, 2.5          # mm: an SMA-like coax, PTFE
+    write_step(path, [
+        ("pin", rod_z(0.0, 46.0, inner), None),
+        ("disk", BRepAlgoAPI_Cut(rod_z(20.0, 21.0, 30.0), rod_z(20.0, 21.0, diel)).Shape(), None),
+        ("ptfe", BRepAlgoAPI_Cut(rod_z(0.0, 20.0, diel), rod_z(0.0, 20.0, inner)).Shape(), None),
+        ("shield", BRepAlgoAPI_Cut(rod_z(0.0, 20.0, outer), rod_z(0.0, 20.0, diel)).Shape(), None),
+        ("port", rod_z(-1.0, 0.0, outer), None),
+    ])
+    g = read_step(path)
+    project = Project(path)
+    for body in g.bodies:
+        project.set_type(body, {"port": "waveport", "ptfe": "dielectric"}.get(body.name, "pec"))
+    project.set_value("ptfe", "eps_r", 2.1)
+    project.set_setting("simulation", "f_min", 2.0)
+    project.set_setting("simulation", "f_max", 4.0)
+    project.set_setting("simulation", "padding", 30.0)
+    waveports = project.waveports(g)
+    mesh = build_grid(g, project, {}, waveports)
+    materials = discretize(mesh, g, project, waveports=waveports)
+    if materials.errors or not materials.waveports:
+        raise RuntimeError(f"bad model: {materials.errors}")
+    solver = FdtdSolver(materials, 2.0, 4.0, active_port="port")     # GHz
+    fixed = FarFieldBox(solver, FREQUENCIES)
+    near_disk = FarFieldBox(solver, FREQUENCIES, gap=8)
+    old = FarFieldBox(solver, FREQUENCIES, exclude_ports=False)
+    solver.monitors += [fixed, near_disk, old]
+    solver.run(end_db=-40.0)
+    ff, ff_disk, ff_old = far_field(fixed, solver), far_field(near_disk, solver), far_field(old, solver)
+    print(f"   coax-fed monopole over a disk: grid {mesh.grid.shape}, {solver.step_index} steps, "
+          f"left out {int(ff['excluded_cells'])} cells of the box")
+    for line in summary(ff):
+        print(f"     {line}")
+    check("coax-fed: the port's line left out, the box in air otherwise",
+          int(ff["excluded_cells"]) > 0 and int(ff["cut_edges"]) == 0,
+          f"{int(ff['excluded_cells'])} cells, {int(ff['cut_edges'])} edges in material")
+    check("  nothing left out: the crossing is reported", int(ff_old["cut_edges"]) > 0,
+          f"{int(ff_old['cut_edges'])} edges")
+    for k, f in enumerate(FREQUENCIES):
+        label = f"coax-fed, {f / 1e9:g} GHz:"
+        efficiency = ff["p_box"][k] / ff["p_acc"][k]
+        old_efficiency = ff_old["p_box"][k] / ff_old["p_acc"][k]
+        check(f"{label} radiated = accepted (lossless)", abs(efficiency - 1) < 0.02,
+              f"{efficiency:.4f} (nothing left out: {old_efficiency:.4f})")
+        check(f"{label}   nothing left out: off by > 20 %", abs(old_efficiency - 1) > 0.2, f"{old_efficiency:.4f}")
+        ratio = ff["p_sphere"][k] / ff["p_box"][k]
+        check(f"{label} sphere integral = box flux within 6 % (cable through the box)", abs(ratio - 1) < 0.06,
+              f"{ratio:.4f}")
+        ratio = ff_disk["p_sphere"][k] / ff_disk["p_box"][k]
+        check(f"{label}   the face under the disk: within 3 %", abs(ratio - 1) < 0.03, f"{ratio:.4f}")
+
+
 def main():
     folder = tempfile.mkdtemp()
     try:
         short_dipole(run(folder, 10.0), 10.0)
         half_wave_dipole(run(folder, 47.0), 47.0)
+        coax_fed(folder)
     finally:
         shutil.rmtree(folder, ignore_errors=True)
 

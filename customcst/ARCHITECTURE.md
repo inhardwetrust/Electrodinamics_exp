@@ -1155,6 +1155,21 @@ Checks: `checks/check_result_file.py` covers:
   on a coarse and a fine mesh alike (its real current is not quite
   sinusoidal); the sphere integral equals the box flux within 0.3 %, the
   radiated power the accepted one within 1 % (lossless rods).
+- A waveguide port's line through the box (`FarFieldBox._exclude_port`):
+  the port plane ends the domain, so a connector's coax crosses the box's
+  face on that side, and the feed power flowing in through it was taken
+  as radiation with the wrong sign (oldpatch: efficiency -24..-30 %). On
+  that face the cells inside the port's mode region (nodes with a defined
+  potential: the coax's circle) and the metal joined to them on the face
+  (scipy.ndimage.label: the shield) are left out of the flux, the
+  currents and the box-crossing count. A box port's mode covers the whole
+  plane: nothing is left out there. Checked on a coax-fed monopole over a
+  ground disk (check_farfield): radiated / accepted 0.993-0.999 (left in:
+  0.04-0.06); the sphere gets 94-95 % of the box flux, rising to ~100 %
+  as the face moves up to the disk (gap 2..8 cells: 0.946, 0.962, 0.983,
+  0.996 at 3 GHz): the shortfall is the shield's outside current through
+  the face (the cable inside the box). `exclude_ports=False` gives the
+  old box.
 
 ## Waveguide ports
 

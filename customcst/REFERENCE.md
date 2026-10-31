@@ -531,12 +531,18 @@ design project's own README (`../patch_antenna_sma/`).
   board in air.
 - Far-field frequencies outside f_min..f_max are rejected; changing them
   does not outdate a run.
-- The far-field box must lie in air: too little padding, or a waveguide
-  port (its side has no padding: the box then runs through what stands at
-  the port, a connector's coax), gives the "body crosses the box" warning.
-  Not validated yet for a connector at the board edge: for a pattern run
-  of such a design, compare with a lumped-port feed or check how much
-  the warning matters.
+- The far-field box must lie in air: too little padding gives the "body
+  crosses the box" warning. A coax waveguide port (a connector) ends the
+  domain on its side, so its coax runs through the box face: the box
+  leaves the coax's inside (the port's circle and the shield joined to
+  it) out of the flux and the currents (`excluded_cells` in the run's far
+  field), else the feed power flowing in made the efficiency negative.
+  Left: the shield's outside current through the face; with ~15 mm of
+  cable inside the box the pattern's power comes ~5 % (0.2 dB) low against
+  the box flux, the efficiency stays right (check_farfield, coax-fed
+  monopole). A box waveguide port at the board edge cannot be left out
+  (the board itself reaches the domain end): for a pattern, feed such a
+  model with a lumped port, or with a connector and its coax port.
 - tan δ is exact only at f_ref.
 - 45° traces need `slanted = true`; square 90° bends are exact on the grid.
 - Thin layers make the time step small: runs 3-5× longer; sweep coarse.

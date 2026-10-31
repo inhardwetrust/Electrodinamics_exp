@@ -142,8 +142,11 @@ In Russian, short:
 - S11 ≈ 0 dB everywhere: a short, a port in the wrong place, a body
   unassigned (the line's substrate missing), the wrong polarity is not it
   (polarity only flips the phase).
-- "a body crosses the far-field box": more padding; at a waveguide port's
-  side it cannot be avoided (REFERENCE 16).
+- "a body crosses the far-field box": more padding. A coax waveguide
+  port's line is left out by itself (REFERENCE 16); a box port at a board
+  edge cannot be: feed the pattern run with a lumped port or a connector.
+- A negative efficiency or G far above D: the box takes power that is not
+  radiation (a crossing it could not leave out): read the warning.
 - The window refuses a command: read the error text; it names the reason
   (not locked, cannot run, a transfer going on...).
 - The server's run fails at once with "unknown key" or an ImportError:
