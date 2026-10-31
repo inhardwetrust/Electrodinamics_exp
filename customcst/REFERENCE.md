@@ -345,7 +345,10 @@ in the conversation; never stop or delete their runs.
 - The window: Run on server = push (STEP + .toml into `<path>/models/`) +
   start `run.py` there under nohup; the window follows it (every 15 s) and
   fetches the finished run into `model.results/` as the next "Run N".
-  Fetch takes finished runs; Stop stops it. One run at a time per server
+  Fetch takes finished runs (a done run, all taken: the model's files on
+  the server are deleted); Stop stops it; Clean server... (Remote tab)
+  lists the models kept there and deletes the ticked (never a running
+  one). One run at a time per server
   (`run.lock`).
 - Scripts (`.claude/skills/antenna-design/scripts/remote_tasks.py`):
   `status` (run.lock, runs, zz_ folders, disk), `sync-code` (backup +

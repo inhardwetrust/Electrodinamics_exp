@@ -18,7 +18,7 @@ import numpy as np
 from PySide6.QtCore import QRect, Qt, QTimer
 from PySide6.QtGui import QColor, QCursor, QGuiApplication
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDockWidget, QFileDialog, QHBoxLayout, QSizePolicy,
+    QAbstractItemView, QCheckBox, QComboBox, QDialog, QDockWidget, QFileDialog, QHBoxLayout, QSizePolicy,
     QApplication, QHeaderView, QLabel, QProgressBar, QPushButton, QToolButton,
     QMainWindow, QMenu, QMessageBox, QSlider, QTableWidget, QTableWidgetItem, QTabWidget,
     QToolBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
@@ -166,6 +166,7 @@ class MainWindow(QMainWindow):
         self.remote.finished.connect(self._remote_finished)
         self.remote.failed.connect(self._remote_failed)
         self._remote_operation = None
+        self._clean_names = []                  # the server's models Clean server deletes
         self.remote_watch = RemoteRunner(self)  # the open model's server run, read quietly
         self.remote_watch.finished.connect(self._remote_watched)
         self.remote_watch.failed.connect(self._remote_watch_failed)
@@ -444,6 +445,7 @@ class MainWindow(QMainWindow):
 
         self.remote_panel = RemotePanel()
         self.remote_panel.check_requested.connect(lambda: self._remote_start("check"))
+        self.remote_panel.clean_requested.connect(lambda: self._remote_start("server_models"))
 
         # Tabs of the left panel: the model tree, the material library, the remote machine.
         self.side_tabs = QTabWidget()
@@ -2248,7 +2250,11 @@ class MainWindow(QMainWindow):
         if self.remote.running:
             return
         step = self.project.step_path if self.project else None
-        if operation != "check" and step is None:
+        if operation == "clean":
+            step = self._clean_names                # the models to delete there (ask_clean)
+        elif operation == "server_models":
+            step = None
+        if operation not in ("check", "server_models", "clean") and step is None:
             self.statusBar().showMessage("no model to " + operation, 5000)
             return
         if operation in ("push", "launch"):
@@ -2299,11 +2305,26 @@ class MainWindow(QMainWindow):
         self.stop_remote_button.setEnabled(not busy and active)
         self.fetch_button.setEnabled(not busy and self.project is not None)
         self.remote_panel.check_button.setEnabled(not busy)
+        self.remote_panel.clean_button.setEnabled(not busy)
 
     def _remote_finished(self, operation, value):
         _, step, server = self._remote_operation
         if operation == "check":
             text = f"connected: {value}"
+        elif operation == "server_models":
+            if not value:
+                text = "nothing kept in models/ on the server"
+            else:
+                names = self.ask_clean(value)
+                if names:
+                    self._clean_names = names
+                    QTimer.singleShot(0, lambda: self._remote_start("clean"))
+                text = (f"deleting {len(names)} model(s) on the server..." if names else
+                        f"{len(value)} model(s) kept on the server, none deleted")
+        elif operation == "clean":
+            text = f"deleted on the server: {', '.join(value['deleted']) or 'nothing'}"
+            if value["skipped"]:
+                text += f"; kept (running): {', '.join(value['skipped'])}"
         elif operation == "push":
             text = f"pushed {os.path.basename(step)} and its .toml to {value}"
         elif operation == "launch":
@@ -2320,11 +2341,21 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(3000, self._remote_poll)
         else:                                   # fetch
             parts = [self._status_text(value.status), self._pulled(step, value.pulled)]
+            if value.cleaned:
+                parts.append("the model's files on the server deleted")
+            if value.clean_error:
+                parts.append(f"the server's files not deleted ({value.clean_error}): Clean server... later")
             self._remote_status_seen(step, value.status, follow=True, fetched=True)
             text = "; ".join(p for p in parts if p)
         self._update_remote_buttons()
         self.remote_panel.show_status(text)
         self.statusBar().showMessage(text.splitlines()[0], 10000)
+
+    def ask_clean(self, models):
+        """The names of the server's models to delete (a dialog; checks replace it)."""
+        from view.remote_panel import CleanDialog
+        dialog = CleanDialog(models, self)
+        return dialog.ticked() if dialog.exec() == QDialog.Accepted else []
 
     @staticmethod
     def _status_text(status):

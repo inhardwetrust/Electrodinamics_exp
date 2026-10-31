@@ -12,16 +12,22 @@
 #     "done" with its result, the lock released, pull brings it;
 #   - stop: the run ends "stopped", nothing saved, the lock released;
 #   - a run killed hard: "died", its lock no hindrance to the next start;
+#   - the server's models (server_models): names, runs, state, a running
+#     one marked; clean deletes the asked ones, never a running one; a
+#     fetch of a stopped run deletes nothing;
 #   - the window: opening asks nothing of the server; Run on server: the
 #     progress bar, Stop on, a pending row; closed while it goes and opened
 #     again: the pending row from the record (no connection), Stop on;
 #     Fetch follows it again, the finished run is taken by itself as this
-#     model's next Run N at the launch's local time, ticked, current.
+#     model's next Run N at the launch's local time, ticked, current; then
+#     the model's files on the server are gone (all its runs taken);
+#     Clean server... deletes what the dialog ticks.
 #
 #   python checks/check_remote_run.py      (~2 min)
 
 import os
 import re
+import shlex
 import shutil
 import signal
 import site
@@ -86,6 +92,7 @@ class Shell:
                                         "--every", "2"],
                                        cwd=root, stdout=log, stderr=subprocess.STDOUT, env=env,
                                        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+            log.close()                     # the child has its own handle: the log can be deleted
             self.started[process.pid] = (process, f"{python} run.py {match['step']}")
             return 0, f"{process.pid}\n"
         match = re.match(r"^kill -0 (\d+)$", command)
@@ -95,6 +102,17 @@ class Shell:
         if match:
             entry = self.started.get(int(match[1]))
             return (0, entry[1] + "\n") if entry else (1, "")
+        if command.startswith("rm -rf -- "):
+            try:
+                for path in shlex.split(command)[3:]:
+                    real = self.real(path)
+                    if os.path.isdir(real):
+                        shutil.rmtree(real)
+                    elif os.path.exists(real):
+                        os.remove(real)
+            except OSError as error:
+                return 1, f"rm: {error}\n"
+            return 0, ""
         match = re.match(r"^kill -TERM (\d+)$", command)
         if match and int(match[1]) in self.started:
             os.kill(int(match[1]), signal.CTRL_BREAK_EVENT)
@@ -223,6 +241,31 @@ def run(folder):
     sync.stop(config, step)
     wait_for(status, ("stopped",), 60)
 
+    # the server's models, clean, a fetch that deletes nothing
+    models_dir = os.path.join(customcst, "models")
+    for name, text in (("junk.step", "x"), ("junk.log", "boom"), ("junk.status.json", '{"state": "failed"}')):
+        with open(os.path.join(models_dir, name), "w") as file:
+            file.write(text)
+    found = {m.name: m for m in sync.server_models(config)}
+    check("server_models: the model and the junk, runs and state", set(found) == {MODEL, "junk"}
+          and found[MODEL].runs == 1 and found[MODEL].state == "stopped" and not found[MODEL].active
+          and found["junk"].runs == 0 and found["junk"].state == "failed"
+          and sorted(found["junk"].files) == ["junk.log", "junk.status.json", "junk.step"],
+          str({n: (m.runs, m.state, m.files) for n, m in found.items()}))
+    fetched = sync.fetch(config, step)
+    check("a fetch of a stopped run deletes nothing", not fetched.cleaned
+          and os.path.isfile(os.path.join(models_dir, f"{MODEL}.stp")), str(fetched.cleaned))
+    sync.start(config, step)
+    wait_for(status, ("running",))
+    found = {m.name: m for m in sync.server_models(config)}
+    check("  a running model is marked active", found[MODEL].active)
+    cleaned = sync.clean(config, [MODEL, "junk"])
+    check("clean: the junk deleted, the running model kept", cleaned == {"deleted": ["junk"], "skipped": [MODEL]}
+          and not any(n.startswith("junk") for n in os.listdir(models_dir))
+          and os.path.isfile(os.path.join(models_dir, f"{MODEL}.stp")), str(cleaned))
+    sync.stop(config, step)
+    wait_for(status, ("stopped",), 60)
+
     # the window: Run, closed while it goes, opened again (no connection: the
     # pending row from the record), Fetch: followed again, taken when done
     from PySide6.QtCore import QCoreApplication, QElapsedTimer
@@ -293,6 +336,21 @@ def run(folder):
           f"{[(r.name, r.saved, os.path.basename(r.path)) for r in window.runs]} / {launch.get('started')}")
     check("the run is current (the model as sent)", window._is_current(run) if run else False)
     check("then: Run on, Stop off", window.run_remote_button.isEnabled() and not window.stop_remote_button.isEnabled())
+    gone = spin(lambda: not any(n.startswith(MODEL) for n in os.listdir(models_dir)), 10000)
+    check("after the fetch: the model's files on the server deleted (all its runs taken)", gone,
+          str(os.listdir(models_dir)))
+    check("  said in the Remote tab", "deleted" in window.remote_panel.status.text(), window.remote_panel.status.text())
+
+    for name in ("old.stp", "old.toml", "tail.log"):
+        open(os.path.join(models_dir, name), "w").close()
+    asked = []
+    window.ask_clean = lambda models: (asked.append(sorted(m.name for m in models)), ["old"])[1]
+    window.remote_panel.clean_button.click()
+    cleaned = spin(lambda: not window.remote.running and "deleted on the server" in window.remote_panel.status.text(),
+                   30000)
+    check("Clean server...: lists the server's models, deletes the ticked", cleaned and asked == [["old", "tail"]]
+          and sorted(os.listdir(models_dir)) == ["tail.log"],
+          f"{asked} {os.listdir(models_dir)} {window.remote_panel.status.text()}")
     window.close()
 
     print("\nall checks passed" if not FAILED else f"\nFAILED: {', '.join(FAILED)}")

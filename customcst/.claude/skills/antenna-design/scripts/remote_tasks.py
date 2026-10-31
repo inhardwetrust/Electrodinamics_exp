@@ -7,7 +7,7 @@
 #       run.lock, our processes, free disk
 #   ... sync-code
 #       backs the server's code up (~/customcst-code-<time>.tgz, no models,
-#       no .venv) and uploads every git-tracked code file (not models/,
+#       no .venv; the 3 newest backups are kept) and uploads every git-tracked code file (not models/,
 #       docs/, stepmodel/, images): the server must run the same code
 #   ... sweep NAME -- <sweep.py arguments without FOLDER>
 #       uploads sweep.py and tools/make_test_models.py, starts sweep.py in
@@ -71,6 +71,7 @@ def sync_code():
         if code:
             sys.exit(f"backup failed, nothing uploaded: {err.strip()}")
         print("backup:", out.strip())
+        r.run("ls -t ~/customcst-code-*.tgz | tail -n +4 | xargs -r rm -f --")    # the 3 newest stay
         made = set()
         for f in files:
             target = r.path(f)

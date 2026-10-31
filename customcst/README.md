@@ -325,6 +325,15 @@ name the model's next "Run N", and its info says where it was computed.
 Runs are downloaded into a temp folder first and moved in only when all
 arrived, so a lost connection leaves the local runs as they were.
 
+**The server keeps nothing it does not need.** Once a finished run is
+taken back (and every run file of that model there is taken), the
+model's files on the server go: its STEP, `.toml`, log, status and run
+files (Run on server sends them again). What a failed or stopped run
+left, or old models, stay: **Clean server...** in the Remote tab lists the
+models kept there (size, runs there, state) and deletes the ticked ones.
+Ticked at first: those without run files; a model whose run goes cannot
+be ticked.
+
 ### By hand, from a console
 
 The same runner without the app, in the `customcst` folder on the server:

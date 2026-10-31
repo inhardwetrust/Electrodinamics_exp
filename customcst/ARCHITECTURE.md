@@ -924,7 +924,17 @@ the STEP and its .toml copied there, the run file copied back into
   (`remote/record.py`; the time of taking for a run started by hand), the
   name the model's next "Run N", `saved` that time, the server's file and
   clock in its info. The server's clock (UTC there) and its own "Run N"
-  would mix up the list. Fetch = status + pull (the button).
+  would mix up the list. Fetch = status + pull (the button); after a fetch
+  of a "done" run whose every run file there is taken (record.py) or here
+  already, and no file that is no run, the model's files on the server
+  are deleted (`rm -rf` of STEP, .toml, log, status, results folder; a
+  failure is only reported: the runs are taken). `server_models` groups
+  `models/` by stem (`.step .stp .toml .log .status.json .npz`, `.part`,
+  `<stem>.results/`) with size, run files, state and "active" (status
+  meshing / running with a live pid, or run.lock's model); `clean(names)`
+  deletes them, never an active one. The Remote tab's "Clean server..."
+  lists them (CleanDialog, `MainWindow.ask_clean`) and deletes the
+  ticked. The script's sync-code keeps the 3 newest code backups.
   `model.results/remote.json` (record.py, local, atomic, under a lock:
   the Fetch worker and the window both write it): the launches from here
   (server, local stamp, pid, the fingerprint sent, last state / progress)

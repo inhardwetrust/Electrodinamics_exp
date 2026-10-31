@@ -24,7 +24,16 @@
 #   status(config, step) run.py's model.status.json (see run.py), with
 #                       "died" for a run whose process is gone, the log's
 #                       tail, and the run holding the machine (run.lock);
-#   fetch(config, step) status + pull: what the Fetch button does;
+#   fetch(config, step) status + pull: what the Fetch button does; when the
+#                       run is done and every run file of the model there
+#                       is taken (or here already), the model's files on
+#                       the server are deleted (STEP, .toml, log, status,
+#                       results): the next Run on server pushes them again;
+#   server_models(config) the models in <path>/models/ grouped by name (their
+#                       files, size, runs, state); clean(config, names)
+#                       deletes them, never one whose run is going: the
+#                       Remote tab's "Clean server..." for what a failed or
+#                       stopped run, or a run never fetched, left behind;
 #   stop(config, step)  SIGTERM to that model's run.py: it stops at its next
 #                       energy check (or at once while meshing), saves
 #                       nothing, says "stopped".
@@ -104,6 +113,18 @@ class Pulled:
 class Fetched:
     status: dict                                    # status(): None when it never ran there
     pulled: Pulled
+    cleaned: list = field(default_factory=list)     # the model's server files deleted after the fetch
+    clean_error: str = ""                           # why they could not be (the runs are taken anyway)
+
+
+@dataclass
+class ServerModel:
+    name: str                                       # the stem: model.step -> "model"
+    files: list = field(default_factory=list)       # names in models/ (a results folder ends in /)
+    size: int = 0                                   # bytes, all of them
+    runs: int = 0                                   # run files there (.npz)
+    state: str = ""                                 # its status file's state, "" without one
+    active: bool = False                            # its run.py is going: never deleted
 
 
 def config_path():
@@ -383,11 +404,134 @@ def pull(config, step_path, progress=None):
 
 
 def fetch(config, step_path, progress=None):
-    """The model's run on the server (status) and whatever of it is to take (pull): Fetched."""
+    """
+    The model's run on the server (status) and whatever of it is to take
+    (pull): Fetched. A done run, all taken: the model's server files go.
+    """
     from remote import record
     now = status(config, step_path)
     record.note_status(step_path, config.target, now)
-    return Fetched(now, pull(config, step_path, progress))
+    fetched = Fetched(now, pull(config, step_path, progress))
+    if now is not None and now.get("state") == "done" and not fetched.pulled.errors:
+        try:
+            fetched.cleaned = _clean_fetched(config, step_path)
+        except (RemoteError, OSError) as error:     # the runs are here: only say it
+            fetched.clean_error = str(error)
+    return fetched
+
+
+SUFFIXES = (".status.json", ".log", ".toml", ".step", ".stp", ".npz")
+
+
+def _stem(name, is_dir):
+    """The model a file of models/ belongs to, or None (not one of ours)."""
+    if is_dir:
+        return name[:-len(".results")] if name.endswith(".results") else None
+    if name.endswith(".part"):
+        name = name[:-len(".part")]
+    for suffix in SUFFIXES:
+        if name.endswith(suffix):
+            return name[:-len(suffix)]
+    return None
+
+
+def _models(connection):
+    """{stem: ServerModel} of <path>/models/ as it is now."""
+    sftp, models = connection.sftp, connection.path("models")
+    try:
+        entries = sftp.listdir_attr(models)
+    except OSError:
+        return {}
+    found = {}
+    for entry in entries:
+        is_dir = stat.S_ISDIR(entry.st_mode)
+        stem = _stem(entry.filename, is_dir)
+        if stem is None:
+            continue
+        model = found.setdefault(stem, ServerModel(stem))
+        if is_dir:
+            model.files.append(entry.filename + "/")
+            try:
+                inside = sftp.listdir_attr(posixpath.join(models, entry.filename))
+            except OSError:
+                inside = []
+            model.size += sum(e.st_size or 0 for e in inside)
+            model.runs += sum(1 for e in inside if e.filename.endswith(".npz") and not e.filename.endswith(".tmp.npz"))
+        else:
+            model.files.append(entry.filename)
+            model.size += entry.st_size or 0
+            if entry.filename.endswith(".npz"):
+                model.runs += 1                     # an old single-result file
+    holder = _holder(connection)
+    for stem, model in found.items():
+        data = connection.read_json(posixpath.join(models, stem + ".status.json"))
+        model.state = (data or {}).get("state", "")
+        model.active = model.state in ACTIVE and connection.alive((data or {}).get("pid"))
+        if holder is not None and _stem(os.path.basename(str(holder.get("model", ""))), False) == stem:
+            model.active = True
+    return found
+
+
+def _delete(connection, model):
+    """Removes a model's files from models/ (the caller checked it is not running)."""
+    models = connection.path("models")
+    paths = " ".join(shlex.quote(posixpath.join(models, f.rstrip("/"))) for f in model.files)
+    code, out, err = connection.run(f"rm -rf -- {paths}")
+    if code != 0:
+        raise RemoteError(f"{model.name}: not deleted: {(err or out).strip()}")
+    return list(model.files)
+
+
+def _clean_fetched(config, step_path):
+    """
+    After a fetch of a done run: the model's server files, if its run is not
+    going and every run file there is taken by this machine (record.py) or
+    here already; else nothing (Clean server shows what is left).
+    """
+    from remote import record
+    stem = os.path.splitext(os.path.basename(step_path))[0]
+    taken = record.load(step_path)["pulled"].get(config.target, {})
+    folder = results_dir(step_path)
+    with session(config) as connection:
+        model = _models(connection).get(stem)
+        if model is None or model.active:
+            return []
+        remote = connection.path("models", os.path.basename(folder))
+        try:
+            runs = [e.filename for e in connection.sftp.listdir_attr(remote)
+                    if e.filename.endswith(".npz") and not e.filename.endswith(".tmp.npz")]
+        except OSError:
+            runs = []
+        if any(r not in taken and not os.path.isfile(os.path.join(folder, r)) for r in runs):
+            return []                               # a run nobody took: keep it
+        if any(f.endswith(".npz") for f in model.files):
+            return []                               # an old single-result file: by hand (Clean server)
+        return _delete(connection, model)
+
+
+def server_models(config, step_path=None, progress=None):
+    """[ServerModel] of <path>/models/, by name."""
+    with session(config) as connection:
+        return [m for _, m in sorted(_models(connection).items(), key=lambda kv: kv[0].lower())]
+
+
+def clean(config, names, progress=None):
+    """Deletes these models' files on the server ([names]); skips (and reports) one whose run is going."""
+    deleted, skipped = [], []
+    with session(config) as connection:
+        found = _models(connection)
+        for name in names:
+            model = found.get(name)
+            if model is None:
+                continue
+            if model.active:
+                skipped.append(name)
+                continue
+            if progress is not None:
+                progress(f"clean: {name}")
+            _delete(connection, model)
+            deleted.append(name)
+    return {"deleted": deleted, "skipped": skipped}
 
 
 def write_local(model):

@@ -7,9 +7,10 @@
 # pull, launch, status, stop) off the GUI thread; the buttons under the
 # Project tree start them (MainWindow).
 
-from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtCore import QObject, Qt, QThread, Signal
 from PySide6.QtWidgets import (
-    QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QSpinBox, QVBoxLayout, QWidget,
+    QAbstractItemView, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+    QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from remote import sync
@@ -85,8 +86,84 @@ class RemoteRunner(QObject):
         self.failed.emit(message, unknown)
 
 
+def _size(n):
+    return f"{n / 2**20:.1f} MB" if n >= 2**20 else f"{n / 2**10:.0f} kB"
+
+
+class CleanDialog(QDialog):
+    """
+    The models on the server (sync.server_models) with a tick each: the
+    ticked ones are deleted. Ticked at first: those without run files (what
+    a failed or stopped run left). A model whose run is going cannot be
+    ticked.
+    """
+
+    def __init__(self, models, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Clean the server")
+        self.models = models
+        table = QTableWidget(len(models), 4)
+        table.setHorizontalHeaderLabels(["Model", "Size", "Runs there", "State"])
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        table.horizontalHeader().setStretchLastSection(True)
+        for row, model in enumerate(models):
+            name = QTableWidgetItem(model.name)
+            name.setToolTip("\n".join(model.files))
+            if model.active:
+                name.setFlags(name.flags() & ~Qt.ItemIsUserCheckable & ~Qt.ItemIsEnabled)
+                name.setCheckState(Qt.Unchecked)
+            else:
+                name.setFlags(name.flags() | Qt.ItemIsUserCheckable)
+                name.setCheckState(Qt.Unchecked if model.runs else Qt.Checked)
+            table.setItem(row, 0, name)
+            state = "running: kept" if model.active else model.state or "-"
+            for column, text in ((1, _size(model.size)), (2, str(model.runs)), (3, state)):
+                item = QTableWidgetItem(text)
+                if column < 3:
+                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                table.setItem(row, column, item)
+        self.table = table
+        total = sum(m.size for m in models)
+        note = QLabel(
+            f"{len(models)} model(s) in models/ on the server, {_size(total)}. Ticked ones are deleted "
+            "there (STEP, .toml, log, status, run files); Run on server pushes a model again. A model "
+            "with runs there is not ticked: take them first (Fetch) if you still want them. Nothing "
+            "here is touched.")
+        note.setWordWrap(True)
+        everything = QPushButton("Tick all")
+        everything.clicked.connect(lambda: self.set_all(True))
+        nothing = QPushButton("Tick none")
+        nothing.clicked.connect(lambda: self.set_all(False))
+        buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
+        buttons.addButton("Delete ticked", QDialogButtonBox.AcceptRole)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        row = QHBoxLayout()
+        row.addWidget(everything)
+        row.addWidget(nothing)
+        row.addStretch(1)
+        row.addWidget(buttons)
+        layout = QVBoxLayout(self)
+        layout.addWidget(note)
+        layout.addWidget(table, 1)
+        layout.addLayout(row)
+        self.resize(560, 420)
+
+    def set_all(self, on):
+        for row, model in enumerate(self.models):
+            if not model.active:
+                self.table.item(row, 0).setCheckState(Qt.Checked if on else Qt.Unchecked)
+
+    def ticked(self):
+        return [m.name for row, m in enumerate(self.models)
+                if not m.active and self.table.item(row, 0).checkState() == Qt.Checked]
+
+
 class RemotePanel(QWidget):
     check_requested = Signal()
+    clean_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -119,8 +196,13 @@ class RemotePanel(QWidget):
         self.check_button = QPushButton("Check")
         self.check_button.setToolTip("Connect and look for run.py in the path")
         self.check_button.clicked.connect(self._check)
+        self.clean_button = QPushButton("Clean server...")
+        self.clean_button.setToolTip("List the models kept on the server and delete what is not needed "
+                                     "(a finished run's files go by themselves after its Fetch)")
+        self.clean_button.clicked.connect(self._clean)
         buttons = QHBoxLayout()
         buttons.addWidget(self.check_button)
+        buttons.addWidget(self.clean_button)
         buttons.addStretch(1)
 
         self.status = QLabel()
@@ -133,7 +215,9 @@ class RemotePanel(QWidget):
             "replacing them; Run on server pushes and starts run.py (one run at a time on the "
             "server): a pending row in Results, followed while the window is open (progress in "
             "the status bar), taken when done; Fetch asks the server and takes finished runs "
-            "(nothing connects by itself); Stop ends the run (nothing saved). "
+            "(nothing connects by itself); Stop ends the run (nothing saved). Once a done run "
+            "is fetched, its model's files on the server are deleted; Clean server... lists what "
+            "else is kept there (failed or stopped runs, old models) and deletes the ticked. "
             "Saved in remote/remote.toml, which is not in git: "
             "the password is kept there as plain text, so prefer an SSH key (leave it empty)."
         )
@@ -168,3 +252,7 @@ class RemotePanel(QWidget):
     def _check(self):
         self.save()
         self.check_requested.emit()
+
+    def _clean(self):
+        self.save()
+        self.clean_requested.emit()
