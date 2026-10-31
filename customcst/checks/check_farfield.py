@@ -19,7 +19,10 @@
 #     sin^2 is 90 degrees (within 1), the horizon is round (no beamwidth),
 #     and all of it is E_theta (Ludwig-3 x and y add up to the total);
 #   - the 3D surface: closed, its radius 1 along the maximum, wound outward
-#     (positive volume: the outer side is the front face, the one drawn).
+#     (positive volume: the outer side is the front face, the one drawn);
+#   - the cut in 3D: the phi = 90 cut (around x) and its disk lie in the yz
+#     plane, the theta = 90 cut and its disk in xy; the curve is closed and
+#     reaches radius 1 where the cut has the pattern's maximum.
 # Half-wave dipole (L = 47 mm): the real current of a rod on the grid is
 # not quite sinusoidal (D comes out ~0.1 dB above the formula's, the same
 # on a finer mesh), so it checks the whole run, looser:
@@ -76,8 +79,8 @@ from discretize.materials import discretize                              # noqa:
 from geometry.step_io import read_step, write_step                       # noqa: E402
 from mesh.rectilinear import build_grid                                  # noqa: E402
 from project.project_file import Project                                 # noqa: E402
-from solver.farfield import (FarFieldBox, beamwidth, cut, far_field, intensity, summary,  # noqa: E402
-                             surface)
+from solver.farfield import (FarFieldBox, beamwidth, cut, cut_curve, cut_sheet, far_field,  # noqa: E402
+                             intensity, summary, surface)
 from solver.fdtd import FdtdSolver                                       # noqa: E402
 from solver.result_file import read_result, write_result                 # noqa: E402
 from solver.simulation import simulate                                   # noqa: E402
@@ -190,6 +193,7 @@ def short_dipole(ff, length):
               f"worst {np.abs(shape).max():.3f} dB")
         common(ff, u, k, label)
         cuts(ff, k, label)
+        cut_3d(ff, k, label)
         shell(ff, k, label)
 
 
@@ -211,6 +215,22 @@ def cuts(ff, k, label):
     check(f"{label} components: E_theta is the total, Ludwig-3 x + y = total",
           np.abs(total - theta)[inner].max() < 0.01
           and np.abs(10 * np.log10(x + y) - total)[inner].max() < 0.01)
+
+
+def cut_3d(ff, k, label):
+    top = float(surface(ff, k)[2].max())
+    angles, values = cut(ff, k, "phi", 90.0)
+    curve = cut_curve("phi", 90.0, angles, values, top, 40.0)
+    vertices, faces = cut_sheet("phi", 90.0)
+    check(f"{label} cut in 3D, phi = 90: curve and disk in the yz plane, closed, radius 1 at the maximum",
+          np.abs(curve[:, 0]).max() < 1e-12 and np.abs(vertices[:, 0]).max() < 1e-12
+          and np.allclose(curve[0], curve[-1]) and abs(np.linalg.norm(curve, axis=1).max() - 1.0) < 0.01
+          and len(faces) == len(vertices) - 1)
+    angles, values = cut(ff, k, "theta", 90.0)
+    curve = cut_curve("theta", 90.0, angles, values, top, 40.0)
+    vertices, _ = cut_sheet("theta", 90.0)
+    check(f"{label} cut in 3D, theta = 90: curve and disk in the xy plane",
+          np.abs(curve[:, 2]).max() < 1e-12 and np.abs(vertices[:, 2]).max() < 1e-12)
 
 
 def shell(ff, k, label):

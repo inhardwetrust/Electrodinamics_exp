@@ -488,10 +488,12 @@ positionally; `show` takes the run names. From Python:
   server, Push, Fetch, Run on server, Stop).
 - **Tabs**: 3D View (left drag rotates, Space / Shift + left pans, wheel or
   right drag zooms, view buttons top right, axes gizmo bottom left; the
-  far-field pattern in 3D when "Show in 3D" is on), Results (S in dB,
+  far-field pattern in 3D when "Show in 3D" is on, the cut's plane and
+  curve when "Cut in 3D" is), Results (S in dB,
   phase, group delay, SWR, Smith, Z in; a marker; reference plane shift;
   normalize; .sNp), Far field (polar cuts per frequency, port, quantity,
-  component, plane; beamwidth, front/back).
+  component, plane; beamwidth, front/back). Cuts: around x = plane φ at
+  90° (yz), around y = φ at 0° (xz), around z = θ at 90° (xy).
 - TDR and Z0 profile windows from the Results / Z0 tools.
 
 ## 15. How to work: the method

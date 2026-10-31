@@ -110,6 +110,8 @@ PICK_LINE_COLOR = (1.0, 1.0, 1.0, 0.9)
 PATH_COLOR = (1.0, 0.45, 0.1, 1.0)                # the Z0 path: orange
 PATH_START_COLOR = (1.0, 0.9, 0.2, 1.0)           # its first point
 PATH_SECTION_COLOR = (0.3, 1.0, 0.4, 1.0)         # the section window's edge
+CUT_SHEET_COLOR = (1.0, 1.0, 1.0, 0.12)            # the far-field cut's plane: light glass
+CUT_LINE_COLOR = (1.0, 1.0, 0.2, 1.0)              # the far-field cut's curve
 PATH_SECTION_FILL = (0.3, 1.0, 0.4, 0.15)         # and its fill
 PATH_PLANE_FILL = (0.05, 0.15, 0.7, 0.25)         # the path's plane in path mode
 PATH_PLANE_EDGE = REFERENCE_EDGE
@@ -516,6 +518,16 @@ class GeometryView:
         self.pattern.set_gl_state("translucent", depth_test=True, cull_face=True)
         self.pattern.order = 15
         self.pattern.visible = False
+        # The far-field cut (Far field tab > Cut in 3D): its plane, light and
+        # see-through, and its curve over it.
+        self.cut_sheet = scene.visuals.Mesh(parent=self.view.scene, color=CUT_SHEET_COLOR, shading=None)
+        self.cut_sheet.set_gl_state("translucent", depth_test=True, cull_face=False)
+        self.cut_sheet.order = 16
+        self.cut_sheet.visible = False
+        self.cut_line = scene.visuals.Line(parent=self.view.scene, color=CUT_LINE_COLOR, width=3.0)
+        self.cut_line.set_gl_state("translucent", depth_test=False)
+        self.cut_line.order = 17
+        self.cut_line.visible = False
 
         self._init_headlight()
         self._init_click()
@@ -1066,6 +1078,17 @@ class GeometryView:
                                   faces=np.asarray(faces, np.uint32),
                                   vertex_colors=np.asarray(colors, np.float32))
             self.pattern.visible = True
+        self.canvas.update()
+
+    def set_cut(self, curve=None, vertices=None, faces=None):
+        """The far-field cut: curve (N, 3) and its plane's mesh, in meters; None hides it."""
+        if curve is None:
+            self.cut_sheet.visible = self.cut_line.visible = False
+        else:
+            self.cut_sheet.set_data(vertices=(np.asarray(vertices) / SCENE_UNIT).astype(np.float32),
+                                    faces=np.asarray(faces, np.uint32), color=CUT_SHEET_COLOR)
+            self.cut_line.set_data(pos=(np.asarray(curve) / SCENE_UNIT).astype(np.float32))
+            self.cut_sheet.visible = self.cut_line.visible = True
         self.canvas.update()
 
     def set_show_reference_planes(self, on):

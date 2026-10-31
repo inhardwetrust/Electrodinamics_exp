@@ -1149,6 +1149,17 @@ Checks: `checks/check_result_file.py` covers:
   shell does not speckle where its far side shows through. Not
   depth_mask=False: with depth writes off glClear does not clear the depth
   buffer, and every later frame came out empty.
+- Cut in 3D (the same tab): the polar cut shown in place, framed like the
+  pattern (`MainWindow._pattern_frame`). `farfield.cut_directions` turns
+  the cut's angles into directions (plane phi = const: 0 = +z, 180 = -z,
+  past 180 the side phi + 180; theta = const: the angle is phi), and
+  `cut_curve` gives the curve at the surface's radius (on it, 1 at the
+  pattern's maximum); `cut_sheet` the plane to see it by: the vertical
+  plane's disk, or the cone around z (theta 90: the xy disk). The 3D view
+  draws the sheet as light glass (`GeometryView.cut_sheet`, no culling)
+  and the curve yellow over everything (`cut_line`, no depth test). With
+  the 3D pattern or without it. A cut around x is phi = 90 (the yz plane),
+  around y phi = 0, around z theta = 90.
 - Accuracy: on a short dipole (λ/10) D is within 0.013 dB of the
   sinusoidal-current formula and the pattern within 0.04 dB (the
   transformation); a half-wave rod dipole comes ~0.1 dB above that formula

@@ -8,7 +8,10 @@
 #   - a plane exactly on a face shows the body on the kept side only;
 #   - outline: a box cut through its middle gives its rectangle (the total
 #     length = the perimeter), the plane coordinate is exact, a thin layer
-#     far below a pixel still has its outline.
+#     far below a pixel still has its outline;
+#   - a layer thinner than a pixel is filled in its own color all along
+#     (a vertical section of the 15 um copper: no FR4 showing through, the
+#     column of pixels over the strip holds the copper).
 #
 #   python checks/check_section.py
 
@@ -93,6 +96,17 @@ def main():
         check("outline: 15 um copper has its outline", len(cu) >= 4 and z.min() >= 1.6 - 1e-9
               and z.max() <= 1.615 + 1e-9, f"{len(cu)} segments, z {z.min():.4f}..{z.max():.4f} mm")
         check("outline: a plane missing the body gives nothing", len(section_outline(g["cu"], 2, 5 * MM)) == 0)
+
+        # 15 um copper in the x = 0 section at 200 pixels (40 um each), away from where the tube
+        # lies on it (its wall reaches the copper's height for |y| < 0.56 mm)
+        image, ur, vr = section_fill(bodies, 0, 0.0, lo, hi, max_pixels=200)
+        nv, nu = image.shape[:2]
+        pitch = (vr[1] - vr[0]) / nv
+        columns = [int((y * MM - ur[0]) / (ur[1] - ur[0]) * nu) for y in (-0.95, -0.8, -0.7, 0.7, 0.8, 0.95)]
+        row = int((1.6075 * MM - vr[0]) / pitch)
+        check(f"a 15 um layer in {pitch / MM * 1000:.0f} um pixels: copper all along the strip",
+              all(same(image[row, c], CU) for c in columns), str([image[row, c][:3].round(2).tolist() for c in columns]))
+        check("  and FR4 still below it", same(pixel(image, ur, vr, 0.0, 1.0 * MM), FR4))
     finally:
         shutil.rmtree(folder)
 

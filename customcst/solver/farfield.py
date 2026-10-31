@@ -425,6 +425,46 @@ def surface(ff, k, quantity="directivity", component="total", span=40.0):
     return points, faces.astype(np.uint32), db.reshape(-1)
 
 
+def cut_directions(plane, at, angles):
+    """
+    (N, 3) unit vectors of a cut's angles (cut()): plane "phi" at `at`
+    degrees, angles 0..360 around it (0 = +z, 180 = -z, past 180 the
+    side phi + 180); plane "theta" at `at` degrees, angles = phi.
+    """
+    a = np.radians(np.asarray(angles, float))
+    if plane == "theta":
+        t = math.radians(at)
+        return np.stack([math.sin(t) * np.cos(a), math.sin(t) * np.sin(a), np.full_like(a, math.cos(t))], -1)
+    p = math.radians(at)
+    s = np.sin(a)                       # past 180: theta = 360 - a on the other side (sin < 0 there)
+    return np.stack([s * math.cos(p), s * math.sin(p), np.cos(a)], -1)
+
+
+def cut_curve(plane, at, angles, values, top, span):
+    """
+    The cut in 3D, in the scale of surface(): (N + 1, 3) points, closed, at
+    radius 0..1 (1 at `top` dBi, 0 at `span` dB below it or less).
+    """
+    radius = np.clip((np.asarray(values, float) - (top - span)) / span, 0.0, 1.0)
+    points = cut_directions(plane, at, angles) * radius[:, None]
+    return np.vstack([points, points[:1]])
+
+
+def cut_sheet(plane, at, segments=120):
+    """
+    (vertices (segments + 1, 3), faces (segments, 3)) of the cut's surface
+    to show it in 3D, radius 1: the vertical plane's disk, or the cone
+    around z from the origin (theta 90: the xy disk). Faces wound both
+    ways are not needed: drawn without culling.
+    """
+    angles = np.linspace(0.0, 360.0, segments, endpoint=False)
+    rim = cut_directions(plane, at, angles)
+    vertices = np.vstack([np.zeros((1, 3)), rim])
+    i = np.arange(segments)
+    faces = np.stack([np.zeros(segments, int), 1 + i, 1 + (i + 1) % segments], -1)
+    return vertices, faces.astype(np.uint32)
+
+
 def beamwidth(angles, values, level=3.0):
     """
     (peak angle, width in degrees) of the lobe around the cut's maximum at

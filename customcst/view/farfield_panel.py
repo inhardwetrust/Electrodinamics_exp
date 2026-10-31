@@ -19,6 +19,9 @@
 # polarization and range as a colored surface in the 3D view
 # (farfield.surface(): radius in dB from max - range to max; colors blue ->
 # red over the same range), emitted as pattern_changed.
+# Cut in 3D: the cut's plane (a see-through disk; a cone for theta = const)
+# and its curve in the same scale as the surface (it lies on it), emitted
+# as cut_changed, with the 3D surface or without it.
 
 import numpy as np
 from PySide6.QtCore import Qt, Signal
@@ -26,7 +29,7 @@ from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QHBoxLayout, QLabel, QSpinBox, QVBoxLayout, QWidget,
 )
 
-from solver.farfield import FLOOR_DBI, beamwidth, cut, figures, surface
+from solver.farfield import FLOOR_DBI, beamwidth, cut, cut_curve, cut_sheet, figures, surface
 from view.polar_plot import PolarPlot
 
 QUANTITY_LABELS = {"directivity": "Directivity", "gain": "Gain", "realized": "Realized gain"}
@@ -51,6 +54,7 @@ def pattern_colors(fraction):
 class FarFieldPanel(QWidget):
     # (points (N, 3) on the unit scale, faces, RGBA colors) or None
     pattern_changed = Signal(object)
+    cut_changed = Signal(object)        # (curve (N, 3), sheet vertices, sheet faces) at radius 0..1, or None
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -81,6 +85,10 @@ class FarFieldPanel(QWidget):
         self.show_3d.setToolTip("The pattern as a colored surface around the model in the 3D View tab "
                                 "(this frequency, quantity, polarization and range)")
         self.show_3d.toggled.connect(self._redraw)
+        self.cut_3d = QCheckBox("Cut in 3D")
+        self.cut_3d.setToolTip("The cut's plane and its curve around the model in the 3D View tab "
+                               "(the curve in the scale of the 3D pattern: it lies on it)")
+        self.cut_3d.toggled.connect(self._redraw)
 
         for widget in (self.frequency, self.port, self.quantity, self.component, self.span):
             widget.currentIndexChanged.connect(self._redraw)
@@ -90,7 +98,7 @@ class FarFieldPanel(QWidget):
         controls = QHBoxLayout()
         for label, widget in (("Frequency", self.frequency), ("Port", self.port), ("", self.quantity),
                               ("", self.component), ("Cut", self.plane), ("at", self.angle),
-                              ("Range", self.span), ("", self.show_3d)):
+                              ("Range", self.span), ("", self.show_3d), ("", self.cut_3d)):
             if label:
                 controls.addWidget(QLabel(label))
             controls.addWidget(widget)
@@ -166,6 +174,7 @@ class FarFieldPanel(QWidget):
             self.plot.clear()
             self.info.setText("")
             self.pattern_changed.emit(None)
+            self.cut_changed.emit(None)
             return
         plane, at = self.plane.currentData(), float(self.angle.value())
         quantity, component = self.quantity.currentData(), self.component.currentData()
@@ -214,7 +223,17 @@ class FarFieldPanel(QWidget):
         if skipped:
             lines.append(f"not at {frequency / 1e9:g} GHz: {', '.join(skipped)}")
         self._emit_pattern(ff, k, quantity, component, lines)
+        self._emit_cut(ff, k, plane, at, angles, values, quantity, component)
         self.info.setText("<br>".join(lines))
+
+    def _emit_cut(self, ff, k, plane, at, angles, values, quantity, component):
+        if not self.cut_3d.isChecked():
+            self.cut_changed.emit(None)
+            return
+        span = float(self.span.currentData())
+        top = float(surface(ff, k, quantity, component, span)[2].max())    # the 3D pattern's maximum
+        vertices, faces = cut_sheet(plane, at)
+        self.cut_changed.emit((cut_curve(plane, at, angles, values, top, span), vertices, faces))
 
     def _emit_pattern(self, ff, k, quantity, component, lines):
         if not self.show_3d.isChecked():

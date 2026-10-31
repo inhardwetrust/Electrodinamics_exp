@@ -624,6 +624,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.results, "Results")
         self.farfield_panel = FarFieldPanel()
         self.farfield_panel.pattern_changed.connect(self._show_pattern)
+        self.farfield_panel.cut_changed.connect(self._show_cut)
         self.tabs.addTab(self.farfield_panel, "Far field")
 
     def _show_pattern(self, pattern):
@@ -632,9 +633,22 @@ class MainWindow(QMainWindow):
             self.view.set_pattern(None)
             return
         points, faces, colors = pattern
+        center, radius = self._pattern_frame()
+        self.view.set_pattern(center + radius * points, faces, colors)
+
+    def _pattern_frame(self):
+        """(center, radius) m of the 3D pattern and cut: the model's center, 0.8 of its size."""
         lo, hi = (np.asarray(b) for b in self.geometry.bounds)
-        radius = 0.8 * float(np.max(hi - lo))
-        self.view.set_pattern(0.5 * (lo + hi) + radius * points, faces, colors)
+        return 0.5 * (lo + hi), 0.8 * float(np.max(hi - lo))
+
+    def _show_cut(self, cut):
+        """Far field > Cut in 3D: the cut's plane and curve, framed like the 3D pattern."""
+        if cut is None or self.geometry is None:
+            self.view.set_cut(None)
+            return
+        curve, vertices, faces = cut
+        center, radius = self._pattern_frame()
+        self.view.set_cut(center + radius * curve, center + radius * vertices, faces)
 
     def _picked(self, picks):
         """Status bar: the picked points A and B, and the distance between them."""
