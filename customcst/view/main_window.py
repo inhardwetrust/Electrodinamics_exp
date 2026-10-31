@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 import numpy as np
 from PySide6.QtCore import QRect, Qt, QTimer
-from PySide6.QtGui import QColor, QGuiApplication
+from PySide6.QtGui import QColor, QCursor, QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDockWidget, QFileDialog, QHBoxLayout, QSizePolicy,
     QApplication, QHeaderView, QLabel, QProgressBar, QPushButton, QToolButton,
@@ -31,11 +31,13 @@ from geometry.step_io import read_step
 from discretize.materials import discretize
 from mesh.rectilinear import ACCURATE_CELLS_PER_FEATURE, build_grid, z0_error_percent
 from project.materials import BUILTIN, CUSTOM, MATERIAL_PARAMS
+from project import presets
 from project.object_types import OBJECT_TYPES
 from project.project_file import UP_AXES, Z0PATH_PARAMS, Project, ProjectError, project_path
 from project.settings import SECTIONS
 from view.control import ControlServer
 from view.farfield_panel import FarFieldPanel
+from view.presets_panel import PresetsPanel
 from view.geometry_view import GeometryView
 from view.profile_window import ProfileWindow
 from view.remote_panel import RemotePanel, RemoteRunner
@@ -448,7 +450,14 @@ class MainWindow(QMainWindow):
         self.side_tabs.setDocumentMode(True)
         self.side_tabs.addTab(panel, "Project")
         self.side_tabs.addTab(self._build_materials_panel(), "Materials")
+        self.presets_panel = PresetsPanel()
+        self.presets_panel.apply_requested.connect(self.apply_preset)
+        self.presets_panel.message.connect(lambda text: self.statusBar().showMessage(text, 6000))
+        self.side_tabs.addTab(self.presets_panel, "Presets")
         self.side_tabs.addTab(self.remote_panel, "Remote")
+        # files copied in from outside show when the tab is opened
+        self.side_tabs.currentChanged.connect(
+            lambda i: self.presets_panel.refresh() if self.side_tabs.widget(i) is self.presets_panel else None)
 
         self.dock = dock = QDockWidget()
         dock.setTitleBarWidget(QWidget())       # the tabs are the title
@@ -941,6 +950,7 @@ class MainWindow(QMainWindow):
         self._restore_hidden(view.get("hidden", []))
         self._view_timer.stop()         # the camera reset above is no change of the user's
         self._fill_materials()
+        self.presets_panel.set_model(path, project)
         self._load_runs(path)
         self._remember(path)
         self._remote_from_record()              # its runs on a server, as recorded here (no connection)
@@ -1881,6 +1891,7 @@ class MainWindow(QMainWindow):
             self._note_row(item, name, section.note, "gray")
 
         if name == "mesh":
+            self._preset_row(item, "mesh")
             self._mesh_rows(item)
         if name == "simulation":
             _group_item(item, "Monitors", "monitors",
@@ -1928,6 +1939,7 @@ class MainWindow(QMainWindow):
         for param in SECTIONS["farfield"].params:
             self._setting_row(far, "farfield", param)
         self._note_row(far, "farfield", "empty: off; D, G and efficiency under Results > the run", "gray")
+        self._preset_row(far, "monitors")
         far.setExpanded(True)
         item.setExpanded(True)
         self.tree.blockSignals(False)
@@ -2095,6 +2107,62 @@ class MainWindow(QMainWindow):
     def _resize_columns(self):
         for column in range(3):
             self.tree.resizeColumnToContents(column)
+
+    def _preset_row(self, parent, kind):
+        """A grey row: the preset whose values these settings have (right click: apply / save one)."""
+        if self.project is None or self.geometry is None:
+            return None
+        name = presets.matching(self.project, kind, presets.all_presets(self.geometry.source, kind))
+        text = f"preset: {name}" if name else "preset: none (own values)"
+        row = self._note_row(parent, "mesh" if kind == "mesh" else "farfield", text + "  (right click)", "gray")
+        row.setToolTip(0, "Right click: apply a preset, save these values as one (Presets tab)")
+        return row
+
+    def apply_preset(self, kind, name):
+        """Copies a preset (Presets tab, or the tree's right click) into the project."""
+        if self.project is None or self.geometry is None:
+            return "no model with a readable project open"
+        found = [v for n, v, _ in presets.all_presets(self.geometry.source, kind) if n == name]
+        if not found:
+            error = f"no {kind} preset {name!r}"
+        else:
+            try:
+                presets.apply(self.project, kind, found[0])
+                error = None
+            except presets.PresetError as e:
+                error = str(e)
+        if error:
+            self.statusBar().showMessage(f"preset not applied: {error}", 8000)
+            return error
+        if kind == "mesh":
+            self._after_edit()                  # a new mesh
+        else:
+            self._save()                        # the far field changes no mesh, no S
+            QTimer.singleShot(0, self._fill_monitors)
+        self.statusBar().showMessage(f"{kind} preset {name} applied", 5000)
+        return None
+
+    def _preset_menu(self, kind):
+        menu = QMenu(self)
+        apply = menu.addMenu("Apply preset")
+        rows = presets.all_presets(self.geometry.source, kind)
+        current = presets.matching(self.project, kind, rows)
+        for name, _, source in rows:
+            action = apply.addAction(name + ("  (built-in)" if source == "built-in" else ""))
+            action.setCheckable(True)
+            action.setChecked(name == current)
+            action.triggered.connect(lambda _=False, n=name: self.apply_preset(kind, n))
+        menu.addAction("Save as preset...", lambda: self._save_preset(kind))
+        menu.addAction("Edit presets...", self._show_presets)
+        menu.exec(QCursor.pos())
+
+    def _show_presets(self):
+        self.side_tabs.setCurrentWidget(self.presets_panel)
+        self.presets_panel.refresh()
+
+    def _save_preset(self, kind):
+        self._show_presets()
+        self.presets_panel.save_current(kind)   # its name cell opens for typing
 
     def _note_row(self, parent, owner, text, color):
         note = QTreeWidgetItem(parent, [text])
@@ -2725,6 +2793,12 @@ class MainWindow(QMainWindow):
             return
 
         role, name, _ = item.data(0, Qt.UserRole)
+        if (role, name) in (("section", "mesh"), ("setting", "mesh"), ("note", "mesh")):
+            self._preset_menu("mesh")
+            return
+        if role in ("farfield", "monitors") or (role, name) in (("setting", "farfield"), ("note", "farfield")):
+            self._preset_menu("monitors")
+            return
         if role in ("hole_group", "hole"):
             self._hole_menu(item, role, name)
             return

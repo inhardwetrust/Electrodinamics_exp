@@ -30,6 +30,7 @@
 #   show runs=[names]            tick these runs in Results (all others off)
 #   screenshot path              window.grab() into a PNG
 #   run_server / fetch           the Remote tab's ▶ Run on server / Fetch
+#   preset kind name             apply a mesh / monitors preset (project/presets.py)
 # Long work (meshing, a transfer, the server's run) goes on after the
 # answer: `status` tells when it is done (tools/ui.py wait).
 
@@ -269,6 +270,16 @@ def run_server(window):
     return _remote(window, "launch")
 
 
+def preset(window, kind, name):
+    """Apply a preset: kind mesh | monitors, its name (built-in or the model's)."""
+    if kind not in ("mesh", "monitors"):
+        raise CommandError("kind must be mesh or monitors")
+    error = window.apply_preset(kind, name)
+    if error:
+        raise CommandError(error)
+    return status(window)
+
+
 def fetch(window):
     """The Remote tab's Fetch."""
     return _remote(window, "fetch")
@@ -287,4 +298,5 @@ COMMANDS = {
     "show": (show, True),
     "run_server": (run_server, True),
     "fetch": (fetch, True),
+    "preset": (preset, True),
 }

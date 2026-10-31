@@ -361,6 +361,36 @@ reload, run on the server, fetch, show the runs and the tab.
   answer; `status` shows it, `ui.py wait [--server]` waits for it.
 - Check: `checks/check_control.py`.
 
+## Mesh and monitors presets
+
+`project/presets.py`, the Presets tab (`view/presets_panel.py`): settings
+that do not depend on the model, as templates that travel by copying
+files, like KiCad footprints.
+- Files beside the model: `model.presets/mesh/<Name>.toml` (the [mesh]
+  keys) and `model.presets/monitors/<Name>.toml` (`offsets`: the far-field
+  frequencies as % from the far field's f0). One file, one preset, named
+  by it; a file copied into another model's folder shows there when the
+  tab is opened. Missing keys take the defaults; a file that does not
+  read, or has an unknown key, is skipped and reported.
+- Built-in presets (code, read-only, grey; Duplicate one to edit): mesh
+  Draft 20/4, Sweep 30/4, Fine 40/8, Final 50/12; monitors f0, f0 ±2 %.
+- A template: Apply copies its values into the project; editing a preset
+  later changes no project until it is applied again (no run turns
+  outdated by a preset edit). The project does not store the preset's
+  name: the tree shows "preset: <name>" for the first preset whose values
+  the settings have, "none (own values)" otherwise.
+- Monitors: f = f0 (1 + offset / 100), rounded to 0.1 MHz; f0 is
+  `[farfield] f0`, or the band's center when 0 (not in the fingerprint,
+  like the frequencies). A frequency outside the band: refused, nothing
+  changed. Save current turns the frequencies back into offsets (0.01 %).
+- UI: right click Mesh (or a mesh row) or Far field: Apply preset (the
+  matching one ticked), Save as preset (a new file from the current
+  values, its name cell opened for typing in the tab), Edit presets. The
+  tab: Save current, Duplicate, Delete (own files only), Apply; double
+  click a value or a name to edit (files written atomically).
+- Control channel: `preset kind=mesh|monitors name=...`.
+- Check: `checks/check_presets.py`.
+
 ## Material library
 
 `project/materials.py` holds the dielectric presets.

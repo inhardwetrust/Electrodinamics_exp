@@ -113,6 +113,7 @@ slanted = true                 # refine the step around slanted metal
 
 [farfield]
 frequencies = "5.6, 5.757, 5.9"   # GHz, within f_min..f_max; "" = off
+f0 = 5.757             # GHz, what a monitors preset's offsets refer to; 0 = the band's center
 
 [bodies.Substrate]
 type = "dielectric"
@@ -153,6 +154,13 @@ up = "z"
   (as if absent). The window and `status` list them as unassigned.
 - Sections whose body is missing from the STEP are kept (the body may come
   back after a CAD edit) and reported as orphans.
+- **Presets** (ARCHITECTURE "Mesh and monitors presets"): templates beside
+  the model, `model.presets/mesh/<Name>.toml` (the [mesh] keys) and
+  `model.presets/monitors/<Name>.toml` (`offsets = "-2, 0, 2"`, % from
+  [farfield] f0); built-in: mesh Draft 20/4, Sweep 30/4, Fine 40/8,
+  Final 50/12; monitors f0, f0 ±2 %. Applying copies the values in
+  (`project.presets.apply(project, kind, values)`, `all_presets(step,
+  kind)`); a preset edited later changes no project.
 - `[view]` and `[z0path]` never outdate a run; `[farfield]` neither (it
   changes no S). Everything else is in the run fingerprint (section 12).
 
@@ -416,6 +424,7 @@ positionally; `show` takes the run names. From Python:
 | `show` | yes | run names | tick these runs (the others off) |
 | `run_server` | yes | | Run on server (refused: no model, cannot run, shorts, a run going, a transfer, Remote not set) |
 | `fetch` | yes | | Fetch |
+| `preset` | yes | `kind` (mesh / monitors), `name` | apply a preset (built-in or the model's); answer: the status |
 | `wait` (client) | | `--server`, `--timeout S` | polls `status` until nothing is busy; `--server` also until the server's run has ended |
 
 - **Two modes.** Normal: the user works; Claude may read; every change is
@@ -445,7 +454,8 @@ positionally; `show` takes the run names. From Python:
   and Far field, Results with one row per run (current / outdated, tick
   to show, rename, delete); Mesh: settings and the grid's figures; Model:
   Z0 path, Holes, Bodies with their types, right click to set a type,
-  double click a value to edit), Materials (the library), Remote (the
+  double click a value to edit; right click Mesh or Far field: presets),
+  Materials (the library), Presets (mesh and monitors templates), Remote (the
   server, Push, Fetch, Run on server, Stop).
 - **Tabs**: 3D View (left drag rotates, Space / Shift + left pans, wheel or
   right drag zooms, view buttons top right, axes gizmo bottom left; the

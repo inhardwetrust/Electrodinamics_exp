@@ -29,7 +29,7 @@
 #   python tools/ui.py COMMAND key=value ...     any other command (values
 #       read as JSON when they parse: n=3, on=true, names=["a","b"])
 # customcst also: tab results | 3d | farfield; show "Run 2" "Run 3";
-# run_server; fetch. `describe` lists an app's commands.
+# run_server; fetch; preset kind=mesh name=Final. `describe` lists an app's commands.
 #
 # Exit code 0, or 1 with the window's error on stderr (2: no window).
 # From Python: `from tools.ui import send; send("tab", name="results")`.

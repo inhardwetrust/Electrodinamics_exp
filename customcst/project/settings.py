@@ -20,6 +20,7 @@
 #
 #   [farfield]
 #   frequencies = "5.5, 5.757"  # GHz, the far-field monitor's ("" = off; within f min .. f max)
+#   f0 = 5.757                  # GHz, what a monitors preset's offsets refer to (0 = the band's center)
 #
 # [farfield] is not in a run's fingerprint (result_file.py): it does not
 # change S, a run keeps the frequencies it was made with.
@@ -102,6 +103,9 @@ SECTIONS = {
                       tooltip="The antenna's radiation pattern at these frequencies (comma separated, "
                               "within f min .. f max; empty: off). A box in the air around the model "
                               "collects the fields during the run: keep the model inside the padding."),
+                Param("f0", "f0 (0 = band center)", 0.0, minimum=0.0, unit="GHz",
+                      tooltip="The design frequency a monitors preset's offsets refer to (right click "
+                              "Far field > Apply preset); 0: the center of f min .. f max"),
             ),
         ),
     )
@@ -115,6 +119,9 @@ def check_settings(settings):
     sim = settings["simulation"]
     if sim["f_max"] <= sim["f_min"]:
         raise ValueError("f max must be greater than f min")
+    f0 = settings.get("farfield", {}).get("f0", 0.0)
+    if f0 and not sim["f_min"] <= f0 <= sim["f_max"]:
+        raise ValueError(f"far-field f0 {f0:g} GHz is outside f min .. f max ({sim['f_min']:g}-{sim['f_max']:g} GHz)")
     outside = [f for f in farfield_frequencies(settings) if not sim["f_min"] <= f <= sim["f_max"]]
     if outside:
         raise ValueError(f"far-field frequencies {', '.join(f'{f:g}' for f in outside)} GHz are outside "
