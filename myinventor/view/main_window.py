@@ -75,6 +75,9 @@
 #   it (view/sketch_tools.py PasteTool);
 # - Sketch > Project Geometry: a click on a body face projects its edges
 #   into the sketch (project_face; view/sketch_tools.py ProjectTool);
+#   "As placed" (under the browser, set_placed_view) shows the bodies placed
+#   meanwhile, the sketch moved with the body it lies on: faces then project
+#   as placed;
 # - Delete deletes the selection: a sketch line (with its end points no
 #   other line uses) or point (with its lines), or a feature nothing uses.
 #
@@ -101,6 +104,7 @@
 # The window's size and the recent files are app settings (app_settings.py,
 # MYCAD_SETTINGS for tests).
 
+import dataclasses
 import math
 import os
 import re
@@ -289,6 +293,9 @@ class MainWindow(QMainWindow):
         self._rolled_back = False   # the view shows the bodies from before the edited extrusion
         self.picking_plane = False  # Start 2D Sketch waits for a plane
         self.locked = False         # Claude is in control (set_locked, view/control.py)
+        self.placed_view = False    # sketch mode shows the bodies placed ("As placed"), not as modeling has them
+        self._frozen_placed = None  # the full Result with the placement, while a sketch is edited and shown so
+        self._shown_cache = {}      # sketch name -> (its output, that output as shown placed)
         self._shortcuts = {}        # while locked: each window action's shortcuts, put back on unlock
         self.view = GeometryView()
         self.view.on_pick = self._on_pick
@@ -546,10 +553,19 @@ class MainWindow(QMainWindow):
         self.props_form = QFormLayout(self.props)
         self.props_form.setContentsMargins(0, 0, 0, 0)
 
+        # Sketch mode: the bodies as placed (Move, Mirror) instead of as modeling has them.
+        self.placed_check = QCheckBox("As placed")
+        self.placed_check.setToolTip(
+            "While a sketch is edited: show the bodies placed (after Move / Rotate / Mirror), the sketch moved "
+            "with the body it lies on; Project Geometry then projects faces as placed")
+        self.placed_check.toggled.connect(self.set_placed_view)
+        self.placed_check.setVisible(False)
+
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.addWidget(self.tree, 3)
         layout.addWidget(self.info, 1)
+        layout.addWidget(self.placed_check)
         layout.addWidget(self.props)
 
         self.parameters = ParametersPanel()
@@ -686,7 +702,7 @@ class MainWindow(QMainWindow):
         self.view.set_datums(self._datums())
         self._show_sketches(force=True)
         if self.editing is not None and self.editing in result.outputs:
-            self.view.set_sketch(result.outputs[self.editing].frame, self.editing)
+            self.view.set_sketch(self._shown_output(self.editing).frame, self.editing)
         if result.upto is None or reset_view:   # while a sketch is edited, the bodies stay as they were
             self._modeling_shown = False
             self.view.set_geometry(Geometry(result.bodies), reset=reset_view)
@@ -1161,10 +1177,15 @@ class MainWindow(QMainWindow):
         self.editing = name
         self._frozen = self._modeling_result() if self.result.upto is None else \
             rebuild(self.part, folder=self._folder(), placement=False)
+        self._frozen_placed = None
+        self._shown_cache = {}
         self._show_modeling(True)               # the bodies as the features built them (no placement)
+        if self.placed_view:
+            self._show_placed_bodies()          # ... or placed ("As placed")
+        self.placed_check.setVisible(True)
         self.view.select(None)
         self._show_sketches(force=True)         # a sketch an extrusion used shows while edited
-        self.view.set_sketch(built.frame, name)
+        self.view.set_sketch(self._shown_output(name).frame, name)
         self._look_at_sketch()
         self.ribbon.set_tab_enabled("Sketch", True)
         self.ribbon.show_tab("Sketch")
@@ -1181,6 +1202,9 @@ class MainWindow(QMainWindow):
             action.setChecked(False)
         self.editing = None
         self._frozen = None
+        self._frozen_placed = None
+        self._shown_cache = {}
+        self.placed_check.setVisible(False)
         self.view.set_sketch(None)
         self._show_sketches(force=True)
         self.ribbon.set_tab_enabled("Sketch", False)
@@ -1278,6 +1302,74 @@ class MainWindow(QMainWindow):
         self._commit()
         return a, b
 
+    def set_placed_view(self, on):
+        """
+        "As placed": in sketch mode the bodies as placed (after the
+        transforms) or as modeling has them; a sketch on a placed body's face
+        is shown moved with that body (its own x, y unchanged).
+        """
+        self.placed_view = bool(on)
+        if self.placed_check.isChecked() != self.placed_view:
+            self.placed_check.setChecked(self.placed_view)
+            return
+        if self.editing is None:
+            return
+        self._shown_cache = {}
+        if self.placed_view:
+            self._show_placed_bodies()
+        else:
+            self._modeling_shown = False
+            self.view.set_geometry(Geometry(self._frozen.bodies), reset=False)
+            self._modeling_shown = bool(self.part.transforms)
+        self._show_sketches(force=True)
+        self.view.set_sketch(self._shown_output(self.editing).frame, self.editing)
+        self.view.set_hover(None)
+        self.statusBar().showMessage("Sketch mode: the bodies as placed (Move, Mirror applied)" if self.placed_view
+                                     else "Sketch mode: the bodies as modeling has them (no placement)", 5000)
+
+    def _show_placed_bodies(self):
+        if self._frozen_placed is None:
+            self._frozen_placed = rebuild(self.part, folder=self._folder())
+        self.view.set_geometry(Geometry(self._frozen_placed.bodies), reset=False)
+        self._modeling_shown = False
+
+    def _sketch_body(self, name):
+        """The body sketch `name` lies on (its plane is a face of a feature making it), or None."""
+        plane = self.part.feature(name)["plane"]
+        feature_name, _, face = plane.partition(":")
+        if not face or feature_name not in {f.name for f in self.part.features}:
+            return None
+        feature = self.part.feature(feature_name)
+        if feature.TYPE == "import":
+            match = re.match(r"face\.(\d+)\.", face)
+            index = int(match.group(1)) - 1 if match else -1
+            return feature.bodies[index] if 0 <= index < len(feature.bodies) else None
+        return feature.values.get("body")
+
+    def _shown_output(self, name):
+        """
+        A sketch's output as shown: as built, or (As placed, in sketch mode)
+        with its frame moved by the placement of the body it lies on.
+        """
+        out = self.result.outputs.get(name)
+        if out is None or self.editing is None or not self.placed_view or self._frozen_placed is None:
+            return out
+        cached = self._shown_cache.get(name)
+        if cached is not None and cached[0] is out:
+            return cached[1]
+        body = self._sketch_body(name)
+        trsf = self._frozen_placed.placements.get(body) if body is not None else None
+        shown = out
+        if trsf is not None:
+            from geometry.kernel import placed_frame
+            from model.sketch import SketchFrame
+
+            origin, u, v = placed_frame(trsf, out.frame.origin / MM, out.frame.u, out.frame.v)
+            frame = SketchFrame(origin * MM, u, v, np.cross(u, v))
+            shown = dataclasses.replace(out, frame=frame)
+        self._shown_cache[name] = (out, shown)
+        return shown
+
     def _set_project_tool(self, on):
         self._set_tool(on, self.project_action, lambda: ProjectTool(
             self.view, self.editing, self._edited_result, self.project_face,
@@ -1296,11 +1388,11 @@ class MainWindow(QMainWindow):
         from model.curves import fit_points
         from model.features import FeatureError
 
-        shapes = (self._frozen if self._frozen is not None else self.result).shapes
-        shape = shapes.get(key[1])
+        shown = self._frozen_placed if self.placed_view and self._frozen_placed is not None else self._frozen
+        shape = (shown if shown is not None else self.result).shapes.get(key[1])
         if self.editing is None or shape is None:
             return []
-        built = self.result.outputs[self.editing]
+        built = self._shown_output(self.editing)       # as shown: placed with its body when the faces are
         frame = built.frame
         try:
             tolerance = float(self.spline_tolerance) * 1e-3
@@ -1572,7 +1664,7 @@ class MainWindow(QMainWindow):
         return name
 
     def _edited_result(self):
-        return self.result.outputs[self.editing]
+        return self._shown_output(self.editing)
 
     def _add_line(self, start, end):
         """The Line tool's callback: anchors -> points (new ones as numbers) and a line; one undo step."""
@@ -1633,7 +1725,7 @@ class MainWindow(QMainWindow):
             return
         if phase == "move":
             sketch = self.part.feature(sketch_name)
-            before = self.result.outputs[sketch_name]
+            before = self._shown_output(sketch_name)
             guides, spot = [], None
             if self._dragged["circle"] is not None:
                 circle = sketch.circle(self._dragged["circle"])
@@ -1743,7 +1835,7 @@ class MainWindow(QMainWindow):
         wanted |= {name for name in used if self._failed_users(name)}
         if (self.extrude_panel is not None and self._sweep == "revolve") or self._picking_axis:
             wanted |= set(used)                 # an axis may be in any of them
-        shown = [(f.name, outputs[f.name]) for f in self.part.features
+        shown = [(f.name, self._shown_output(f.name)) for f in self.part.features
                  if f.TYPE == "sketch" and f.name in outputs and (f.name not in used or f.name in wanted)]
         # force: after a rebuild (their geometry changed); else only when the set of names changes
         if force or [name for name, _ in shown] != list(self.view._sketch_geometry):

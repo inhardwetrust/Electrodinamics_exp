@@ -234,9 +234,12 @@ parameters; "jumps in time" later if needed).
 Done: Project Geometry (geometry/project.py, Sketch.add_projection): a body
 face's edges into the edited sketch as plain lines, exact circles and arcs
 (parallel to the plane), splines for the rest (ellipses, B-splines). Static:
-no link to the face. Next: retrospective projection (faces of placed bodies
-into a sketch, which modeling sees unplaced), then maybe associative
-projection (an entity that follows a named face).
+no link to the face. Done since: "As placed" in sketch mode (the bodies
+placed, the sketch moved with the body it lies on: its body's placement
+applied to its frame; faces project as placed: the retrospective
+projection, static). Maybe later: a Move in the history (Inventor's Move
+Bodies), so what follows sees the placed body and a projection can follow
+it.
 
 Next, in this order:
 1. Manual primitives: poly-arc, Bézier (the arc is done: from its center or

@@ -235,6 +235,13 @@ def placed(shape, trsf):
     return BRepBuilderAPI_Transform(shape, trsf, True).Shape()
 
 
+def placed_frame(trsf, origin, u, v):
+    """A sketch frame (origin mm, unit axes u, v) under a placement: (origin, u, v) as numpy arrays."""
+    o = gp_Pnt(*map(float, origin)).Transformed(trsf)
+    a, b = (gp_Vec(*map(float, w)).Transformed(trsf) for w in (u, v))
+    return np.array([o.X(), o.Y(), o.Z()]), np.array([a.X(), a.Y(), a.Z()]), np.array([b.X(), b.Y(), b.Z()])
+
+
 def then(first, second):
     """The placement `first`, then `second` (first may be None: none yet)."""
     return second if first is None else second.Multiplied(first)

@@ -198,9 +198,18 @@ follow later changes):
 - a circle seen edge-on: its segment; an edge along the normal: nothing.
 
 Ends within 1 µm of a sketch point use it, so the loops close and meet
-the sketch's own lines; what is already there is not drawn twice. The
-bodies are the ones modeling sees (unplaced). In a file you write, draw
-the same geometry yourself (from the same parameters).
+the sketch's own lines; what is already there is not drawn twice. In a
+file you write, draw the same geometry yourself (from the same
+parameters).
+
+**As placed** (a check box under the browser in sketch mode): the bodies
+shown after the transforms instead of as modeling has them, and the sketch
+shown moved with the body it lies on (a sketch on `Board:end` moves with
+the board's placement; on an origin or work plane it stays). Project
+Geometry then projects the faces as placed, into the sketch's own x, y:
+the pad under a placed connector's leg lands where the leg will be
+relative to the board. Still static: moving the connector later does not
+move the projection.
 
 ## 6. Sketch planes and their axes
 
@@ -594,8 +603,8 @@ A STEP file's bodies: `geometry.step_io.read_bodies(path)` →
 ## 18. Not there yet
 
 No Combine (a body with a body after the fact), no associative projection
-(a projected face does not follow its body; projecting placed bodies,
-"retrospective projection", is next), no ellipse or free B-spline entity
+(a projected face does not follow its body; for that a Move in the
+history would be needed), no ellipse or free B-spline entity
 (projected ones become interpolating splines), no fillets, chamfers or
 patterns, no constraint solver (formulas instead), no sketch on curved
 faces, no poly-arc or Bézier, no copy / paste of arcs and generators, no
