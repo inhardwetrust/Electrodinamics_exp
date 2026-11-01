@@ -87,6 +87,12 @@ Fix and dry-run again until clean. Never run with a short you do not mean.
 
 - An answer "not in control": the user took control back. Stop and ask;
   never re-lock on your own.
+- Locked, the window shows no dialog: read `status.notices` after a run,
+  a fetch or anything going wrong, and tell the user what they say. A
+  fetch keeps our model files where the server's differ; pass
+  `fetch take_server=true` only when the server's are wanted.
+- Show what you talk about: `$UI farfield frequency=5.42 plane=phi at=90 show3d=true cut3d=true`,
+  `$UI view name=iso`, `$UI section axis=y at=-10`.
 - Screenshots (`$UI screenshot path=ABS.png`) are for your own eyes; the
   user watches the live window: do not hand them paths.
 - No window watching: skip this section; run with run.py (local) or

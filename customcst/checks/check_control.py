@@ -14,6 +14,15 @@
 #     does not read is an error, the window as it was; tab; show ticks the
 #     named runs (an unknown name is an error); run_server on a model
 #     that cannot run is an error;
+#   - locked, no dialog opens: notify -> a notice (status: notices) and the
+#     status bar, ask -> the default (and a notice); unlocked they are
+#     message boxes; a fetch whose server files differ keeps ours (no
+#     dialog) unless take_server=true, which writes them and reloads; an
+#     unknown host key is not trusted (the user's), noted; clear_notices;
+#   - farfield sets the Far field tab (frequency, plane, angle, 3D, cut in
+#     3D: the cut drawn); view (iso / left, ortho); section (axis, mm, on;
+#     outside the model: an error); stop_server with nothing going and
+#     clean_server without the Remote tab: errors;
 #   - "Take control back": unlocked, Claude's next change refused;
 #   - wait returns at once when nothing goes on; closing removes control.json.
 #
@@ -42,6 +51,25 @@ def check(label, ok, detail=""):
     print(f"[{'ok' if ok else 'FAIL'}] {label} {detail}")
     if not ok:
         FAILED.append(label)
+
+
+def farfield_run(step, name):
+    """A run with a synthetic far field (a short dipole along z at 5.4 GHz) for the Far field tab."""
+    from solver.farfield import intensity, sphere_power
+    from solver.result_file import SimulationResult, save_result
+
+    run = SimulationResult(np.array([5.0e9, 5.8e9]), ["p"], [50.0])
+    run.s[(0, 0)] = np.array([0.1 + 0j, 0.2 + 0j])
+    run.name = name
+    theta, phi = np.arange(0.0, 181.0), np.arange(0.0, 360.0, 2.0)
+    e_t = (np.sin(np.radians(theta))[:, None] * np.ones(len(phi)))[None].astype(np.complex64)
+    e_p = np.zeros_like(e_t)
+    p = sphere_power(intensity(e_t.astype(np.complex128), e_p.astype(np.complex128)),
+                     np.radians(theta), np.radians(phi))
+    run.farfield["p"] = {"frequencies": np.array([5.4e9]), "theta": theta, "phi": phi, "e_theta": e_t,
+                         "e_phi": e_p, "p_sphere": p, "p_box": p, "p_acc": p, "p_inc": p,
+                         "cut_edges": np.array(0), "excluded_cells": np.array(0), "stride": np.array(1)}
+    save_result(step, run)
 
 
 def fake_run(step, name, fingerprint):
@@ -213,6 +241,92 @@ def main():
                 thread.join(0.01)
             state2 = out.get("s")
         check("wait returns when nothing goes on", state2 is not None and not any(state2["busy"].values()))
+
+        # ---- locked: no dialog opens
+        from PySide6.QtWidgets import QMessageBox
+        from remote.sync import Pulled
+        boxes = []
+        saved_boxes = {k: getattr(QMessageBox, k) for k in ("warning", "critical", "information", "question")}
+        for k in saved_boxes:
+            setattr(QMessageBox, k, staticmethod(lambda *a, k=k, **kw: (boxes.append(k), QMessageBox.No)[1]))
+        try:
+            window.notices.clear()
+            window.notify("Test", "something went wrong", "error")
+            answer = window.ask("Test?", "do it?", default=True)
+            check("locked: notify and ask open no box, leave notices, ask takes the default",
+                  not boxes and answer is True and [n["level"] for n in window.notices] == ["error", "question"]
+                  and "answered yes" in window.notices[-1]["text"], str(window.notices))
+            ok, state = call("status")
+            check("  status lists the notices", ok and len(state["notices"]) == 2, str(state.get("notices"))[:120])
+
+            toml = os.path.join(folder, "model.toml")
+            mine = open(toml, encoding="utf-8").read()
+            theirs = mine.replace("[mesh]", "[mesh]\n# from the server", 1).encode("utf-8")
+            window.fetch_take_server = False
+            window._pulled(step, Pulled(model={toml: theirs}))
+            check("fetch, the server's .toml differs: ours kept, no box, noted", not boxes
+                  and open(toml, encoding="utf-8").read() == mine and "answered no" in window.notices[-1]["text"])
+            window.fetch_take_server = True
+            window._pulled(step, Pulled(model={toml: theirs}))
+            window.wait_for_mesh()
+            check("  take_server: theirs written, reloaded quietly, no box", not boxes
+                  and "# from the server" in open(toml, encoding="utf-8").read() and window.geometry is not None)
+            window.fetch_take_server = False
+
+            class Key:
+                def get_name(self):
+                    return "ssh-ed25519"
+
+                def asbytes(self):
+                    return b"key"
+            unknown = type("Unknown", (), {"host": "10.0.0.9", "key": Key()})()
+            window._remote_operation = ("check", None, "me@10.0.0.9")
+            window._remote_failed("unknown host", unknown)
+            from remote.sync import known_hosts_path
+            check("an unknown host key under lock: not trusted, noted, no box", not boxes
+                  and "not known yet" in window.notices[-2]["text"]
+                  and (not os.path.exists(known_hosts_path())
+                       or "10.0.0.9" not in open(known_hosts_path()).read()), str(window.notices[-2:])[:160])
+            ok, _ = call("clear_notices")
+            check("clear_notices", ok and window.notices == [])
+
+            window.set_locked(False)
+            window.notify("Test", "unlocked")
+            window.ask("Test?", "unlocked?")
+            check("unlocked: notify and ask are message boxes", boxes == ["warning", "question"], str(boxes))
+            window.set_locked(True)
+        finally:
+            for k, v in saved_boxes.items():
+                setattr(QMessageBox, k, v)
+
+        # ---- the Far field tab, the view, the section, the server
+        farfield_run(step, "FF")
+        ok, _ = call("reload")
+        ok2, _ = call("show", runs=["FF"])
+        ok3, ff = call("farfield", frequency=5.4, plane="phi", at=90, show3d=True, cut3d=True)
+        panel = window.farfield_panel
+        check("farfield: the tab set (5.4 GHz, phi 90, 3D and the cut)", ok and ok2 and ok3
+              and panel.plane.currentData() == "phi" and panel.angle.value() == 90 and panel.show_3d.isChecked()
+              and panel.cut_3d.isChecked() and window.view.cut_line.visible and window.view.pattern.visible
+              and "1.7" in ff["info"], str(ff)[:200])
+        ok, text = call("farfield", plane="sideways")
+        check("  a wrong plane: an error", not ok and "plane" in text, text)
+        ok, _ = call("view", name="left", ortho=True)
+        check("view left, ortho", ok and window.view.orthographic)
+        ok, _ = call("view", name="iso", ortho=False)
+        ok2, text = call("view", name="sideways")
+        check("view iso, perspective; a wrong name: an error", ok and not window.view.orthographic and not ok2, text)
+        ok, sec = call("section", axis="y", at=0.0)
+        check("section y at 0 mm: shown there", ok and window.section_check.isChecked()
+              and window.mesh_axis.currentIndex() == 1 and abs(window._mesh_coordinate) < 1e-9, str(sec))
+        ok, text = call("section", axis="z", at=99)
+        check("  outside the model: an error", not ok and "outside" in text, text)
+        ok, _ = call("section", axis="y", at=0.0, on=False)
+        check("  off", ok and not window.section_check.isChecked())
+        ok, text = call("stop_server")
+        check("stop_server with nothing going: an error", not ok and "no run" in text, text)
+        ok, text = call("clean_server", list=True)
+        check("clean_server without the Remote tab: an error", not ok and "Remote" in text, text)
 
         # ---- the user takes the control back
         take = [b for b in window.lock_bar.findChildren(type(window.push_button)) if "back" in b.text()][0]

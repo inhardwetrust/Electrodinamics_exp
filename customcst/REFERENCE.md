@@ -443,7 +443,7 @@ positionally; `show` takes the run names. From Python:
 | Command | Needs the lock | Arguments | Does / answers |
 |---|---|---|---|
 | `describe` | no | | app, protocol 1, each command's help |
-| `status` | no | | `model`, `locked`, `busy` {mesh, local_run, transfer}, `server_run` (the recorded launch: state...), `tab`, `project_error`, `bodies` {name: type}, `unassigned`, `orphans`, `problem` (null = can run), `shorts`, `cells`, `runs` [{name, saved, current, shown}], `message` |
+| `status` | no | | `model`, `locked`, `busy` {mesh, local_run, transfer}, `server_run` (the recorded launch: state...), `tab`, `project_error`, `bodies` {name: type}, `unassigned`, `orphans`, `problem` (null = can run), `shorts`, `cells`, `runs` [{name, saved, current, shown}], `message`, `remote` {running, last}, `notices` [{time, title, text, level}], `server_models` |
 | `screenshot` | no | `path` (absolute) | `window.grab()` to a PNG, for Claude's own eyes |
 | `lock` | no | `message` | Claude in control: the banner; refused while the user edits a tree field or a dialog is open |
 | `unlock` | yes | `message` | control back; the message in the status bar |
@@ -452,8 +452,14 @@ positionally; `show` takes the run names. From Python:
 | `tab` | yes | `name` | `3d`, `results`, `farfield` |
 | `show` | yes | run names | tick these runs (the others off) |
 | `run_server` | yes | | Run on server (refused: no model, cannot run, shorts, a run going, a transfer, Remote not set) |
-| `fetch` | yes | | Fetch |
+| `fetch` | yes | `take_server` | Fetch; take_server: take the server's model files where they differ (default: keep ours; also for the fetch after a followed run) |
 | `preset` | yes | `kind` (mesh / monitors), `name` | apply a preset (built-in or the model's); answer: the status |
+| `farfield` | yes | `frequency` (GHz), `plane` (phi / theta), `at` (deg), `quantity`, `component`, `span`, `show3d`, `cut3d`, `port` | sets the Far field tab (any subset); answer: its choices and the info text (cut maximum, beamwidth, D, G, efficiency) |
+| `view` | yes | `name` (iso, top, bottom, front, back, left, right), `ortho` | a standard view in the 3D View tab |
+| `section` | yes | `axis` (x / y / z), `at` (mm), `on` | the section plane there, shown or not |
+| `stop_server` | yes | | stop the model's run on the server (no question) |
+| `clean_server` | yes | `list=true`, or `names=[...]` | list the server's models (then `status.server_models`), or delete these (never one running) |
+| `clear_notices` | no | | empty `status.notices` |
 | `wait` (client) | | `--server`, `--timeout S` | polls `status` until nothing is busy; `--server` also until the server's run has ended |
 
 - **Two modes.** Normal: the user works; Claude may read; every change is
@@ -469,7 +475,11 @@ positionally; `show` takes the run names. From Python:
 - **"not in control"** after a lock: the user took control back. Stop and
   ask; never re-lock on your own.
 - Commands never open dialogs; long work goes on after the answer
-  (`ui.py wait`).
+  (`ui.py wait`). **Locked, the window opens no dialog at all**: what it
+  would have said is in `status.notices` (read it after a run or a fetch),
+  a question takes the safe default (keep our files; no stop) unless a
+  command said otherwise (`fetch take_server=true`, `stop_server`). A new
+  SSH host key is never trusted under Claude's control: the user does it.
 - The window only gets the channel when started by a version that has it:
   a window open from before needs a restart.
 
@@ -520,7 +530,7 @@ positionally; `show` takes the run names. From Python:
    can open, what is not committed.
 
 A design whose model is a myCad part (one model changed in place, each
-change a run): `.claude/skills/antenna-design/SKILL.md` section 8, and the
+change a run): `.claude/skills/antenna-design/SKILL.md` section 9, and the
 design project's own README (`../patch_antenna_sma/`).
 
 ## 16. Pitfalls already met

@@ -24,7 +24,7 @@ Russian; files here are in English.
   read the results, drive the window) and the facts it points to,
   `../customcst/REFERENCE.md`; then
   `../customcst/.claude/skills/antenna-design/SKILL.md` (the goal, tuning,
-  convergence, the final run; its section 8: the loop with a myCad model,
+  convergence, the final run; its section 9: the loop with a myCad model,
   one model changed in place, each change a run).
 - A tool missing something: say so, note it in notes/log.md, and fix it in
   that tool's own session or folder rules (its checks, its CLAUDE.md), not

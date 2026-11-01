@@ -103,16 +103,25 @@ class Shell:
             entry = self.started.get(int(match[1]))
             return (0, entry[1] + "\n") if entry else (1, "")
         if command.startswith("rm -rf -- "):
-            try:
-                for path in shlex.split(command)[3:]:
-                    real = self.real(path)
-                    if os.path.isdir(real):
-                        shutil.rmtree(real)
-                    elif os.path.exists(real):
-                        os.remove(real)
-            except OSError as error:
-                return 1, f"rm: {error}\n"
-            return 0, ""
+            # Linux removes a file a process still has open; Windows does not (a run.py that
+            # just wrote "done" may not have exited yet): wait for the runs here, then retry
+            for attempt in range(2):
+                try:
+                    for path in shlex.split(command)[3:]:
+                        real = self.real(path)
+                        if os.path.isdir(real):
+                            shutil.rmtree(real)
+                        elif os.path.exists(real):
+                            os.remove(real)
+                    return 0, ""
+                except OSError as error:
+                    if attempt:
+                        return 1, f"rm: {error}\n"
+                    for process, _ in self.started.values():
+                        try:
+                            process.wait(timeout=20)
+                        except subprocess.TimeoutExpired:
+                            pass
         match = re.match(r"^kill -TERM (\d+)$", command)
         if match and int(match[1]) in self.started:
             os.kill(int(match[1]), signal.CTRL_BREAK_EVENT)

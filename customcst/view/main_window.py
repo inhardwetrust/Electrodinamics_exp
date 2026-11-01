@@ -59,6 +59,7 @@ MM = 1e-3
 AXES = "xyz"
 MESH_PROGRESS_DELAY = 0.3       # s: the mesh progress bar appears after this
 REMOTE_POLL = 15000             # ms between status reads of a run going on the server
+NOTICES_KEPT = 50               # the notices kept for Claude's status (notify / ask when locked)
 DISK_POLL = 700                 # ms between looks at the model's STEP and project file on disk
 SLIDER_STEPS = 1000             # plane positions over the model when it is not on the grid lines
 TREE_SECTIONS = ("simulation", "mesh")  # the settings sections, in the tree's order (before Model)
@@ -138,6 +139,12 @@ class MainWindow(QMainWindow):
         self._restoring = False
         self._project_mtime = None      # of the project file as last read or written here
         self.locked = False             # Claude is in control (set_locked, view/control.py)
+        # Locked, no dialog opens (notify / ask): what it would say goes to
+        # the status bar and to these notices, which status reads.
+        self.notices = []               # [{"time", "title", "text", "level"}], the newest last
+        self.fetch_take_server = False  # locked: a fetch takes the server's differing files (fetch command)
+        self.confirmed = False          # locked: a command already confirmed its question (stop_server)
+        self.server_models = None       # [ServerModel] of the last listing (locked: no Clean dialog)
         # Another program (myCad exporting the STEP, Claude writing the
         # .toml) changes the model: the window reloads it by itself once
         # both files have stayed the same for one more look (they are often
@@ -693,8 +700,7 @@ class MainWindow(QMainWindow):
                 + "\n\n".join(f"• {s}" for s in self.materials.shorts)
                 + "\n\nUnless the short is meant (a shorted stub, a PIFA's short pin), the result "
                   "will be wrong. " + question)
-        answer = QMessageBox.warning(self, title, text, QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        return answer == QMessageBox.Yes
+        return self.ask(title, text, default=False, warning=True)
 
     def _port_list(self):
         """Names of the valid ports in S-matrix order (lumped, then waveguide)."""
@@ -703,7 +709,7 @@ class MainWindow(QMainWindow):
     def _simulate(self):
         problem = self._simulation_problem()
         if problem:
-            QMessageBox.warning(self, "Simulate", f"Cannot simulate: {problem}")
+            self.notify("Simulate", f"Cannot simulate: {problem}")
             return
         if self.materials.shorts and not self._confirm_shorts():
             return
@@ -765,7 +771,7 @@ class MainWindow(QMainWindow):
 
     def _sim_failed(self, message):
         self._sim_done()
-        QMessageBox.critical(self, "Simulation failed", message)
+        self.notify("Simulation failed", message, "error")
         self.results.set_message(message)
 
     # =====================================================
@@ -1105,6 +1111,34 @@ class MainWindow(QMainWindow):
         if keep_camera:
             self.view.view.camera.set_state(camera["center"], camera["distance"], camera["rotation"])
         return None
+
+    def notify(self, title, text, level="warning"):
+        """
+        A message box, or, locked (Claude in control), a notice and the
+        status bar: no dialog blocks the window under Claude's commands.
+        """
+        if not self.locked:
+            box = {"error": QMessageBox.critical, "info": QMessageBox.information}.get(level, QMessageBox.warning)
+            box(self, title, text)
+            return
+        self._notice(title, text, level)
+
+    def ask(self, title, text, default=False, warning=False):
+        """
+        Yes / No; locked: no dialog, the default answer (a command sets it),
+        and a notice of the question and the answer taken.
+        """
+        if not self.locked:
+            box = QMessageBox.warning if warning else QMessageBox.question
+            buttons = QMessageBox.Yes | QMessageBox.No
+            return box(self, title, text, buttons, QMessageBox.No) == QMessageBox.Yes
+        self._notice(title, f"{text}\n-> answered {'yes' if default else 'no'} (locked)", "question")
+        return default
+
+    def _notice(self, title, text, level):
+        self.notices.append({"time": time.strftime("%H:%M:%S"), "title": title, "text": text, "level": level})
+        del self.notices[:-NOTICES_KEPT]
+        self.statusBar().showMessage(f"{title}: {text.splitlines()[0] if text else ''}", 15000)
 
     def user_busy(self):
         """The user is in the middle of something: an edit in the tree, or a dialog."""
@@ -2314,9 +2348,8 @@ class MainWindow(QMainWindow):
             self._save()                        # the .toml as the window shows it
             self._launch_fingerprint = fingerprint(self.project)    # the model as sent
         if operation == "stop":
-            answer = QMessageBox.question(self, "Stop the server's run",
-                                          "Stop the run on the server? Nothing of it is saved.")
-            if answer != QMessageBox.Yes:
+            if not self.ask("Stop the server's run", "Stop the run on the server? Nothing of it is saved.",
+                            default=self.confirmed):
                 return
         self.remote_panel.save()
         config = self.remote_panel.config()
@@ -2354,6 +2387,9 @@ class MainWindow(QMainWindow):
         _, step, server = self._remote_operation
         if operation == "check":
             text = f"connected: {value}"
+        elif operation == "server_models" and self.locked:
+            self.server_models = value
+            text = f"{len(value)} model(s) kept on the server (listed for Claude)"
         elif operation == "server_models":
             if not value:
                 text = "nothing kept in models/ on the server"
@@ -2421,19 +2457,22 @@ class MainWindow(QMainWindow):
         ticked = set(self.shown)
         if pulled.model:
             names = ", ".join(os.path.basename(p) for p in pulled.model)
-            answer = QMessageBox.question(
-                self, "Fetch",
-                f"The server's {names} differ from yours.\n\nTake the server's? "
-                "Yours are replaced (changes made here since the push are lost).")
-            if answer == QMessageBox.Yes:
+            if self.ask("Fetch", f"The server's {names} differ from yours.\n\nTake the server's? "
+                        "Yours are replaced (changes made here since the push are lost).",
+                        default=self.fetch_take_server):
                 from remote.sync import write_local
                 try:
                     write_local(pulled.model)
                 except OSError as error:
-                    QMessageBox.critical(self, "Fetch", f"not written: {error}")
+                    self.notify("Fetch", f"not written: {error}", "error")
                 else:
                     parts.append(f"took the server's {names}")
-                    self.load(step)                 # the model as on the server, its runs too
+                    if self.locked:                 # the model as on the server, its runs too
+                        error = self.load_quiet(step, keep_camera=True)
+                        if error:
+                            self.notify("Fetch", f"{os.path.basename(step)} {error}", "error")
+                    else:
+                        self.load(step)
             else:
                 parts.append(f"kept yours ({names} differ on the server)")
         # like a finished run: the ticks stay, the taken runs join them, Results shows them
@@ -2450,12 +2489,15 @@ class MainWindow(QMainWindow):
         self._update_remote_buttons()
         if unknown is not None:
             from remote.sync import fingerprint as key_fingerprint, trust_host
-            answer = QMessageBox.question(
-                self, "Remote host",
+            # a new host key is the user's to trust: never answered under Claude's control
+            answer = self.ask(
+                "Remote host",
                 f"{unknown.host} is not known yet. Its key:\n\n{unknown.key.get_name()} "
                 f"{key_fingerprint(unknown.key)}\n\nTrust it? (Compare with the server's: "
-                "ssh-keygen -lf /etc/ssh/ssh_host_*_key.pub)")
-            if answer == QMessageBox.Yes:
+                "ssh-keygen -lf /etc/ssh/ssh_host_*_key.pub)"
+                + ("" if not self.locked else "\nThe user trusts it: take the control back, press Check."),
+                default=False)
+            if answer:
                 try:
                     trust_host(unknown.host, unknown.key)
                 except OSError as error:
@@ -2466,7 +2508,9 @@ class MainWindow(QMainWindow):
         self.remote_panel.show_status(message, error=True)
         self.statusBar().showMessage(f"{operation} failed: {message.splitlines()[0] if message else ''}", 10000)
         if operation == "launch":
-            QMessageBox.warning(self, "Run on the server", message)
+            self.notify("Run on the server", message)
+        elif self.locked:
+            self._notice(operation, message, "error")
 
     # The server run as recorded here, and followed after Run / Fetch.
 
@@ -2540,7 +2584,7 @@ class MainWindow(QMainWindow):
                 if was_active and not fetched:      # it ended while we followed it: say so
                     self.statusBar().showMessage(f"the server's run {state}: {status.get('message', '')}", 15000)
                     if state != "stopped":
-                        QMessageBox.warning(self, "The server's run", text)
+                        self.notify("The server's run", text)
         self._fill_results()                        # the pending row's state
         self._update_remote_buttons()
 
@@ -2779,7 +2823,7 @@ class MainWindow(QMainWindow):
         try:
             delete_result(run)
         except OSError as error:
-            QMessageBox.critical(self, "Delete result", str(error))
+            self.notify("Delete result", str(error), "error")
             return
         self.runs.remove(run)
         self.shown.discard(run.path or id(run))
@@ -3094,7 +3138,7 @@ class MainWindow(QMainWindow):
         try:
             self.project.save()
         except OSError as error:
-            QMessageBox.critical(self, "Project file", f"cannot save {self.project.path}\n\n{error}")
+            self.notify("Project file", f"cannot save {self.project.path}\n\n{error}", "error")
             return
         self._project_mtime = self._file_mtime(self.project.path)
 

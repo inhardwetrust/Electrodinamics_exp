@@ -29,14 +29,30 @@
 #   tab name                     3d | results | farfield
 #   show runs=[names]            tick these runs in Results (all others off)
 #   screenshot path              window.grab() into a PNG
-#   run_server / fetch           the Remote tab's ▶ Run on server / Fetch
+#   run_server / fetch           the Remote tab's ▶ Run on server / Fetch;
+#                                fetch take_server=true|false: what a fetch does
+#                                when the server's model files differ (no dialog)
 #   preset kind name             apply a mesh / monitors preset (project/presets.py)
+#   farfield ...                 the Far field tab: frequency (GHz), plane phi|theta,
+#                                at (deg), quantity, component, span, show3d, cut3d
+#   view name [ortho]            iso, top, bottom, front, back, left, right
+#   section axis at [on]         the section plane: x|y|z at mm, shown or not
+#   stop_server                  the server's run stopped (no question)
+#   clean_server [names] [list]  list the server's models (status: server_models),
+#                                or delete these (never one whose run goes)
+#   clear_notices                empty the notices
+# Locked, the window opens no dialog (MainWindow.notify / ask): a message
+# or a question it would have shown is a notice in `status` (and the status
+# bar); a question takes its default (a command sets it: fetch take_server,
+# stop_server). A new host key is the one question left to the user: locked,
+# it is answered no and noted.
 # Long work (meshing, a transfer, the server's run) goes on after the
 # answer: `status` tells when it is done (tools/ui.py wait).
 
 import hmac
 import json
 import os
+import re
 import secrets
 
 from PySide6.QtCore import QObject
@@ -174,6 +190,11 @@ def status(window):
         "runs": [{"name": r.name, "saved": r.saved, "current": current is not None and r.fingerprint == current,
                   "shown": (r.path or id(r)) in window.shown} for r in window.runs],
         "message": window.statusBar().currentMessage(),
+        "remote": {"running": window.remote.running, "last": window.remote_panel.status.text()},
+        "notices": list(window.notices),
+        "server_models": None if window.server_models is None else [
+            {"name": m.name, "size": m.size, "runs": m.runs, "state": m.state, "active": m.active}
+            for m in window.server_models],
     }
 
 
@@ -185,6 +206,7 @@ def lock(window, message="Claude is working: look only"):
     if window.user_busy():
         raise CommandError("the user is editing (a field in the tree, or a dialog is open): try later")
     window.set_locked(True, message)
+    window.fetch_take_server = False        # a fresh lock: the safe answers until a command says otherwise
     return "locked"
 
 
@@ -280,9 +302,138 @@ def preset(window, kind, name):
     return status(window)
 
 
-def fetch(window):
-    """The Remote tab's Fetch."""
+def fetch(window, take_server=None):
+    """The Remote tab's Fetch; take_server: take the server's model files where they differ (else keep ours)."""
+    if take_server is not None:
+        window.fetch_take_server = bool(take_server)    # also for the fetch after a followed run
     return _remote(window, "fetch")
+
+
+def clear_notices(window):
+    """Empty the notices (what dialogs would have said while locked)."""
+    window.notices.clear()
+    return "cleared"
+
+
+VIEWS = ("iso", "top", "bottom", "front", "back", "left", "right")
+
+
+def view(window, name="iso", ortho=None):
+    """A standard view of the 3D View tab: iso, top, bottom, front, back, left, right; ortho true|false."""
+    if name not in VIEWS:
+        raise CommandError(f"name must be one of {VIEWS}")
+    if window.geometry is None:
+        raise CommandError("no model open")
+    if ortho is not None:
+        window.view.set_orthographic(bool(ortho))
+    if name == "iso":
+        window.view.reset_view()
+    else:
+        window.view.look_from(name.capitalize())
+    window.tabs.setCurrentIndex(TAB_NAMES.index("3d"))
+    return name
+
+
+def section(window, axis, at, on=True):
+    """The section plane: axis x|y|z, at (mm), on (shown) or off."""
+    if axis not in ("x", "y", "z"):
+        raise CommandError("axis must be x, y or z")
+    if window.geometry is None:
+        raise CommandError("no model open")
+    index = "xyz".index(axis)
+    lo, hi = window.geometry.bounds
+    coordinate = float(at) * 1e-3
+    if not lo[index] - 1e-12 <= coordinate <= hi[index] + 1e-12:
+        raise CommandError(f"{axis} = {at} mm is outside the model ({lo[index] * 1e3:g}..{hi[index] * 1e3:g} mm)")
+    if window.mesh_axis.currentIndex() != index:
+        window.mesh_axis.setCurrentIndex(index)              # centers the plane
+    window._mesh_coordinate = coordinate
+    window._configure_mesh_slider()
+    window.section_check.setChecked(bool(on))
+    window._show_mesh_plane()
+    window.tabs.setCurrentIndex(TAB_NAMES.index("3d"))
+    return {"axis": axis, "at_mm": round(window._mesh_coordinate * 1e3, 4), "on": bool(on)}
+
+
+def farfield(window, frequency=None, plane=None, at=None, quantity=None, component=None, span=None,
+             show3d=None, cut3d=None, port=None):
+    """The Far field tab: frequency GHz, plane phi|theta, at deg, quantity, component, span dB, show3d, cut3d."""
+    panel = window.farfield_panel
+    if panel.primary is None:
+        raise CommandError("no shown run with a far field (tick one: show)")
+
+    def choose(combo, value, what):
+        for i in range(combo.count()):
+            if combo.itemData(i) == value:
+                combo.setCurrentIndex(i)
+                return
+        raise CommandError(f"{what} must be one of {[combo.itemData(i) for i in range(combo.count())]}")
+
+    widgets = (panel.frequency, panel.port, panel.quantity, panel.component, panel.plane, panel.angle,
+               panel.span, panel.show_3d, panel.cut_3d)
+    for widget in widgets:
+        widget.blockSignals(True)
+    try:
+        if port is not None:
+            choose(panel.port, port, "port")
+            panel._refresh_choices()
+        if frequency is not None:
+            values = [panel.frequency.itemData(i) for i in range(panel.frequency.count())]
+            near = [abs(v / 1e9 - float(frequency)) for v in values]
+            panel.frequency.setCurrentIndex(near.index(min(near)))
+        if quantity is not None:
+            choose(panel.quantity, quantity, "quantity")
+        if component is not None:
+            choose(panel.component, component, "component")
+        if plane is not None:
+            choose(panel.plane, plane, "plane")
+            panel.angle.setRange(0, 359 if plane == "phi" else 180)
+        if at is not None:
+            panel.angle.setValue(int(round(float(at))))
+        if span is not None:
+            choose(panel.span, int(span), "span")
+        if show3d is not None:
+            panel.show_3d.setChecked(bool(show3d))
+        if cut3d is not None:
+            panel.cut_3d.setChecked(bool(cut3d))
+    finally:
+        for widget in widgets:
+            widget.blockSignals(False)
+    panel._redraw()
+    window.tabs.setCurrentWidget(panel)
+    text = re.sub(r"<[^>]+>", "", panel.info.text().replace("<br>", "\n"))
+    return {"frequency_ghz": panel.frequency.currentData() / 1e9, "plane": panel.plane.currentData(),
+            "at": panel.angle.value(), "quantity": panel.quantity.currentData(),
+            "component": panel.component.currentData(), "show3d": panel.show_3d.isChecked(),
+            "cut3d": panel.cut_3d.isChecked(), "info": text}
+
+
+def stop_server(window):
+    """Stop the model's run on the server (no question: the command is the confirmation)."""
+    if not window._remote_active():
+        raise CommandError("no run of this model is going on the server (as last seen)")
+    window.confirmed = True
+    try:
+        return _remote(window, "stop")
+    finally:
+        window.confirmed = False
+
+
+def clean_server(window, names=None, list=False):
+    """The server's models: list=true lists them (status: server_models), names=[...] deletes these."""
+    if window.remote.running:
+        raise CommandError("a transfer is going on")
+    if not window.remote_panel.config().complete:
+        raise CommandError("the Remote tab is not filled in")
+    if list:
+        window.server_models = None
+        window._remote_start("server_models")
+        return "listing: read status server_models when the transfer is done (ui.py wait)"
+    if not names:
+        raise CommandError("give names=[...] to delete, or list=true")
+    window._clean_names = [str(n) for n in names]
+    window._remote_start("clean")
+    return "deleting: the result in status remote.last when the transfer is done"
 
 
 # name: (function, changes the window: needs the lock)
@@ -299,4 +450,10 @@ COMMANDS = {
     "run_server": (run_server, True),
     "fetch": (fetch, True),
     "preset": (preset, True),
+    "farfield": (farfield, True),
+    "view": (view, True),
+    "section": (section, True),
+    "stop_server": (stop_server, True),
+    "clean_server": (clean_server, True),
+    "clear_notices": (clear_notices, False),
 }

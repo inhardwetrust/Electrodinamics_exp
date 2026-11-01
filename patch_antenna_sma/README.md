@@ -42,7 +42,7 @@ The first project of this kind: it also proves the workflow.
    it), the run goes to the server and comes back; old runs stay,
    outdated, to compare. Log each run in notes/log.md (Run N =
    variants/runNN, what changed, the figures). The customcst skill,
-   section 8, has the details.
+   section 9, has the details.
 5. The final run with the converged mesh in `sim/`, opened by the user.
 6. Report: the figures, what changed and why, what is left.
 

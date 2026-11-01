@@ -357,6 +357,22 @@ reload, run on the server, fetch, show the runs and the tab.
 - Locked, the disk watch does not reload: Claude reloads by command.
   Commands never open dialogs: a file that does not read, a model that
   cannot run, shorts on the mesh come back as the error text.
+- Locked, the window opens no dialog at all, on its own either (a fetch
+  after a followed run, a failed server run): `MainWindow.notify(title,
+  text, level)` and `ask(title, text, default)` show a message box or a
+  Yes / No when unlocked; locked, a message is a notice
+  (`MainWindow.notices`, the newest 50, in `status`, `clear_notices`) and
+  the status bar, and a question takes its default and is noted. The
+  defaults are the safe ones, a command changes them: `fetch
+  take_server=true` takes the server's differing model files (default:
+  keep ours; it then reloads quietly, `load_quiet`), `stop_server` is its
+  own confirmation. A new host key is never trusted under Claude's control
+  (noted: the user takes the control back and presses Check). The Clean
+  dialog is not shown either: `clean_server list=true` keeps the listing
+  for `status` (`server_models`), `clean_server names=[...]` deletes.
+- Display commands: `farfield` (the Far field tab's choices, the cut and
+  the 3D pattern), `view` (standard views, ortho), `section` (axis, mm,
+  on).
 - Long work (meshing, a transfer, the server's run) goes on after the
   answer; `status` shows it, `ui.py wait [--server]` waits for it.
 - Check: `checks/check_control.py`.
