@@ -177,7 +177,7 @@ def check_window():
     settle()
     panel = window.extrude_panel
     check("with Solid1: starts on Join of Solid1", panel.operation_key() == "join" and panel.body_name() == "Solid1"
-          and [panel.body.itemText(i) for i in range(panel.body.count())] == ["Solid1"])
+          and panel.available == ["Solid1"])
     check("  the only region (the circle) is taken", view.profile_selection == [("profile", "Sketch2", CIRCLE)])
     panel.operation.setCurrentIndex(2)                       # Cut
     panel.distance.setText("5")

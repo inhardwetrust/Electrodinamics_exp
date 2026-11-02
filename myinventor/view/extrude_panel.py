@@ -5,7 +5,11 @@
 # 3D view stays usable for picking profiles.
 #   Profiles   how many are selected (picked in 3D); Clear drops them all
 #   Operation  New solid, Join, Cut, Intersect (only New without a body)
-#   Body       the body joined / cut / intersected (the bodies there are)
+#   Bodies     how many bodies it joins / cuts / intersects (their names in
+#              the tooltip); taken and dropped by clicks on their rows in the
+#              browser (toggle_body, the window calls it); Clear drops them.
+#              Join takes one (a click replaces it; switching to Join keeps
+#              the last); Cut and Intersect take several, each by the same tool
 #   Distance   a formula of the parameters (mm), its value or the error
 #   Apply      makes the extrusion (off until there is a profile and the
 #              distance is a number other than 0); Cancel (or Esc, or
@@ -22,6 +26,8 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout,
 )
+
+from model.features import body_list
 
 from model.expressions import ExpressionError, evaluate
 from model.revolve import angle_error
@@ -42,8 +48,8 @@ class ExtrudePanel(QDialog):
         """
         values: the parameters' values, for evaluating the distance formula;
         bodies: the names of the bodies there are (to join, cut...);
-        operation, body: the start (default: Join the last body if there is
-        one, else New solid); title: "Edit Extrusion1"...
+        operation, body: the start (body: a name or a list; default: Join the
+        last body if there is one, else New solid); title: "Edit Extrusion1"...
         """
         super().__init__(parent, Qt.Tool)
         self.setWindowTitle(title)
@@ -55,19 +61,23 @@ class ExtrudePanel(QDialog):
         self.operation = QComboBox()
         for key, text in OPERATIONS:
             self.operation.addItem(text, key)
-        self.body = QComboBox()
-        self.body.addItems(list(bodies))
+        self.available = list(bodies)
         if not bodies:                          # nothing to join, cut or intersect
             for i in range(1, len(OPERATIONS)):
                 self.operation.model().item(i).setEnabled(False)
         operation = operation or ("join" if bodies else "new")
         self.operation.setCurrentIndex([k for k, _ in OPERATIONS].index(operation))
-        if body in bodies:
-            self.body.setCurrentText(body)
-        elif bodies:
-            self.body.setCurrentIndex(len(bodies) - 1)
-        self.operation.currentIndexChanged.connect(self._update)
-        self.body.currentIndexChanged.connect(self._update)
+        taken = [b for b in body_list(body) if b in self.available] if body else []
+        if operation == "new" or not taken:
+            taken = self.available[-1:]
+        self._bodies = taken
+        self.body = QLabel()
+        self.body_clear_button = QPushButton("Clear")
+        self.body_clear_button.setToolTip("Drop all the bodies, to pick them again in the browser")
+        self.body_clear_button.setAutoDefault(False)
+        self.body_clear_button.setFixedWidth(self.body_clear_button.fontMetrics().horizontalAdvance("Clear") + 16)
+        self.body_clear_button.clicked.connect(lambda: self.set_bodies([]))
+        self.operation.currentIndexChanged.connect(self._operation_changed)
         self.distance = QLineEdit(distance)
         self.distance.setToolTip("How far along the sketch's normal (mm): a number or a formula of the "
                                  "parameters; negative: the other way" if kind == "extrude" else
@@ -103,7 +113,10 @@ class ExtrudePanel(QDialog):
             self.axis = QLabel()
             form.addRow("Axis:", self.axis)
         form.addRow("Operation:", self.operation)
-        form.addRow("Body:", self.body)
+        body_row = QHBoxLayout()
+        body_row.addWidget(self.body, 1)
+        body_row.addWidget(self.body_clear_button)
+        form.addRow("Bodies:", body_row)
         form.addRow("Distance:" if kind == "extrude" else "Angle:", self.distance)
         form.addRow("", self.value)
         self.apply_button = QPushButton("Apply")
@@ -151,9 +164,33 @@ class ExtrudePanel(QDialog):
     def operation_key(self):
         return self.operation.currentData()
 
+    def body_names(self):
+        """The bodies joined / cut / intersected (None for a new solid)."""
+        return None if self.operation_key() == "new" else list(self._bodies)
+
     def body_name(self):
-        """The body joined / cut / intersected (None for a new solid)."""
-        return None if self.operation_key() == "new" else self.body.currentText() or None
+        """The first of body_names() (None for a new solid or none taken)."""
+        names = self.body_names()
+        return names[0] if names else None
+
+    def set_bodies(self, names):
+        """The bodies taken (Join: the last one only)."""
+        names = [n for n in dict.fromkeys(names) if n in self.available]
+        self._bodies = names[-1:] if self.operation_key() == "join" else names
+        self._update()
+
+    def toggle_body(self, name):
+        """A click on a body's row: takes it or drops it (Join: it replaces the one taken). False if it cannot."""
+        if self.operation_key() == "new" or name not in self.available:
+            return False
+        if name in self._bodies:
+            self.set_bodies([b for b in self._bodies if b != name])
+        else:
+            self.set_bodies(self._bodies + [name])
+        return True
+
+    def _operation_changed(self):
+        self.set_bodies(self._bodies)           # Join keeps the last one
 
     def distance_value(self):
         """The distance (mm) or the angle (degrees), or the error text."""
@@ -170,8 +207,20 @@ class ExtrudePanel(QDialog):
         ok = not isinstance(value, str)
         self.value.setText((f"= {value:.6g} mm" if self.kind == "extrude" else f"= {value:.6g}°") if ok else value)
         self.value.setStyleSheet("" if ok else ERROR_STYLE)
-        self.body.setEnabled(self.operation_key() != "new")
-        target_ok = self.operation_key() == "new" or self.body_name() is not None
+        new = self.operation_key() == "new"
+        count = len(self._bodies)
+        if new:
+            self.body.setText("a new body")
+        elif count:
+            self.body.setText(self._bodies[0] if count == 1 else f"{count} selected")
+        else:
+            self.body.setText("click bodies in the browser" if self.operation_key() != "join"
+                              else "click a body in the browser")
+        self.body.setStyleSheet("color: gray" if new or not count else "")
+        self.body.setToolTip("" if new else "\n".join(self._bodies) or "Click rows under Solid Bodies (a group: "
+                                                                         "all its bodies)")
+        self.body_clear_button.setEnabled(not new and count > 0)
+        target_ok = new or count > 0
         axis_ok = self.kind != "revolve" or self._axis is not None
         self.apply_button.setEnabled(ok and target_ok and axis_ok and self._count > 0)
         self.changed.emit()

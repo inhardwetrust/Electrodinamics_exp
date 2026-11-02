@@ -76,7 +76,8 @@ Principles that sidestep them:
 - Bodies get explicit names: customcst assigns materials by body name.
   While the history rebuilds, bodies live by name (`ctx.shapes`): a
   feature makes one (New solid) or changes a named one above it (Join,
-  Cut, Intersect); a failed feature leaves it as it was. Editing a feature
+  Cut, Intersect; Cut and Intersect may take several, each by the same
+  tool, picked in the browser); a failed feature leaves them as they were. Editing a feature
   rolls the view back to the bodies just before it (as Inventor does).
 - **Body properties** live with the body's name, not in the features that
   make it (`Part.bodies`, `[[body]]` in the file): the color now, the
@@ -239,7 +240,8 @@ placed, the sketch moved with the body it lies on: its body's placement
 applied to its frame; faces project as placed: the retrospective
 projection, static). Maybe later: a Move in the history (Inventor's Move
 Bodies), so what follows sees the placed body and a projection can follow
-it.
+it. A transform can be suppressed (`suppressed = true`, the eye on its
+row): skipped everywhere, as if it were not there.
 
 Next, in this order:
 1. Manual primitives: poly-arc, Bézier (the arc is done: from its center or

@@ -12,13 +12,14 @@
 #   distance = "h"            # a formula (mm); negative: the other way
 #   operation = "new"         # "new" | "join" | "cut" | "intersect"
 #   body = "Solid1"           # new: the new body's name; else the body it changes
+#   body = ["Top", "Bottom"]  # cut / intersect: several bodies, each cut (intersected) by the same tool
 #
 # A profile is named by the curves of its outer loop (Region.key), so
 # moving points and changing sizes keep it; a broken loop fails the feature
 # naming the profile. Bodies live in ctx.shapes by name while the history
 # rebuilds (model/rebuild.py): "new" adds one (its name must be free), the
-# others change the named one (it must exist above). A failed feature leaves
-# the body as it was. Its planar faces have names a sketch can sit on
+# others change the named ones (they must exist above; join: one). A failed
+# feature leaves the bodies as they were (all of them). Its planar faces have names a sketch can sit on
 # (ExtrudeResult.face_frame: "end", "start", "side.L3"). The geometry comes from ctx.kernel (geometry/kernel.py:
 # the only OCP code); this module stays numpy-only.
 
@@ -26,7 +27,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from model.features import Feature, FeatureError, Field, feature_type
+from model.features import Feature, FeatureError, Field, body_list, feature_type
 from model.profiles import named_regions
 from model.sketch import SketchFrame
 
@@ -38,11 +39,12 @@ OPERATIONS = ("new", "join", "cut", "intersect")
 @dataclass
 class ExtrudeResult:
     shape: object           # the swept profiles alone (OCP, mm): the tool of a join / cut
-    body: str               # the body it made or changed
+    body: str               # the body it made or changed (the first, if several)
     regions: list           # the profiles used (model.profiles.Region)
     frame: object = None    # its sketch's SketchFrame
     distance: float = 0.0   # mm, signed
     operation: str = "new"
+    bodies: list = None     # all the bodies it made or changed
 
     # ---- its planar faces, named by meaning (a sketch can sit on one) ----
     #   "end"        the cap at the distance
@@ -107,7 +109,8 @@ class Extrude(Feature):
         Field("sketch", "ref", doc="the sketch the profiles are in"),
         Field("distance", "expr", doc="how far (mm) along the sketch's normal; negative: the other way"),
         Field("operation", "choice", "new", OPERATIONS, doc="a new body, or join / cut / intersect a body"),
-        Field("body", "text", doc="new: the new body's name; else the body it changes"),
+        Field("body", "bodies", doc="new: the new body's name; else the body it changes (cut / intersect: "
+                                    "a list of several)"),
     )
 
     def __init__(self, name, profiles=(), **values):
@@ -115,7 +118,7 @@ class Extrude(Feature):
         self.profiles = [tuple(sorted(p)) for p in profiles]
         if not self.profiles:
             raise FeatureError(f"{name}: no profile")
-        if not self.values["body"].strip():
+        if not all(b.strip() for b in body_list(self.values["body"])):
             raise FeatureError(f"{name}: the body needs a name")
 
     @classmethod
@@ -138,8 +141,8 @@ class Extrude(Feature):
         sketch, used = chosen_regions(ctx, self["sketch"], self.profiles)
         distance = ctx.evaluate(self["distance"], "distance")
         tool = ctx.kernel.extrude(sketch.frame, used, distance)
-        apply_to_body(ctx, self["operation"], self["body"], tool)
-        return ExtrudeResult(tool, self["body"], used, sketch.frame, distance, self["operation"])
+        bodies = apply_to_body(ctx, self["operation"], self["body"], tool)
+        return ExtrudeResult(tool, bodies[0], used, sketch.frame, distance, self["operation"], bodies)
 
 
 def chosen_regions(ctx, sketch_name, profiles):
@@ -155,15 +158,29 @@ def chosen_regions(ctx, sketch_name, profiles):
 
 
 def apply_to_body(ctx, operation, body, tool):
-    """A swept tool made into body `body` ("new") or joined / cut / intersected with it, in ctx.shapes."""
-    if operation == "new" and body in ctx.shapes:
-        raise ValueError(f"a body {body!r} exists already")
-    if operation != "new" and body not in ctx.shapes:
-        raise ValueError(f"no body {body!r} above it to {operation}")
+    """
+    A swept tool made into body `body` ("new") or joined / cut /
+    intersected with it, in ctx.shapes; `body` may be a list (cut,
+    intersect: each one by the same tool). All or nothing: one that fails
+    leaves every body as it was. Returns the body names.
+    """
+    bodies = body_list(body)
+    if len(bodies) > 1 and operation in ("new", "join"):
+        raise ValueError(f"{'a new solid' if operation == 'new' else 'join'} takes one body, not "
+                         f"{', '.join(bodies)} (cut and intersect take several)")
     if operation == "new":
-        ctx.shapes[body] = tool
-        return
-    try:
-        ctx.shapes[body] = ctx.kernel.boolean(operation, ctx.shapes[body], tool)
-    except ValueError as error:
-        raise ValueError(f"{operation} {body}: {error}") from None
+        if bodies[0] in ctx.shapes:
+            raise ValueError(f"a body {bodies[0]!r} exists already")
+        ctx.shapes[bodies[0]] = tool
+        return bodies
+    missing = [b for b in bodies if b not in ctx.shapes]
+    if missing:
+        raise ValueError(f"no body {missing[0]!r} above it to {operation}")
+    done = {}
+    for name in bodies:
+        try:
+            done[name] = ctx.kernel.boolean(operation, ctx.shapes[name], tool)
+        except ValueError as error:
+            raise ValueError(f"{operation} {name}: {error}") from None
+    ctx.shapes.update(done)
+    return bodies

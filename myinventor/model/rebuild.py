@@ -101,12 +101,13 @@ def rebuild(part, upto=None, folder=None, tessellate=True, placement=True):
     # Placement: the transforms, in order, on the bodies as built (model/transforms.py).
     from model.transforms import order_error
 
-    for i, transform in enumerate(part.transforms if placement else []):
+    active = [t for t in part.transforms if not t["suppressed"]] if placement else []    # suppressed: not there
+    for i, transform in enumerate(active):
         failed = [ref for ref in transform.references() if ref in result.feature_errors]
         try:
             if failed:
                 raise ValueError(f"uses {failed[0]!r}, which failed")
-            error = order_error(part.transforms, part, i)
+            error = order_error(active, part, i)
             if error:
                 raise ValueError(error)
             result.outputs[transform.name] = transform.apply(ctx)

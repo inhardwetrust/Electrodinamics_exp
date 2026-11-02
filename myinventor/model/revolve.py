@@ -28,7 +28,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from model.extrude import OPERATIONS, apply_to_body, chosen_regions
-from model.features import Feature, FeatureError, Field, feature_type
+from model.features import body_list, Feature, FeatureError, Field, feature_type
 from model.sketch import SketchFrame
 
 MM = 1e-3
@@ -38,12 +38,13 @@ ORIGIN_AXES = ("X Axis", "Y Axis", "Z Axis")
 @dataclass
 class RevolveResult:
     shape: object           # the turned profiles alone (OCP, mm): the tool of a join / cut
-    body: str
+    body: str               # the first, if several
     regions: list           # the profiles used (model.profiles.Region)
     frame: object = None    # its sketch's SketchFrame
     angle: float = 360.0    # degrees, signed
     operation: str = "new"
     axis: tuple = None      # (point (3,) mm, direction (3,)) in the world
+    bodies: list = None     # all the bodies it made or changed
 
     # ---- its planar faces, named by meaning (a sketch can sit on one) ----
     #   "start"     the profile's own plane (under 360 degrees)
@@ -254,7 +255,8 @@ class Revolve(Feature):
         Field("axis", "text", doc="a line of the sketch, or an origin axis (X Axis...) in its plane"),
         Field("angle", "expr", "360", doc="how far (degrees) around the axis; negative: the other way"),
         Field("operation", "choice", "new", OPERATIONS, doc="a new body, or join / cut / intersect a body"),
-        Field("body", "text", doc="new: the new body's name; else the body it changes"),
+        Field("body", "bodies", doc="new: the new body's name; else the body it changes (cut / intersect: "
+                                    "a list of several)"),
     )
 
     def __init__(self, name, profiles=(), **values):
@@ -262,7 +264,7 @@ class Revolve(Feature):
         self.profiles = [tuple(sorted(p)) for p in profiles]
         if not self.profiles:
             raise FeatureError(f"{name}: no profile")
-        if not self.values["body"].strip():
+        if not all(b.strip() for b in body_list(self.values["body"])):
             raise FeatureError(f"{name}: the body needs a name")
         if not self.values["axis"].strip():
             raise FeatureError(f"{name}: no axis")
@@ -303,5 +305,5 @@ class Revolve(Feature):
         if error:
             raise ValueError(error)
         tool = ctx.kernel.revolve(sketch.frame, onto_axis(sketch, used, axis), axis[0], axis[1], angle)
-        apply_to_body(ctx, self["operation"], self["body"], tool)
-        return RevolveResult(tool, self["body"], used, sketch.frame, angle, self["operation"], axis)
+        bodies = apply_to_body(ctx, self["operation"], self["body"], tool)
+        return RevolveResult(tool, bodies[0], used, sketch.frame, angle, self["operation"], axis, bodies)

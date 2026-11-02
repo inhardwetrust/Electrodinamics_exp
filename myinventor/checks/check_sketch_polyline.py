@@ -304,10 +304,10 @@ def check_window():
     click(native, pixel(view, frame, (12, 0)))               # the middle point
     middle = view.selected[2] if view.selected else None
     rows = props(window)
-    check("an inner point selected: its width and bend on W1 in the properties (normal: no bend number)",
+    check("an inner point selected: its x, y, width and bend on W1 in the properties (normal: no bend number)",
           middle is not None and rows.get("Width on W1:") is not None and rows["Width on W1:"].text() == "2"
           and rows.get("Bend on W1:") is not None and rows["Bend on W1:"].currentText() == "normal"
-          and len(rows) == 2, f"{middle} {list(rows)}")
+          and set(rows) == {"x:", "y:", "Width on W1:", "Bend on W1:"}, f"{middle} {list(rows)}")
     steps = len(window.doc._undo)
     rows["Width on W1:"].setText("4")
     rows["Width on W1:"].editingFinished.emit()

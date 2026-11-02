@@ -127,6 +127,7 @@ from model.document import Document
 from model.part import Datum, Part, PartError, color_rgb
 from model.part_file import EXTENSION, PartFileError
 from model.rebuild import rebuild
+from model.features import body_list
 from model.extrude import Extrude
 from model.revolve import Revolve, axis_of, check_side, onto_axis
 from model.workplane import WorkPlane
@@ -153,6 +154,7 @@ BEND_PARAMETER = {
 }
 from view.control import ControlServer
 from view.extrude_panel import ExtrudePanel
+from view.formula_field import FormulaField
 from view.workplane_panel import WorkPlanePanel
 from view.move_panel import MirrorPanel, MovePanel
 from view.sketch_tools import (
@@ -1344,7 +1346,7 @@ class MainWindow(QMainWindow):
             match = re.match(r"face\.(\d+)\.", face)
             index = int(match.group(1)) - 1 if match else -1
             return feature.bodies[index] if 0 <= index < len(feature.bodies) else None
-        return feature.values.get("body")
+        return body_list(feature.values["body"])[0] if "body" in feature.values else None
 
     def _shown_output(self, name):
         """
@@ -2041,6 +2043,7 @@ class MainWindow(QMainWindow):
         self._end_move()
         if edit:
             at = [t.name for t in self.part.transforms].index(edit)
+            transform.values["suppressed"] = self.part.transforms[at]["suppressed"]     # its eye stays as it was
             self.part.transforms[at] = transform
         else:
             self.part.add_transform(transform)
@@ -2064,6 +2067,16 @@ class MainWindow(QMainWindow):
         self.view.set_preview(None)
         for action in (self.move_action, self.rotate_action, self.mirror_action):
             action.setEnabled(True)
+
+    def set_transform_suppressed(self, name, suppressed):
+        """A transform suppressed (skipped: as if it were not there) or applied again; one undo step."""
+        transform = self.part.transform(name)
+        if transform["suppressed"] == bool(suppressed):
+            return
+        transform.values["suppressed"] = bool(suppressed)
+        self._commit()
+        self.statusBar().showMessage(f"{name} suppressed: the bodies as if it were not there" if suppressed
+                                     else f"{name} applied again", 8000)
 
     def reorder_transform(self, name, step):
         """Move Up / Move Down in the placement (refused if a body of a group would come after its group)."""
@@ -2399,7 +2412,8 @@ class MainWindow(QMainWindow):
         self.revolve_action.setEnabled(False)
         what = " · Axis: click a straight line or an origin axis" if self._sweep == "revolve" else ""
         self.statusBar().showMessage(f"{'Edit ' + edit if edit else verb}: click closed regions to take or "
-                                     f"drop them{what} · Apply · Esc: cancel")
+                                     f"drop them{what} · bodies to join / cut: their rows in the browser · Apply · "
+                                     "Esc: cancel")
 
     def _axis_key(self, feature):
         """The view's key of a revolution's axis: ("entity", sketch, line) or ("datum", name)."""
@@ -2428,6 +2442,30 @@ class MainWindow(QMainWindow):
         self.extrude_panel.select("profiles")
         self._update_preview()
 
+    def _toggle_extrude_body(self, key):
+        """
+        A click on a body's row while Extrude / Revolve runs: takes it to
+        join / cut / intersect, or drops it; a group: all its bodies (dropped
+        if all are taken). New solid: nothing to take.
+        """
+        panel = self.extrude_panel
+        if panel.operation_key() == "new":
+            self.statusBar().showMessage("New solid makes its own body: choose Join, Cut or Intersect to take "
+                                         "bodies", 8000)
+            return
+        if key[0] == "group":
+            members = [b for b in self._group_members(key[1]) if b in panel.available]
+            taken = panel.body_names()
+            if members and all(b in taken for b in members):
+                panel.set_bodies([b for b in taken if b not in members])
+            else:
+                panel.set_bodies(taken + members)
+        elif not panel.toggle_body(key[1]):
+            self.statusBar().showMessage(f"{key[1]} is not there yet at this point of the history", 8000)
+            return
+        if panel.operation_key() == "join" and key[0] == "group":
+            self.statusBar().showMessage("Join takes one body (Cut and Intersect take several)", 8000)
+
     def _clear_profiles(self):
         """The panel's Clear: no profile selected, the preview gone; pick them again."""
         self.view.set_profile_selection([])
@@ -2451,6 +2489,8 @@ class MainWindow(QMainWindow):
         swept profiles, see-through; none while it cannot make them.
         """
         panel, keys = self.extrude_panel, self.view.profile_selection
+        if panel is not None:                   # the bodies it joins / cuts: selected in 3D
+            self.view.select_keys([("body", b) for b in panel.body_names() or []])
         distance = panel.distance_value() if panel is not None else None
         if not keys or not isinstance(distance, float):
             self.view.set_preview(None)
@@ -2480,7 +2520,8 @@ class MainWindow(QMainWindow):
     def _apply_extrude(self, distance):
         keys = list(self.view.profile_selection)
         panel, edit, sweep, axis_key = self.extrude_panel, self._extruding, self._sweep, self.view.axis_key
-        operation, target = panel.operation_key(), panel.body_name()
+        operation, target = panel.operation_key(), panel.body_names()
+        target = target[0] if target and len(target) == 1 else target
         self._end_extrude()
         if sweep == "revolve" and axis_key is None:
             return
@@ -2520,6 +2561,7 @@ class MainWindow(QMainWindow):
         self.view.on_profiles = None
         self.view.on_axis = None
         self.view.set_preview(None)
+        self.view.select_keys([])
         if self._rolled_back:                   # the whole model again
             self._rolled_back = False
             self._modeling_shown = False
@@ -2647,6 +2689,9 @@ class MainWindow(QMainWindow):
         key = self._key_of(item)
         if key is not None and key[0] in ("body", "group") and self.move_panel is not None:
             self._toggle_move_target(key)       # Move runs: the row takes or drops a target
+            return
+        if key is not None and key[0] in ("body", "group") and self.extrude_panel is not None:
+            self._toggle_extrude_body(key)      # Extrude runs: the row takes or drops a body to join / cut
             return
         if key is not None and key[0] == "body_color":
             self.pick_body_color(key[1])
@@ -3025,17 +3070,18 @@ class MainWindow(QMainWindow):
         if self.part.transforms:                # the placement, after the features
             placement = _group_item(root, "Placement")
             placement.setToolTip(0, "Transforms of the bodies as built, in order (a body of a group before "
-                                    "its group). Right click: Edit, Move Up / Down, Delete")
+                                    "its group). Eye off: suppressed (as if not there). Right click: Edit, "
+                                    "Move Up / Down, Delete")
             for t in self.part.transforms:
                 key = ("transform", t.name)
-                row = QTreeWidgetItem([t.name])
-                row.setData(0, Qt.UserRole, key)
-                tip = f"{t.TYPE} {', '.join(t.targets)}: {t.describe()}"
+                tip = (f"{t.TYPE} {', '.join(t.targets)}: {t.describe()}\nEye: applied; off: suppressed, as if it "
+                       "were not there (the view, the report, STEP)")
+                row = _checkable(placement, t.name, key, tip, not t["suppressed"])
+                if t["suppressed"]:
+                    row.setForeground(0, QBrush(QColor(140, 140, 140)))
                 if t.name in errors:
                     row.setForeground(0, QBrush(ERROR_COLOR))
-                    tip += f"\nerror: {errors[t.name]}"
-                row.setToolTip(0, tip)
-                placement.addChild(row)
+                    row.setToolTip(0, f"{tip}\nerror: {errors[t.name]}")
                 self._rows[key] = row
         bodies = self.result.bodies if self.result is not None else []
         if bodies:
@@ -3114,6 +3160,9 @@ class MainWindow(QMainWindow):
             return
         if key[0] == "entity":                  # a curve's row: after this signal (the tree is rebuilt)
             QTimer.singleShot(0, lambda: self.set_curve_visible(key[1], key[2], on))
+        elif key[0] == "transform":             # the tree is rebuilt: after this signal
+            name = key[1]
+            _later(lambda: self.set_transform_suppressed(name, not on))
         elif key[0] == "datum" and self._is_workplane(key[1]):
             name = key[1]
             _later(lambda: self.set_work_plane_visible(name, on))
@@ -3140,6 +3189,9 @@ class MainWindow(QMainWindow):
                           "Right click: Group (an existing group or a new one)")
 
     def _item_selected(self, item):
+        key = self._key_of(item)
+        if self.extrude_panel is not None and key is not None and key[0] in ("body", "group"):
+            return                              # a body to join / cut: _row_clicked takes it
         if len(self._selected_bodies()) > 1:
             self._tree_selection_changed()
             return
@@ -3221,7 +3273,7 @@ class MainWindow(QMainWindow):
         if out is None or self.result.upto is not None:
             return None
         if feature.TYPE in ("extrude", "revolve"):
-            made, cut = [(out.body, out.shape)], feature["operation"] == "cut"
+            made, cut = [(b, out.shape) for b in out.bodies], feature["operation"] == "cut"
         elif feature.TYPE == "import":
             made, cut = list(zip(out.bodies, out.shapes)), False
         else:
@@ -3232,6 +3284,14 @@ class MainWindow(QMainWindow):
         for body, shape in made:
             builder.Add(compound, kernel.placed(shape, placements[body]) if body in placements else shape)
         return body_from_shape(f"{name} made", compound), cut
+
+    def _volumes_now(self, feature):
+        """Lines "Board now: 123 mm³" for the bodies an extrusion / revolution made or changed."""
+        if feature.name not in self.result.outputs:
+            return []
+        volumes = {b.name: b.volume for b in self.result.bodies}
+        return [f"{name} now: {volumes[name] / MM ** 3:.6g} mm³" for name in body_list(feature["body"])
+                if name in volumes]
 
     def _show_info(self, key):
         highlight = self._feature_highlight(key[1]) if key is not None and key[0] == "feature" else None
@@ -3267,19 +3327,16 @@ class MainWindow(QMainWindow):
             elif feature.TYPE == "extrude":
                 verb = {"new": "makes", "join": "joins", "cut": "cuts", "intersect": "intersects"}[feature["operation"]]
                 lines += [f"of {feature['sketch']}: {len(feature.profiles)} profile(s)",
-                          f"distance = {feature['distance']} mm", f"{verb} {feature['body']}"]
-                body = next((b for b in self.result.bodies if b.name == feature["body"]), None)
-                if body is not None and feature.name in self.result.outputs:
-                    lines.append(f"{body.name} now: {body.volume / MM ** 3:.6g} mm³")
+                          f"distance = {feature['distance']} mm", f"{verb} {', '.join(body_list(feature['body']))}"]
+                lines += self._volumes_now(feature)
             elif feature.TYPE == "import":
                 lines += [f"of {feature['file']}", f"{len(feature.bodies)} bodies: {', '.join(feature.bodies)}"]
             elif feature.TYPE == "revolve":
                 verb = {"new": "makes", "join": "joins", "cut": "cuts", "intersect": "intersects"}[feature["operation"]]
                 lines += [f"of {feature['sketch']}: {len(feature.profiles)} profile(s)",
-                          f"around {feature['axis']}", f"angle = {feature['angle']} deg", f"{verb} {feature['body']}"]
-                body = next((b for b in self.result.bodies if b.name == feature["body"]), None)
-                if body is not None and feature.name in self.result.outputs:
-                    lines.append(f"{body.name} now: {body.volume / MM ** 3:.6g} mm³")
+                          f"around {feature['axis']}", f"angle = {feature['angle']} deg",
+                          f"{verb} {', '.join(body_list(feature['body']))}"]
+                lines += self._volumes_now(feature)
             error = self.result.feature_errors.get(feature.name)
             if error:
                 lines.append(f"<span style='color:#c81e1e'>error: {error}</span>")
@@ -3347,12 +3404,28 @@ class MainWindow(QMainWindow):
                 for label, attr, unit in (("Radius:", "radius", "mm"), ("From:", "start_angle", "degrees"),
                                           ("To:", "end_angle", "degrees")):
                     field = self._formula_field(getattr(arc, attr),
-                                                lambda text, attr=attr: self._set_arc(sketch_name, name, attr, text))
+                                                lambda text, attr=attr: self._set_arc(sketch_name, name, attr, text),
+                                                unit="mm" if unit == "mm" else "°")
                     field.setToolTip(f"{unit}: a number or a formula of the parameters" + (
                         " (counter-clockwise from the sketch's x)" if unit == "degrees" else ""))
                     self.props_form.addRow(label, field)
+                self._add_point_rows(sketch, arc.center, "Center ")
+            else:
+                for label, point in (("Start ", arc.start), ("Through ", arc.through), ("End ", arc.end)):
+                    self._add_point_rows(sketch, point, label)
             self._add_offset_rows(sketch_name, [name])
             return
+        if kind == "line":
+            line = sketch.line(name)
+            self.props_form.addRow(QLabel(f"<b>{name}</b>: line"))
+            self._add_point_rows(sketch, line.start, "Start ")
+            self._add_point_rows(sketch, line.end, "End ")
+        elif kind == "circle":
+            circle = sketch.circle(name)
+            self.props_form.addRow(QLabel(f"<b>{name}</b>: circle"))
+            self._add_point_rows(sketch, circle.center, "Center ")
+            self.props_form.addRow("Radius:", self._formula_field(
+                circle.radius, lambda text: self._set_circle_radius(sketch_name, name, text)))
         if kind in ("polyline", "segment"):
             w = sketch.polyline(name.rpartition(".")[0] if kind == "segment" else name)
             self.props_form.addRow(QLabel(f"<b>{w.name}</b>"))
@@ -3366,6 +3439,8 @@ class MainWindow(QMainWindow):
                     lambda text, w=w.name, end=end: _later(lambda: self._set_polyline(sketch_name, w, **{end: text})))
                 self.props_form.addRow(label, combo)
         elif kind == "point":
+            self.props_form.addRow(QLabel(f"<b>{name}</b>: point"))
+            self._add_point_rows(sketch, name, "")
             for w, i in sketch.polyline_widths(name):
                 self.props_form.addRow(f"Width on {w.name}:", self._formula_field(
                     w.widths[i], lambda text, w=w.name, i=i: self._set_polyline(sketch_name, w, at=(i, text))))
@@ -3389,6 +3464,29 @@ class MainWindow(QMainWindow):
                         radius.setPlaceholderText(default)
                         self.props_form.addRow(f"{label} on {w.name}:", radius)
         self._add_offset_rows(sketch_name, [name])
+
+    def _add_point_rows(self, sketch, point, label):
+        """Rows "<label>x:", "<label>y:" of a sketch point's coordinates (formulas); one undo step each."""
+        try:
+            p = sketch.point(point)
+        except (KeyError, StopIteration):
+            return                              # a curve's end: set by the curve
+        for axis in ("x", "y"):
+            field = self._formula_field(
+                getattr(p, axis), lambda text, axis=axis: self._set_point_coord(sketch.name, point, axis, text))
+            field.setToolTip(f"{point}'s {axis} in the sketch (mm): a number or a formula of the parameters (type "
+                             "a name: they are offered; Enter applies). A formula: the point follows it and no "
+                             "longer drags")
+            self.props_form.addRow(f"{label}{axis}:" if label else f"{axis}:", field)
+
+    def _set_point_coord(self, sketch_name, point, axis, text):
+        """A sketch point's x or y changed in the properties; one undo step."""
+        setattr(self.part.feature(sketch_name).point(point), axis, text)
+        self._commit()
+
+    def _set_circle_radius(self, sketch_name, name, text):
+        self.part.feature(sketch_name).circle(name).radius = text
+        self._commit()
 
     def _set_arc(self, sketch_name, name, attr, text):
         """An arc's radius or angle changed in the properties; one undo step."""
@@ -3601,14 +3699,24 @@ class MainWindow(QMainWindow):
                                      f"draggable (Undo goes back){note}", 8000)
         self._show_info(self.view.selected)
 
-    def _formula_field(self, text, apply, empty=False):
-        """A formula field applying on Enter / leaving it, when changed (empty allowed only if `empty`)."""
-        field = QLineEdit(text)
-        field.setToolTip("mm: a number or a formula of the parameters (Enter applies)")
+    def _formula_field(self, text, apply, empty=False, unit="mm"):
+        """
+        A formula field (view/formula_field.py: its value at its right, the
+        parameter names completed) applying on Enter / leaving it, when
+        changed and it evaluates (empty allowed only if `empty`); one that
+        does not stays red, not applied.
+        """
+        field = FormulaField(text, self.result.values if self.result is not None else {}, unit=unit)
+        field.setToolTip(f"{unit}: a number or a formula of the parameters (type a name: they are offered; "
+                         "Enter applies)")
         def finished():
             value = field.text().strip()
-            if value != text and (empty or value):
-                _later(lambda: apply(value))
+            if value == text or not (empty or value):
+                return
+            if value and not field.accepted():
+                self.statusBar().showMessage(f"not applied: {field.value()}", 8000)
+                return
+            _later(lambda: apply(value))
 
         field.editingFinished.connect(finished)
         return field

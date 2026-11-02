@@ -37,6 +37,7 @@ import numpy as np
 
 from model.expressions import ExpressionError, name_error, names, rename
 from model.features import FEATURE_TYPES, FeatureError
+from model.features import body_list
 from model import extrude, importstep, revolve, sketch, workplane  # noqa: F401  (register the feature types)
 from model.transforms import GROUP, TRANSFORM_TYPES, order_error
 
@@ -166,7 +167,8 @@ class Part:
         """The bodies the features make or change (an import: all it makes), in history order."""
         names = []
         for f in self.features:
-            names += f.made_bodies() if hasattr(f, "made_bodies") else ([f["body"]] if "body" in f.values else [])
+            names += f.made_bodies() if hasattr(f, "made_bodies") else (body_list(f["body"]) if "body" in f.values
+                                                                         else [])
         return list(dict.fromkeys(names))
 
     def rename_body(self, old, new):
@@ -187,8 +189,9 @@ class Part:
         if new in self.body_names():
             raise PartError(f"a body {new!r} already exists")
         for f in self.features:
-            if f.values.get("body") == old:
-                f.values["body"] = new
+            if "body" in f.values and old in body_list(f.values["body"]):
+                named = [new if b == old else b for b in body_list(f.values["body"])]
+                f.values["body"] = named[0] if len(named) == 1 else named
             if hasattr(f, "rename_body"):
                 f.rename_body(old, new)
         for t in self.transforms:

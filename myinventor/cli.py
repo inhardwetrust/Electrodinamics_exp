@@ -104,6 +104,11 @@ def report(part, result):
             "ok": not result.errors and not result.feature_errors}
 
 
+def _names(body):
+    """A body field (a name or a list of them) as text: 'Board' or 'Top', 'Bottom'."""
+    return ", ".join(repr(b) for b in (body if isinstance(body, list) else [body]))
+
+
 def text(data):
     """The report as text, one fact per line."""
     lines = ["parameters:" if data["parameters"] else "parameters: none"]
@@ -141,7 +146,7 @@ def text(data):
             if "profiles" in f and not f["profiles"]:
                 lines.append("    no closed profile")
         elif f["type"] == "extrude":
-            lines.append(f"    {f['operation']} body {f['body']!r} from {f['sketch']} {f['profiles']}, "
+            lines.append(f"    {f['operation']} body {_names(f['body'])} from {f['sketch']} {f['profiles']}, "
                          f"distance {f['distance']}")
         elif f["type"] == "import":
             lines.append(f"    {f['file']}: {', '.join(f['bodies'])}")
@@ -152,7 +157,7 @@ def text(data):
                 how = f"turned {f['angle']} deg around {f['axis']}" if f["axis"] else f"offset {f['offset']} mm"
                 lines.append(f"    from {f['base']}, {how}")
         elif f["type"] == "revolve":
-            lines.append(f"    {f['operation']} body {f['body']!r} from {f['sketch']} {f['profiles']}, "
+            lines.append(f"    {f['operation']} body {_names(f['body'])} from {f['sketch']} {f['profiles']}, "
                          f"around {f['axis']} by {f['angle']} deg")
     lines.append("bodies:" if data["bodies"] else "bodies: none")
     for b in data["bodies"]:
@@ -165,6 +170,7 @@ def text(data):
         lines.append(f"group {g['name']}: {', '.join(g['bodies'])}")
     for t in data["transforms"]:
         lines.append(f"placement {t['name']} ({t['type']} {', '.join(t['targets'])}): {t['what']}"
+                     + (" (suppressed: not applied)" if t.get("suppressed") else "")
                      + (f": FAILED: {t['error']}" if "error" in t else ""))
     lines.append("ok" if data["ok"] else "NOT OK: see the errors above")
     return "\n".join(lines)

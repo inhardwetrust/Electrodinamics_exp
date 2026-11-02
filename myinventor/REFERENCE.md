@@ -274,6 +274,11 @@ is no region fails the extrusion, naming it.
 `cut` | `intersect`, `body`.
 - `new` makes the body named `body` (the name must be free). The others
   change that existing body.
+- `cut` and `intersect` take several: `body = ["TopCu", "BottomCu"]`, each
+  cut (intersected) by the same tool (a via through both layers). All or
+  nothing: one that fails (a cut not reaching it) fails the feature and
+  leaves every body as it was. `new` and `join` take one. The report's
+  `body` is then the list too.
 - Several profiles in one extrusion make one body (touching ones fuse;
   apart ones: one body of several solids).
 - A cut that removes nothing or everything fails on purpose.
@@ -283,7 +288,7 @@ is no region fails the extrusion, naming it.
 that sketch, usually construction; `"Sketch2:L1"`; or `"X Axis"`,
 `"Y Axis"`, `"Z Axis"`), `angle` (default 360; negative: the other way,
 right hand around the axis's direction from its start to its end),
-`operation`, `body`. The axis lies in the sketch's plane and no profile
+`operation`, `body` (as Extrude's, a list for cut / intersect). The axis lies in the sketch's plane and no profile
 crosses it (touching is fine). Faces: `Rev:start`, `Rev:end` (under 360°),
 `Rev:disc.<line>`. A parabolic reflector: the parabola from the axis to
 D/2, an `offset` for its thickness (the parabola side exact), a
@@ -351,6 +356,10 @@ construction line on the axis:
   - A body of a group is placed before its group (local, then global); a
     transform of a body after one of its group fails, naming it. No
     targets: it fails.
+  - `suppressed = true` (either type; the browser's eye on its Placement
+    row): skipped everywhere, as if it were not there: the view, the
+    report (its row says `"suppressed": true`), STEP, the order rule. Kept
+    in the file, written only when on.
 - No booleans between bodies after placement (no Combine yet): conductors
   that only touch or overlap are fine for customcst (PEC merges on the
   grid). Avoid two dielectrics in one place (the later one wins per cell).
@@ -455,8 +464,17 @@ What the user can do by hand (to talk about it, and to know what they see):
   Copy / Cut / Paste, Look At, Finish Sketch).
 - **Browser** (left): the origin, the features (a sketch under the
   feature using it), the bodies (groups, colors, eyes), the placement.
+  While a sketch is edited, its selected entity's values are formula
+  fields below left (a point's x / y, a line's ends, a circle's center
+  and radius, an arc's): a parameter's name works there (typed names are
+  offered), the value shows at the right, a wrong formula stays red and
+  is not applied. A point given a formula no longer drags.
+  While Extrude / Revolve runs, a click on a body's row takes or drops
+  it as a body to join / cut / intersect (a group's row: all its bodies;
+  the panel shows how many, Clear drops them; Join keeps one).
   Selecting a feature lights what it made (blue; a cut's removed volume
-  red). Right click: rename, color, group, delete, edit.
+  red). Right click: rename, color, group, delete, edit. A transform's eye
+  suppresses it (one undo step).
   **Parameters** tab: the table of formulas.
 - **3D**: middle drag rotates, Ctrl + middle (or Space + left) pans, the
   wheel or a right drag zooms, a right click opens a menu (New Sketch on

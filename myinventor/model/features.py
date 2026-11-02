@@ -21,11 +21,13 @@
 #   ref      a name of a datum or of a feature above this one
 #   choice   one of `choices`
 #   text     any string (a body name)
+#   bodies   a body's name, or a list of them (cut / intersect several):
+#            a one-name list is kept as the name (body_list() reads both)
 #   bool     true / false
 
 from dataclasses import dataclass
 
-FIELD_KINDS = ("expr", "exprs", "ref", "choice", "text", "bool")
+FIELD_KINDS = ("expr", "exprs", "ref", "choice", "text", "bodies", "bool")
 
 FEATURE_TYPES = {}          # TYPE -> Feature subclass
 
@@ -129,6 +131,11 @@ class Feature:
         raise NotImplementedError(f"{self.TYPE} cannot be built yet")
 
 
+def body_list(value):
+    """The names of a "bodies" field (a name or a list of them) as a list."""
+    return list(value) if isinstance(value, list) else [value]
+
+
 def _formula(owner, field, value):
     if isinstance(value, bool) or not isinstance(value, (str, int, float)):
         raise FeatureError(f"{owner}: {field} must be a formula (a string or a number)")
@@ -143,6 +150,15 @@ def _checked(owner, field, value):
         if not isinstance(value, list):
             raise FeatureError(f"{owner}: {field.name} must be a list of formulas")
         return [_formula(owner, field.name, v) for v in value]
+    if kind == "bodies":
+        if isinstance(value, list):
+            if not value or not all(isinstance(v, str) for v in value):
+                raise FeatureError(f"{owner}: {field.name} must be a body's name or a list of them")
+            value = list(dict.fromkeys(value))
+            return value[0] if len(value) == 1 else value
+        if not isinstance(value, str):
+            raise FeatureError(f"{owner}: {field.name} must be a body's name or a list of them")
+        return value
     if kind == "bool":
         if not isinstance(value, bool):
             raise FeatureError(f"{owner}: {field.name} must be true or false")

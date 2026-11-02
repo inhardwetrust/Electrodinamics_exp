@@ -12,6 +12,9 @@
 #   axis = "Z Axis"                   # optional: turned first, around an origin axis or a sketch line
 #   angle = "90"                      #   ("Sketch1:L3"), by degrees (the right hand way)
 #
+#   suppressed = true                 # optional: off (the browser's eye): skipped everywhere, as if it
+#                                     #   were not there (the view, the report, STEP); kept in the file
+#
 #   [[transform]]
 #   name = "Mirror1"
 #   type = "mirror"
@@ -104,6 +107,8 @@ class _Placing(Feature):
     def to_dict(self):
         data = super().to_dict()
         data["targets"] = list(self.targets)
+        if not data.get("suppressed"):
+            data.pop("suppressed", None)        # written only when it is off
         return data
 
     def rename_target(self, old, new):
@@ -123,6 +128,7 @@ class Move(_Placing):
         Field("offset", "exprs", ["0", "0", "0"], doc="mm along X, Y, Z"),
         Field("axis", "text", "", doc="turned first around it: an origin axis or a sketch line ('Sketch1:L3')"),
         Field("angle", "expr", "0", doc="by degrees around the axis"),
+        Field("suppressed", "bool", False, doc="off: skipped, as if it were not there (the browser's eye)"),
     )
 
     def __init__(self, name, targets=(), **values):
@@ -170,6 +176,7 @@ class Mirror(_Placing):
     FIELDS = (
         Field("plane", "choice", "YZ", tuple(MIRROR_PLANES), doc="mirrored in the plane parallel to it through "
                                                                   "its center"),
+        Field("suppressed", "bool", False, doc="off: skipped, as if it were not there (the browser's eye)"),
     )
 
     def describe(self):
