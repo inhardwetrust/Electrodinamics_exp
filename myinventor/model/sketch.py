@@ -13,6 +13,8 @@
 #                             # "Extrusion1:end", "Extrusion1:start", "Extrusion1:side.L3",
 #                             # "Revolution1:start", "Revolution1:end", "Revolution1:disc.L3",
 #                             # "SMA:face.2.12" (an import's planar face: model/importstep.py)
+#   origin = ["dx", "dy"]     # optional: the sketch's (0, 0) moved on its plane, mm along the plane's
+#                             # own axes (formulas; default 0, 0): the whole sketch moves
 #
 #   [[feature.point]]
 #   name = "P1"
@@ -321,6 +323,8 @@ class Sketch(Feature):
     TYPE = "sketch"
     FIELDS = (
         Field("plane", "ref", doc="the plane the sketch lies on: a datum, or 'Feature:face'"),
+        Field("origin", "exprs", ["0", "0"], doc="where the sketch's (0, 0) is on its plane: x, y (mm) along "
+                                                "the plane's own axes (the whole sketch moves with it)"),
     )
 
     def __init__(self, name, points=(), lines=(), circles=(), polylines=(), curves=(), splines=(), offsets=(),
@@ -339,6 +343,8 @@ class Sketch(Feature):
         duplicates = sorted({n for n in names if names.count(n) > 1})
         if duplicates:
             raise FeatureError(f"{name}: duplicate sketch names {duplicates}")
+        if len(self["origin"]) != 2:
+            raise FeatureError(f"{name}: origin must be two formulas, [x, y]")
         for c in self.curves:
             kind = KINDS.get(c.kind)
             if kind is None:
@@ -423,6 +429,8 @@ class Sketch(Feature):
 
     def to_dict(self):
         data = super().to_dict()
+        if self["origin"] == ["0", "0"]:
+            del data["origin"]                  # the default: not written
         if self.points:
             data["point"] = [{"name": p.name, "x": p.x, "y": p.y, **({"explicit": True} if p.explicit else {})}
                              for p in self.points]
@@ -974,8 +982,13 @@ class Sketch(Feature):
         return _arc_edge(at(a0), at(a0 + sweep / 2), at(a0 + sweep))
 
     def _frame(self, ctx):
-        """Where the sketch lies (plane_frame)."""
-        return plane_frame(ctx, self["plane"])
+        """Where the sketch lies: its plane's frame (plane_frame), its origin moved by `origin` along its axes."""
+        frame = plane_frame(ctx, self["plane"])
+        dx, dy = (ctx.evaluate(text, f"origin {axis}") for text, axis in zip(self["origin"], "xy"))
+        if dx == 0 and dy == 0:
+            return frame
+        return SketchFrame(frame.origin + (dx * np.asarray(frame.u) + dy * np.asarray(frame.v)) * MM,
+                           frame.u, frame.v, frame.normal)
 
     def build(self, ctx):
         frame = self._frame(ctx)

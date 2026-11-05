@@ -369,6 +369,44 @@ class Part:
         self.features.append(feature)
         return feature
 
+    def duplicate_sketch(self, name):
+        """
+        A copy of sketch `name` (every entity, its plane and origin), right
+        after it in the history, under a free name (Sketch2...): independent
+        (no extrusion uses it). Returns the copy's name.
+        """
+        original = self.feature(name)
+        if original.TYPE != "sketch":
+            raise PartError(f"{name!r} is not a sketch")
+        data = original.to_dict()
+        data["name"] = self.free_feature_name("Sketch")
+        copy = type(original).from_dict(data)
+        self.features.insert(self.features.index(original) + 1, copy)
+        return copy.name
+
+    def redefine_sketch(self, name, plane, origin=("0", "0")):
+        """
+        Sketch `name` moved to another plane (a datum, a work plane, a face
+        "Feature:face") above it in the history, its origin there [x, y]
+        (formulas); its entities keep their own x, y. PartError if the plane
+        is not above it (a feature using the sketch would go round in a circle).
+        """
+        sketch = self.feature(name)
+        if sketch.TYPE != "sketch":
+            raise PartError(f"{name!r} is not a sketch")
+        ref = plane.partition(":")[0]
+        above = [d.name for d in self.origin] + [f.name for f in self.features[:self.features.index(sketch)]]
+        if ref not in above:
+            raise PartError(f"{ref!r} is not above {name} in the history" if ref in self.object_names()
+                            else f"no plane {plane!r}")
+        if ":" not in plane:
+            datum = next((d for d in self.origin if d.name == plane), None)
+            if (datum is not None and datum.kind != "plane") or \
+                    (datum is None and self.feature(plane).TYPE != "workplane"):
+                raise PartError(f"{plane!r} is not a plane")
+        sketch.values["plane"] = plane
+        sketch.values["origin"] = [str(v) for v in origin]
+
     def feature_users(self, name):
         """Features that refer to `name`."""
         return [f.name for f in self.features if name in f.references()]

@@ -142,7 +142,10 @@ its text): `"1.6"`, `"patch_w / 2 + gap"`, `"sqrt(a^2 + b^2)"`.
 ## 5. Sketches: entities
 
 A sketch (`type = "sketch"`, `plane = ...`, section 6) holds 2D geometry
-in its own x, y (mm). Entities are sub-tables; names are unique within
+in its own x, y (mm). `origin = ["dx", "dy"]` (optional, formulas, default
+0, 0) moves the sketch's (0, 0) on its plane, along the plane's own axes:
+the whole sketch moves (and what is extruded from it, and sketches on
+those faces). Entities are sub-tables; names are unique within
 the sketch. Everything refers to points by name.
 
 Two ways of drawing (DESIGN.md), mixed freely in one part:
@@ -397,7 +400,7 @@ the answers of `set` / `undo` / `redo`):
     {"parameters": [{"name", "formula", "value" | "error"}
                     | {"name", "fields": {field: {"formula", "value" | "error"}}}],
      "features": [{"name", "type", "error"?,
-                   sketch: "plane", "points" (count), "lines", "circles", "polylines", "arcs",
+                   sketch: "plane", "origin" [x, y], "points" (count), "lines", "circles", "polylines", "arcs",
                            "curves" [{name, kind, args, visible, start, end}],
                            "splines" [{name, points, construction, spans}],
                            "offsets", "profiles" [{key, area, holes}], "pieces" [{key, area, holes}],
@@ -509,7 +512,12 @@ What the user can do by hand (to talk about it, and to know what they see):
   it as a body to join / cut / intersect (a group's row: all its bodies;
   the panel shows how many, Clear drops them; Join keeps one).
   Selecting a feature lights what it made (blue; a cut's removed volume
-  red). Right click: rename, color, group, delete, edit. A transform's eye
+  red). A sketch's row selected: Origin X / Y below (formula fields: the
+  whole sketch moves). A sketch's right click: Duplicate (an independent
+  copy on its plane, right after it), Redefine... (a click on its new
+  plane: an origin plane, a work plane, a flat body face above it in the
+  history; on a face its origin goes to the face's center, on a plane to
+  the plane's (0, 0); its entities keep their x, y). Right click: rename, color, group, delete, edit. A transform's eye
   suppresses it (one undo step).
   **Parameters** tab: the table of formulas, as a tree: a parameter with
   fields is a row (its values together, "(10, 5)") with a row per field

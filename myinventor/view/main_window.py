@@ -112,6 +112,7 @@ import dataclasses
 import math
 import os
 import re
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -140,7 +141,7 @@ from model.transforms import GROUP, Mirror, Move, expand
 from model.profiles import find_regions, named_regions, whole_regions
 from model.expressions import evaluate, evaluate_parameters
 from model.offsets import CAPS, offset_key
-from model.sketch import OFFSET_KINDS, Sketch, SketchPolyline, SketchSpline
+from model.sketch import OFFSET_KINDS, Sketch, SketchPolyline, SketchSpline, plane_frame
 from model.curves import KINDS, CurveError
 from model.traces import BENDS
 
@@ -288,7 +289,8 @@ class MainWindow(QMainWindow):
         self.extrude_panel = None   # the Extrude command's panel while it runs
         self.workplane_panel = None  # the Work Plane command's panel while it runs
         self._workplane = None      # that command: {"edit": name or None, "base": plane name}
-        self._plane_purpose = "sketch"  # what a picked plane is for: "sketch" | "workplane"
+        self._plane_purpose = "sketch"  # what a picked plane is for: "sketch" | "workplane" | "redefine"
+        self._redefining = None         # Redefine: the sketch getting the plane picked
         self._picking_axis = False    # the view picks an axis (a work plane's, a move's)
         self.move_panel = None      # the Move / Rotate command's panel while it runs
         self._moving = None         # that command: {"edit": name or None, "targets": [...]}
@@ -1136,7 +1138,7 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(why, 8000)
                 return False
             self._stop_picking_plane()
-            self._plane_taken(reference)
+            self._plane_taken(reference, key)
             return True
         if key[0] != "datum" or self._datum(key[1]).kind != "plane":
             return False
@@ -1144,12 +1146,91 @@ class MainWindow(QMainWindow):
         self._plane_taken(key[1])
         return True
 
-    def _plane_taken(self, name):
-        """A plane picked: a new sketch on it (Start 2D Sketch), or a work plane's base (Work Plane)."""
+    def _plane_taken(self, name, face=None):
+        """
+        A plane picked (face: the body face clicked, or None): a new sketch on
+        it (Start 2D Sketch), a work plane's base (Work Plane), or the new
+        plane of a sketch (Redefine).
+        """
         if self._plane_purpose == "workplane":
             self._open_work_plane(name)
+        elif self._plane_purpose == "redefine":
+            self.redefine_sketch(self._redefining, name, face)
         else:
             self.new_sketch(name)
+
+    # ---- Duplicate, Redefine (the browser's right click on a sketch) ----
+
+    def duplicate_sketch(self, name):
+        """An independent copy of a sketch, on its plane, right after it; one undo step."""
+        try:
+            copy = self.part.duplicate_sketch(name)
+        except PartError as error:
+            self.statusBar().showMessage(f"Duplicate {name}: {error}", 8000)
+            return None
+        self._commit()
+        self.select_row(("feature", copy))
+        self.statusBar().showMessage(f"{copy}: a copy of {name} on {self.part.feature(copy)['plane']} "
+                                     "(independent: Redefine moves it to another plane)", 8000)
+        return copy
+
+    def start_redefine(self, name):
+        """Redefine: the next click on a plane, a work plane or a flat body face is the sketch's new plane."""
+        self._plane_purpose = "redefine"
+        self._redefining = name
+        self.picking_plane = True
+        self._show_modeling(True)
+        planes = [d.name for d in self._datums() if d.kind == "plane"]
+        self.view.set_pick_filter({"plane", "face"}, forced=planes)
+        self.start_sketch_action.setEnabled(False)
+        self.statusBar().showMessage(f"Redefine {name}: click its new plane (an origin plane, a work plane, a flat "
+                                     "face of a body above it in the history) · Esc: cancel")
+
+    def redefine_sketch(self, name, plane, face=None):
+        """
+        Sketch `name` onto `plane`, one undo step. On a body face (`face`, the
+        key clicked) its origin goes to the face's center (Origin X / Y under
+        the browser change it); on a plane, to the plane's own (0, 0). False
+        (the status bar says why) if the plane is not above it.
+        """
+        origin = ["0", "0"]
+        if face is not None:
+            center = self._face_center(face, plane)
+            if center is not None:
+                origin = [fmt_mm(center[0]), fmt_mm(center[1])]
+        try:
+            self.part.redefine_sketch(name, plane, origin)
+        except PartError as error:
+            self.statusBar().showMessage(f"Redefine {name}: {error}", 8000)
+            return False
+        before = set(self.result.feature_errors)
+        self._commit()
+        self.select_row(("feature", name))
+        where = f", its origin at the face's center ({origin[0]}, {origin[1]})" if face is not None else ""
+        broken = [n for n in self.result.feature_errors if n not in before]
+        if broken:                              # allowed: the user fixes them (they stay red until then)
+            self.statusBar().showMessage(
+                f"{name} on {plane}{where}; it breaks {', '.join(broken)} (red in the browser): fix them, "
+                "or Undo", 15000)
+        else:
+            self.statusBar().showMessage(f"{name} on {plane}{where}: Origin X / Y under the browser move it", 8000)
+        return True
+
+    def _face_center(self, face, plane):
+        """The area center of body face `face` in the axes of `plane` (mm, its own (0, 0)), or None."""
+        triangles = self.view.face_triangles(face) * MM
+        if not len(triangles):
+            return None
+        areas = 0.5 * np.linalg.norm(np.cross(triangles[:, 1] - triangles[:, 0],
+                                              triangles[:, 2] - triangles[:, 0]), axis=1)
+        if areas.sum() <= 0:
+            return None
+        center = (triangles.mean(axis=1) * areas[:, None]).sum(axis=0) / areas.sum()
+        try:
+            frame = plane_frame(SimpleNamespace(outputs=self.result.outputs, part=self.part), plane)
+        except ValueError:
+            return None
+        return frame.to_sketch(center[None])[0] / MM
 
     def face_reference(self, key):
         """
@@ -2681,7 +2762,11 @@ class MainWindow(QMainWindow):
         if kind == "datum" and self.part.datum(name).kind == "plane":
             return [("New Sketch", lambda: self.new_sketch(name))]
         if kind == "feature" and self.part.feature(name).TYPE == "sketch":
+            free = self.editing is None and self.open_panel() is None and not self.picking_plane
             actions = [] if name == self.editing else [("Edit Sketch", lambda: self.edit_sketch(name))]
+            if free:
+                actions += [("Duplicate", lambda: self.duplicate_sketch(name)),
+                            ("Redefine...", lambda: self.start_redefine(name))]
             return actions + [("Delete", lambda: self.delete_feature(name))]
         if kind == "feature" and self.part.feature(name).TYPE == "extrude":
             return [("Edit Extrusion", lambda: self.start_extrude(edit=name)),
@@ -3097,7 +3182,9 @@ class MainWindow(QMainWindow):
                        else f"offset {feature['offset']} mm")
                 tip = f"work plane: {feature['base']} {how}\nTick: shown in 3D. Double click: edit"
             elif feature.TYPE == "sketch":
-                tip = f"sketch on {feature['plane']}"
+                tip = (f"sketch on {feature['plane']}" + (f", origin ({', '.join(feature['origin'])})"
+                                                          if feature["origin"] != ["0", "0"] else "")
+                       + "\nSelect: Origin X / Y below. Right click: Edit, Duplicate, Redefine (another plane)")
             elif feature.TYPE == "extrude":
                 what = {"new": "into", "join": "joined to", "cut": "cut from", "intersect": "intersected with"}
                 tip = (f"extrusion of {feature['sketch']} by {feature['distance']} mm "
@@ -3387,7 +3474,8 @@ class MainWindow(QMainWindow):
             feature = self.part.feature(key[1])
             lines = [f"<b>{feature.name}</b> ({feature.TYPE})"]
             if feature.TYPE == "sketch":
-                lines.append(f"on {feature['plane']}")
+                lines.append(f"on {feature['plane']}" + (f", origin ({', '.join(feature['origin'])})"
+                                                         if feature["origin"] != ["0", "0"] else ""))
             elif feature.TYPE == "extrude":
                 verb = {"new": "makes", "join": "joins", "cut": "cuts", "intersect": "intersects"}[feature["operation"]]
                 lines += [f"of {feature['sketch']}: {len(feature.profiles)} profile(s)",
@@ -3422,6 +3510,9 @@ class MainWindow(QMainWindow):
         while self.props_form.rowCount():
             self.props_form.removeRow(0)
         self._add_deparametrize(key)
+        if key is not None and key[0] == "feature" and self._is_sketch(key[1]):
+            self._add_origin_rows(key[1])
+            return
         if key is None and isinstance(self.view.tool, ArcTool):     # the Arc tool's method, below left
             combo = QComboBox()
             combo.addItem("From the center", "center")
@@ -3546,6 +3637,27 @@ class MainWindow(QMainWindow):
     def _set_point_coord(self, sketch_name, point, axis, text):
         """A sketch point's x or y changed in the properties; one undo step."""
         setattr(self.part.feature(sketch_name).point(point), axis, text)
+        self._commit()
+
+    def _is_sketch(self, name):
+        return any(f.name == name and f.TYPE == "sketch" for f in self.part.features)
+
+    def _add_origin_rows(self, sketch_name):
+        """A sketch's origin on its plane: Origin X / Y (formulas, mm along the plane's axes)."""
+        sketch = self.part.feature(sketch_name)
+        self.props_form.addRow(QLabel(f"<b>{sketch_name}</b> on {sketch['plane']}"))
+        for i, axis in enumerate("XY"):
+            field = self._formula_field(sketch["origin"][i],
+                                        lambda text, i=i: self.set_sketch_origin(sketch_name, i, text))
+            field.setToolTip(f"Where the sketch's (0, 0) is on its plane, along the plane's own {axis.lower()} (mm): "
+                             "the whole sketch moves with it. A number or a formula of the parameters.")
+            self.props_form.addRow(f"Origin {axis}:", field)
+
+    def set_sketch_origin(self, sketch_name, index, text):
+        """One coordinate (0: x, 1: y) of a sketch's origin on its plane; one undo step."""
+        origin = list(self.part.feature(sketch_name)["origin"])
+        origin[index] = text
+        self.part.feature(sketch_name).values["origin"] = origin
         self._commit()
 
     def _set_circle_radius(self, sketch_name, name, text):

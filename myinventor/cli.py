@@ -49,6 +49,7 @@ def report(part, result):
         out = result.outputs.get(feature.name)
         if feature.TYPE == "sketch":
             row["plane"] = feature["plane"]
+            row["origin"] = list(feature["origin"])
             row["points"] = len(feature.points)
             row["lines"] = [line.name + (" (construction)" if line.construction else "") for line in feature.lines]
             row["circles"] = [c.name + (" (construction)" if c.construction else "") for c in feature.circles]
@@ -128,7 +129,8 @@ def text(data):
         head = f"  {f['name']} ({f['type']}): " + (f"FAILED: {f['error']}" if "error" in f else "ok")
         lines.append(head)
         if f["type"] == "sketch":
-            lines.append(f"    on {f['plane']}; {f['points']} points; lines {', '.join(f['lines']) or '-'}; "
+            moved = f"; origin ({', '.join(f['origin'])})" if f["origin"] != ["0", "0"] else ""
+            lines.append(f"    on {f['plane']}{moved}; {f['points']} points; lines {', '.join(f['lines']) or '-'}; "
                          f"circles {', '.join(f['circles']) or '-'}; polylines {', '.join(f['polylines']) or '-'}")
             for a in f.get("arcs", []):
                 lines.append(f"    arc {a}")

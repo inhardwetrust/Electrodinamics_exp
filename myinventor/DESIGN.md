@@ -252,6 +252,11 @@ Bodies), so what follows sees the placed body and a projection can follow
 it. A transform can be suppressed (`suppressed = true`, the eye on its
 row): skipped everywhere, as if it were not there.
 
+Done: a sketch's origin on its plane (`origin = [x, y]`, formulas), Duplicate
+(a copy right after it), Redefine (another plane above it in the history;
+on a body face the window puts the origin at the face's center as numbers:
+the face planes' own conventions stay, so old files do not move).
+
 Next, in this order:
 1. Manual primitives: poly-arc, Bézier (the arc is done: from its center or
    through three points); copy / paste of generators and arcs.
