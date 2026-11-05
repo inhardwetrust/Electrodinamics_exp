@@ -470,8 +470,8 @@ class MainWindow(QMainWindow):
                                               "first point again closes it")
         group.add_action(self.spline_action)
         group.add_widget(QLabel(" Width "))
-        self.trace_width = group.add_widget(QLineEdit("1"))
-        self.trace_width.setFixedWidth(60)
+        self.trace_width = group.add_widget(FormulaField("1", {}, unit="mm"))     # values: show_result
+        self.trace_width.setFixedWidth(120)
         self.trace_width.setToolTip("The width (mm, a number or a formula of the parameters) of new polylines")
         self.curve_menu = QMenu(self)
         for kind in KINDS:
@@ -712,6 +712,7 @@ class MainWindow(QMainWindow):
             self.view.set_geometry(Geometry(result.bodies), reset=reset_view)
         self._fill_tree()
         self.parameters.show_parameters(self.part.parameters, result.values, result.errors)
+        self.trace_width.set_values(result.values)
         if self.editing is not None:
             if self.editing not in result.outputs:     # undone, deleted, or it fails now
                 self.finish_sketch(refresh=False)
@@ -1270,11 +1271,18 @@ class MainWindow(QMainWindow):
 
         a, b = point(start), point(end)
         current = next((w for w in sketch.polylines if w.name == self._trace), None)
+        note = None
         if current is not None and current.points[-1] == a:
             sketch.extend_polyline(current.name, b)
         else:
-            self._trace = sketch.add_polyline(a, b, self.trace_width.text().strip() or "1")
+            width = self.trace_width.text().strip()
+            if not self.trace_width.accepted():
+                note = f"Width {width!r} does not evaluate ({self.trace_width.value()}): the polyline gets 1 mm"
+                width = "1"
+            self._trace = sketch.add_polyline(a, b, width)
         self._commit()
+        if note:
+            self.statusBar().showMessage(note, 10000)
         return a, b
 
     def _set_spline_tool(self, on):

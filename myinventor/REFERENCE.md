@@ -483,6 +483,12 @@ What the user can do by hand (to talk about it, and to know what they see):
   and radius, an arc's): a parameter's name works there (typed names are
   offered), the value shows at the right, a wrong formula stays red and
   is not applied. A point given a formula no longer drags.
+  The command panels' numbers (Extrude's Distance, Revolve's Angle, Move's
+  Offset and Angle, Work Plane's Offset and Angle) and the Sketch ribbon's
+  polyline Width are the same formula fields: names completed (the first
+  one current: Enter takes it, without applying the panel), the value grey
+  at the right, a red frame and Apply off while it does not evaluate; the
+  formula itself goes into the feature.
   While Extrude / Revolve runs, a click on a body's row takes or drops
   it as a body to join / cut / intersect (a group's row: all its bodies;
   the panel shows how many, Clear drops them; Join keeps one).

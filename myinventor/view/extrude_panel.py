@@ -10,7 +10,9 @@
 #              browser (toggle_body, the window calls it); Clear drops them.
 #              Join takes one (a click replaces it; switching to Join keeps
 #              the last); Cut and Intersect take several, each by the same tool
-#   Distance   a formula of the parameters (mm), its value or the error
+#   Distance   a formula of the parameters (mm): a formula field (view/
+#              formula_field.py: names completed, the value grey at its
+#              right, a red frame on an error); the error also below it
 #   Apply      makes the extrusion (off until there is a profile and the
 #              distance is a number other than 0); Cancel (or Esc, or
 #              closing the panel) leaves without one.
@@ -24,13 +26,13 @@
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout,
+    QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
 )
 
-from model.features import body_list
-
 from model.expressions import ExpressionError, evaluate
+from model.features import body_list
 from model.revolve import angle_error
+from view.formula_field import FormulaField
 
 ERROR_STYLE = "color: #c81e1e"
 OPERATIONS = (("new", "New solid"), ("join", "Join"), ("cut", "Cut"), ("intersect", "Intersect"))
@@ -78,7 +80,7 @@ class ExtrudePanel(QDialog):
         self.body_clear_button.setFixedWidth(self.body_clear_button.fontMetrics().horizontalAdvance("Clear") + 16)
         self.body_clear_button.clicked.connect(lambda: self.set_bodies([]))
         self.operation.currentIndexChanged.connect(self._operation_changed)
-        self.distance = QLineEdit(distance)
+        self.distance = FormulaField(distance, values, unit="mm" if kind == "extrude" else "°")
         self.distance.setToolTip("How far along the sketch's normal (mm): a number or a formula of the "
                                  "parameters; negative: the other way" if kind == "extrude" else
                                  "How far around the axis (degrees): a number or a formula; 360: all the way "
@@ -205,8 +207,9 @@ class ExtrudePanel(QDialog):
     def _update(self):
         value = self.distance_value()
         ok = not isinstance(value, str)
-        self.value.setText((f"= {value:.6g} mm" if self.kind == "extrude" else f"= {value:.6g}°") if ok else value)
+        self.value.setText("" if ok else value)             # the value itself: grey in the field
         self.value.setStyleSheet("" if ok else ERROR_STYLE)
+        self.value.setVisible(not ok)
         new = self.operation_key() == "new"
         count = len(self._bodies)
         if new:

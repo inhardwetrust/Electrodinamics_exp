@@ -5,7 +5,7 @@
 #     not evaluate: a red frame, the error in its tooltip;
 #   - the parameter names completed while typing: a popup of the names that
 #     start with the word at the cursor (any case; "mycenter." offers its
-#     fields, mycenter.x...); Enter / Tab / a click
+#     fields, mycenter.x...), the first one current; Enter / Tab / a click
 #     puts the name in place of that word, and only that (the Enter that
 #     takes a name does not finish the field: editingFinished waits).
 # accepted() is whether the text evaluates. Qt only (no model but the
@@ -13,7 +13,7 @@
 
 import re
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QStringListModel, Qt
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import QCompleter, QLineEdit
 
@@ -31,14 +31,21 @@ class FormulaField(QLineEdit):
         self.unit = unit
         self._shown = ""
         self._tip = ""
-        self.completer_ = QCompleter(sorted(self.values, key=str.lower), self)      # its own model (a Python
-        #   one passed in is collected)
+        self.completer_ = QCompleter(self)
+        self.completer_.setModel(QStringListModel(sorted(self.values, key=str.lower), self.completer_))
         self.completer_.setCaseSensitivity(Qt.CaseInsensitive)
+        self.completer_.setWrapAround(False)        # Down on the last stays there (else: no row, Enter takes none)
         self.completer_.setCompletionMode(QCompleter.PopupCompletion)
         self.completer_.setWidget(self)
         self.completer_.activated.connect(self.insert_name)
         self.textEdited.connect(self._complete)
         self.textChanged.connect(self._evaluate)
+        self._evaluate()
+
+    def set_values(self, values):
+        """New parameter values (a field that outlives a rebuild): completion and the value follow."""
+        self.values = dict(values)
+        self.completer_.model().setStringList(sorted(self.values, key=str.lower))
         self._evaluate()
 
     # ---- the value ----
@@ -111,6 +118,7 @@ class FormulaField(QLineEdit):
         rect = self.cursorRect()
         rect.setWidth(max(160, popup.sizeHintForColumn(0) + popup.verticalScrollBar().sizeHint().width()))
         self.completer_.complete(rect)
+        popup.setCurrentIndex(self.completer_.completionModel().index(0, 0))     # Enter takes the first
 
     def insert_name(self, name):
         """A completion taken: `name` in place of the word at the cursor."""

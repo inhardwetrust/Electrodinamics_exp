@@ -10,14 +10,17 @@
 #   Offset     X, Y, Z (formulas, mm)
 #   Axis       turned first around it (Pick: a click in the view; Clear: none)
 #   Angle      degrees (with an axis)
+# Offset and Angle are formula fields (view/formula_field.py: names
+# completed, the value grey at the right, a red frame on an error).
 #   Apply      makes it; Cancel / Esc leaves.
 # It only shows and reports (applied(), cancelled(), changed(), pick_axis());
 # the window builds the transform and its preview.
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout
+from PySide6.QtWidgets import QDialog, QFormLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
 from model.expressions import ExpressionError, evaluate
+from view.formula_field import FormulaField
 
 ERROR_STYLE = "color: #c81e1e"
 
@@ -36,7 +39,7 @@ class MovePanel(QDialog):
         self.setModal(False)
         self.values = values
         self.axis = axis
-        self.offset = [QLineEdit(text) for text in offset]
+        self.offset = [FormulaField(text, values, unit="mm") for text in offset]
         for edit, name in zip(self.offset, "XYZ"):
             edit.setToolTip(f"How far along {name} (mm): a number or a formula of the parameters")
         self.axis_label = QLabel()
@@ -49,7 +52,7 @@ class MovePanel(QDialog):
         self.clear.setAutoDefault(False)
         self.clear.setToolTip("No turning")
         self.clear.clicked.connect(lambda: self.set_axis(None, None))
-        self.angle = QLineEdit(angle)
+        self.angle = FormulaField(angle, values, unit="°")
         self.angle.setToolTip("How far (degrees) around the axis, the right hand way: a number or a formula")
         self.note = QLabel()
         axis_row = QHBoxLayout()

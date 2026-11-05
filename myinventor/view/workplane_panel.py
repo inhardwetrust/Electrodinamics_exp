@@ -12,16 +12,19 @@
 #   Points     Three Points: the points taken (Pick: three clicks on sketch
 #              points, the origin's center or a body's corners)
 #   Apply      makes it (off until the values do); Cancel / Esc leaves.
+# Offset and Angle are formula fields (view/formula_field.py: names
+# completed, the value grey at the right, a red frame on an error).
 # The panel only shows and reports (applied(), cancelled(), changed() on any
 # edit, pick_base(), pick_axis(), pick_points()); the window picks and
 # builds the plane, its preview included.
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout,
+    QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
 )
 
 from model.expressions import ExpressionError, evaluate
+from view.formula_field import FormulaField
 
 ERROR_STYLE = "color: #c81e1e"
 KINDS = ("Offset", "Angle", "Three Points")
@@ -49,10 +52,10 @@ class WorkPlanePanel(QDialog):
         self.kind.addItems(list(KINDS))
         self.kind.setCurrentText("Three Points" if points else "Angle" if axis else "Offset")
         self.base_label = QLabel()
-        self.offset = QLineEdit(offset)
+        self.offset = FormulaField(offset, values, unit="mm")
         self.offset.setToolTip("How far (mm) along the base's normal: a number or a formula of the parameters")
         self.axis_label = QLabel(axis_label or "")
-        self.angle = QLineEdit(angle)
+        self.angle = FormulaField(angle, values, unit="°")
         self.angle.setToolTip("How far (degrees) around the axis from the base: a number or a formula")
         self.points_label = QLabel()
         self.points_label.setWordWrap(True)
