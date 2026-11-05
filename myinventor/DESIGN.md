@@ -253,9 +253,18 @@ it. A transform can be suppressed (`suppressed = true`, the eye on its
 row): skipped everywhere, as if it were not there.
 
 Done: a sketch's origin on its plane (`origin = [x, y]`, formulas), Duplicate
-(a copy right after it), Redefine (another plane above it in the history;
-on a body face the window puts the origin at the face's center as numbers:
-the face planes' own conventions stay, so old files do not move).
+(a copy at the end of the history), Redefine (another plane; on a body face
+the window puts the origin at the face's center as numbers: the face
+planes' own conventions stay, so old files do not move). A plane below the
+sketch moves the sketch down the history to just after it, with what
+depends on it there (Part.move_after: references, and bodies made by the
+moved features that later ones change); a plane that depends on the
+sketch is a circle: refused.
+
+Done: Extrude up to a plane or a body (`extent`, `to`): a parallel plane is
+an exact distance; an inclined plane cuts a longer sweep; a body: a long
+sweep minus the body, the pieces that start on the sketch (any surface,
+curved too); a profile partly missing the body fails rather than guess.
 
 Next, in this order:
 1. Manual primitives: poly-arc, Bézier (the arc is done: from its center or

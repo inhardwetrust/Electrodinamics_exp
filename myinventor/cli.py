@@ -77,7 +77,8 @@ def report(part, result):
                                  for r in find_regions(out) if r.key not in keys]
         elif feature.TYPE == "extrude":
             row.update(sketch=feature["sketch"], profiles=[list(p) for p in feature.profiles],
-                       distance=feature["distance"], operation=feature["operation"], body=feature["body"])
+                       distance=feature["distance"], operation=feature["operation"], body=feature["body"],
+                       extent=feature["extent"], to=feature["to"])
         elif feature.TYPE == "import":
             row.update(file=feature["file"], bodies=list(feature.bodies))
         elif feature.TYPE == "workplane":
@@ -156,8 +157,8 @@ def text(data):
             if "profiles" in f and not f["profiles"]:
                 lines.append("    no closed profile")
         elif f["type"] == "extrude":
-            lines.append(f"    {f['operation']} body {_names(f['body'])} from {f['sketch']} {f['profiles']}, "
-                         f"distance {f['distance']}")
+            how = f"distance {f['distance']}" if f["extent"] == "distance" else f"up to {f['extent']} {f['to']}"
+            lines.append(f"    {f['operation']} body {_names(f['body'])} from {f['sketch']} {f['profiles']}, {how}")
         elif f["type"] == "import":
             lines.append(f"    {f['file']}: {', '.join(f['bodies'])}")
         elif f["type"] == "workplane":

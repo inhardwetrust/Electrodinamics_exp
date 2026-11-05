@@ -305,6 +305,22 @@ is no region fails the extrusion, naming it.
   apart ones: one body of several solids).
 - A cut that removes nothing or everything fails on purpose.
 - Faces for sketches: `Ext:end`, `Ext:start`, `Ext:side.<line>`.
+- **How far** (`extent`, optional, default `"distance"`):
+  - `extent = "plane"`, `to = "WorkPlane1"` (an origin plane, a work plane,
+    a face `"Ext:end"`): up to that plane, on whichever side it is. Parallel
+    to the sketch: an exact extrusion by that distance (`Ext:end` exists).
+    Inclined: a longer one cut by the plane (no `Ext:end`: sketch on the
+    plane itself). The plane crossing a profile, or running along the
+    extrusion: it fails.
+  - `extent = "body"`, `to = "Lid"`: until the profiles meet that body, on
+    the side it is (a long sweep minus the body, the pieces that start on
+    the sketch): a post stops on a cylinder's curved underside. No flat end.
+    A part of a profile missing the body (it would go on forever), a
+    profile beside it, one starting inside it, or `to` being a body it cuts
+    / joins: it fails, saying which.
+  - `distance` is then not needed (written only if kept). `to` follows
+    renames (the plane's feature, the body); a work plane used so cannot be
+    deleted. The report has `extent` and `to` ("up to plane WorkPlane1").
 
 **Revolve** (`type = "revolve"`): `sketch`, `profiles`, `axis` (a line of
 that sketch, usually construction; `"Sketch2:L1"`; or `"X Axis"`,
@@ -404,7 +420,7 @@ the answers of `set` / `undo` / `redo`):
                            "curves" [{name, kind, args, visible, start, end}],
                            "splines" [{name, points, construction, spans}],
                            "offsets", "profiles" [{key, area, holes}], "pieces" [{key, area, holes}],
-                   extrude: "sketch", "profiles", "distance", "operation", "body",
+                   extrude: "sketch", "profiles", "distance", "operation", "body", "extent", "to",
                    revolve: ... "axis", "angle", import: "file", "bodies",
                    workplane: "base", "offset", "axis", "angle", "points"}],
      "bodies": [{"name", "volume" (mm³, exact), "solids", "bounds" [[lo], [hi]], "size", "color", "visible"}],
@@ -507,17 +523,23 @@ What the user can do by hand (to talk about it, and to know what they see):
   polyline Width are the same formula fields: names completed (the first
   one current: Enter takes it, without applying the panel), the value grey
   at the right, a red frame and Apply off while it does not evaluate; the
-  formula itself goes into the feature.
+  formula itself goes into the feature. Extrude's Extents: Distance, To
+  Plane (the origin planes and the work planes above it, from a list), To
+  Body (the bodies there are); Distance hides for the other two.
   While Extrude / Revolve runs, a click on a body's row takes or drops
   it as a body to join / cut / intersect (a group's row: all its bodies;
   the panel shows how many, Clear drops them; Join keeps one).
   Selecting a feature lights what it made (blue; a cut's removed volume
   red). A sketch's row selected: Origin X / Y below (formula fields: the
   whole sketch moves). A sketch's right click: Duplicate (an independent
-  copy on its plane, right after it), Redefine... (a click on its new
-  plane: an origin plane, a work plane, a flat body face above it in the
-  history; on a face its origin goes to the face's center, on a plane to
-  the plane's (0, 0); its entities keep their x, y). Right click: rename, color, group, delete, edit. A transform's eye
+  copy on its plane, at the end of the history), Redefine... (a click on
+  its new plane: an origin plane, a work plane, a flat body face; on a
+  face its origin goes to the face's center, on a plane to the plane's
+  (0, 0); its entities keep their x, y). A plane below the sketch in the
+  history (a work plane made later): the sketch moves to right after it,
+  with what depends on it in between (its extrusion, sketches on that,
+  joins / cuts of those bodies), the rest keeping its order; refused only
+  if the plane itself depends on the sketch (its own extrusion's face). Right click: rename, color, group, delete, edit. A transform's eye
   suppresses it (one undo step).
   **Parameters** tab: the table of formulas, as a tree: a parameter with
   fields is a row (its values together, "(10, 5)") with a row per field

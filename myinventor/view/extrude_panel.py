@@ -10,6 +10,9 @@
 #              browser (toggle_body, the window calls it); Clear drops them.
 #              Join takes one (a click replaces it; switching to Join keeps
 #              the last); Cut and Intersect take several, each by the same tool
+#   Extents    (Extrude) Distance, To Plane, To Body; To: the plane (origin
+#              planes, work planes above it) or the body from a list
+#              (Distance hidden then)
 #   Distance   a formula of the parameters (mm): a formula field (view/
 #              formula_field.py: names completed, the value grey at its
 #              right, a red frame on an error); the error also below it
@@ -36,6 +39,7 @@ from view.formula_field import FormulaField
 
 ERROR_STYLE = "color: #c81e1e"
 OPERATIONS = (("new", "New solid"), ("join", "Join"), ("cut", "Cut"), ("intersect", "Intersect"))
+EXTENTS = (("distance", "Distance"), ("plane", "To Plane"), ("body", "To Body"))
 
 
 class ExtrudePanel(QDialog):
@@ -46,12 +50,14 @@ class ExtrudePanel(QDialog):
     selecting = Signal(str)         # "profiles" | "axis": what a click in the view takes (Revolve)
 
     def __init__(self, parent, values, bodies=(), distance="10", operation=None, body=None, title="Extrude",
-                 kind="extrude", axis=None):
+                 kind="extrude", axis=None, extent="distance", to="", planes=()):
         """
         values: the parameters' values, for evaluating the distance formula;
         bodies: the names of the bodies there are (to join, cut...);
         operation, body: the start (body: a name or a list; default: Join the
         last body if there is one, else New solid); title: "Edit Extrusion1"...
+        extent, to: how far (Extrude): "distance", or up to a plane / a body
+        named `to`; planes: the planes it may go up to (above it).
         """
         super().__init__(parent, Qt.Tool)
         self.setWindowTitle(title)
@@ -119,8 +125,24 @@ class ExtrudePanel(QDialog):
         body_row.addWidget(self.body, 1)
         body_row.addWidget(self.body_clear_button)
         form.addRow("Bodies:", body_row)
+        self.planes = list(planes)
+        self.extent = QComboBox()
+        for key, text in EXTENTS:
+            self.extent.addItem(text, key)
+        self.extent.setToolTip("How far: by a distance, up to a plane (an origin plane, a work plane), or until "
+                               "the profiles meet a body")
+        self.extent.setCurrentIndex([k for k, _ in EXTENTS].index(extent))
+        self.target = QComboBox()
+        self.target.setToolTip("The plane or the body it goes up to")
+        self._to = to
+        if kind == "extrude":
+            form.addRow("Extents:", self.extent)
+            form.addRow("To:", self.target)
         form.addRow("Distance:" if kind == "extrude" else "Angle:", self.distance)
         form.addRow("", self.value)
+        self.form = form
+        self.extent.currentIndexChanged.connect(self._extent_changed)
+        self.target.currentIndexChanged.connect(lambda _: self._update())
         self.apply_button = QPushButton("Apply")
         self.apply_button.setDefault(True)
         self.apply_button.clicked.connect(self._apply)
@@ -135,6 +157,7 @@ class ExtrudePanel(QDialog):
         layout.addLayout(buttons)
         self._count = 0
         self._done = False
+        self._fill_targets()
         self.set_profile_count(0)
         if kind == "revolve":
             self.set_axis(axis)
@@ -194,8 +217,39 @@ class ExtrudePanel(QDialog):
     def _operation_changed(self):
         self.set_bodies(self._bodies)           # Join keeps the last one
 
+    def extent_key(self):
+        """"distance" | "plane" | "body" (Revolve: "distance", its angle)."""
+        return self.extent.currentData() if self.kind == "extrude" else "distance"
+
+    def target_name(self):
+        """The plane or body it goes up to ("" for a distance, or none to pick)."""
+        return (self.target.currentData() or "") if self.extent_key() != "distance" else ""
+
+    def _extent_changed(self):
+        self._fill_targets()
+        self._update()
+
+    def _fill_targets(self):
+        """The To list for the extent (planes, or the bodies there are); Distance shown only for a distance."""
+        extent = self.extent_key()
+        keep = self.target.currentData() or self._to
+        self.target.blockSignals(True)
+        self.target.clear()
+        names = self.planes if extent == "plane" else self.available if extent == "body" else []
+        for name in names:
+            self.target.addItem(name, name)
+        if keep in names:
+            self.target.setCurrentIndex(names.index(keep))
+        self.target.blockSignals(False)
+        if self.kind == "extrude":
+            self.form.setRowVisible(self.target, extent != "distance")
+            self.form.setRowVisible(self.distance, extent == "distance")
+            self.form.setRowVisible(self.value, extent == "distance")
+
     def distance_value(self):
         """The distance (mm) or the angle (degrees), or the error text."""
+        if self.extent_key() != "distance":
+            return "up to a plane or a body: no distance"
         try:
             value = evaluate(self.distance.text(), self.values)
         except ExpressionError as error:
@@ -206,10 +260,11 @@ class ExtrudePanel(QDialog):
 
     def _update(self):
         value = self.distance_value()
-        ok = not isinstance(value, str)
-        self.value.setText("" if ok else value)             # the value itself: grey in the field
-        self.value.setStyleSheet("" if ok else ERROR_STYLE)
-        self.value.setVisible(not ok)
+        ok = not isinstance(value, str) if self.extent_key() == "distance" else bool(self.target_name())
+        if self.extent_key() == "distance":
+            self.value.setText("" if ok else value)         # the value itself: grey in the field
+            self.value.setStyleSheet("" if ok else ERROR_STYLE)
+            self.value.setVisible(not ok)
         new = self.operation_key() == "new"
         count = len(self._bodies)
         if new:

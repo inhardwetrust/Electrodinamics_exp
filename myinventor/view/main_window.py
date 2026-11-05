@@ -131,9 +131,9 @@ from geometry.tessellate import body_from_shape
 from model.document import Document
 from model.part import Datum, Part, PartError, color_rgb
 from model.part_file import EXTENSION, PartFileError
-from model.rebuild import rebuild
+from model.rebuild import BuildContext, rebuild
 from model.features import body_list
-from model.extrude import Extrude
+from model.extrude import Extrude, sweep as sweep_tool
 from model.revolve import Revolve, axis_of, check_side, onto_axis
 from model.workplane import WorkPlane
 from model.importstep import Import, body_names
@@ -300,6 +300,7 @@ class MainWindow(QMainWindow):
         self._extruding = None      # the extrusion being edited by it, or None (a new one)
         self._sweep = "extrude"     # the command the panel runs: "extrude" | "revolve"
         self._rolled_back = False   # the view shows the bodies from before the edited extrusion
+        self._sweep_shapes = {}     # the bodies an Extrude To Body may go up to (its preview)
         self.picking_plane = False  # Start 2D Sketch waits for a plane
         self.locked = False         # Claude is in control (set_locked, view/control.py)
         self.placed_view = False    # sketch mode shows the bodies placed ("As placed"), not as modeling has them
@@ -1162,7 +1163,7 @@ class MainWindow(QMainWindow):
     # ---- Duplicate, Redefine (the browser's right click on a sketch) ----
 
     def duplicate_sketch(self, name):
-        """An independent copy of a sketch, on its plane, right after it; one undo step."""
+        """An independent copy of a sketch, on its plane, at the end of the history; one undo step."""
         try:
             copy = self.part.duplicate_sketch(name)
         except PartError as error:
@@ -1184,7 +1185,7 @@ class MainWindow(QMainWindow):
         self.view.set_pick_filter({"plane", "face"}, forced=planes)
         self.start_sketch_action.setEnabled(False)
         self.statusBar().showMessage(f"Redefine {name}: click its new plane (an origin plane, a work plane, a flat "
-                                     "face of a body above it in the history) · Esc: cancel")
+                                     "face of a body; one below it in the history: it moves after it) · Esc: cancel")
 
     def redefine_sketch(self, name, plane, face=None):
         """
@@ -1198,8 +1199,9 @@ class MainWindow(QMainWindow):
             center = self._face_center(face, plane)
             if center is not None:
                 origin = [fmt_mm(center[0]), fmt_mm(center[1])]
+        order = [f.name for f in self.part.features]
         try:
-            self.part.redefine_sketch(name, plane, origin)
+            moved = self.part.redefine_sketch(name, plane, origin)
         except PartError as error:
             self.statusBar().showMessage(f"Redefine {name}: {error}", 8000)
             return False
@@ -1207,6 +1209,8 @@ class MainWindow(QMainWindow):
         self._commit()
         self.select_row(("feature", name))
         where = f", its origin at the face's center ({origin[0]}, {origin[1]})" if face is not None else ""
+        if [f.name for f in self.part.features] != order:      # it went down the history, after its plane
+            where += f"; moved after {plane.partition(':')[0]}" + (f" with {', '.join(moved)}" if moved else "")
         broken = [n for n in self.result.feature_errors if n not in before]
         if broken:                              # allowed: the user fixes them (they stay red until then)
             self.statusBar().showMessage(
@@ -2518,27 +2522,34 @@ class MainWindow(QMainWindow):
         self.view.set_profile_mode(items)
         self.view.on_profiles = self._profiles_picked
         self._extruding = edit
+        limit = [f.name for f in self.part.features].index(edit) if feature is not None else len(self.part.features)
+        planes = [d.name for d in self.part.origin if d.kind == "plane"] + [
+            f.name for f in self.part.features[:limit] if f.TYPE == "workplane" and f.name in self.result.outputs]
         if feature is not None:
             # Roll back: the bodies as they were just before this feature.
             rolled = Part.from_dict(self.part.to_dict())
             rolled.features = rolled.features[:[f.name for f in rolled.features].index(edit)]
-            before = rebuild(rolled, folder=self._folder(), placement=False).bodies
+            rolled_result = rebuild(rolled, folder=self._folder(), placement=False)
+            before = rolled_result.bodies
+            self._sweep_shapes = dict(rolled_result.shapes)     # what Extrude To Body goes up to (preview)
             self._set_geometry(Geometry(before), reset=False)
             self._rolled_back = True
-            amount = feature["distance"] if self._sweep == "extrude" else feature["angle"]
+            amount = (feature["distance"] or "10") if self._sweep == "extrude" else feature["angle"]
             axis_key = self._axis_key(feature) if self._sweep == "revolve" else None
+            extents = dict(extent=feature["extent"], to=feature["to"]) if self._sweep == "extrude" else {}
             panel = ExtrudePanel(self, self.result.values, bodies=[b.name for b in before],
                                  distance=amount, operation=feature["operation"], body=feature["body"],
                                  title=f"Edit {edit}", kind=self._sweep,
-                                 axis=self._axis_label(axis_key) if axis_key else None)
+                                 axis=self._axis_label(axis_key) if axis_key else None, planes=planes, **extents)
             self.view.set_profile_selection([("profile", feature["sketch"], key) for key in feature.profiles])
             if axis_key is not None:
                 self.view.set_axis_key(axis_key)
         else:
             self._show_modeling(True)           # the bodies as built: what it joins to, cuts from
+            self._sweep_shapes = dict(self._modeling_result().shapes)
             panel = ExtrudePanel(self, self.result.values, bodies=[b.name for b in self.result.bodies],
                                  distance="10" if self._sweep == "extrude" else "360", kind=self._sweep,
-                                 title=verb)
+                                 title=verb, planes=planes)
             if len(items) == 1:                 # the only profile: taken at once (as Inventor does)
                 self.view.set_profile_selection([items[0][0]])
         panel.applied.connect(self._apply_extrude)
@@ -2635,7 +2646,9 @@ class MainWindow(QMainWindow):
         if panel is not None:                   # the bodies it joins / cuts: selected in 3D
             self.view.select_keys([("body", b) for b in panel.body_names() or []])
         distance = panel.distance_value() if panel is not None else None
-        if not keys or not isinstance(distance, float):
+        extent = panel.extent_key() if panel is not None else "distance"
+        if not keys or (extent == "distance" and not isinstance(distance, float)) \
+                or (extent != "distance" and not panel.target_name()):
             self.view.set_preview(None)
             return
         built = self.result.outputs[keys[0][1]]
@@ -2649,8 +2662,12 @@ class MainWindow(QMainWindow):
                 axis = axis_of(built, self._axis_text(self.view.axis_key, keys[0][1]), self.part, self.result.outputs)
                 check_side(built, used, axis)
                 shape = revolve_shape(built.frame, onto_axis(built, used, axis), axis[0], axis[1], distance)
-            else:
+            elif extent == "distance":
                 shape = extrude_shape(built.frame, used, distance)
+            else:                               # up to a plane / a body: as the rebuild does it
+                ctx = BuildContext(self.part, self.result.values, self.result.outputs, shapes=self._sweep_shapes)
+                shape = sweep_tool(ctx, built.frame, used, extent, "", panel.target_name(), panel.operation_key(),
+                                   panel.body_names() or [])[0]
         except ValueError as error:             # the axis crosses a profile, is not in the plane...
             self.view.set_preview(None)
             self.statusBar().showMessage(f"{self._sweep.capitalize()}: {error}", 8000)
@@ -2664,6 +2681,7 @@ class MainWindow(QMainWindow):
         keys = list(self.view.profile_selection)
         panel, edit, sweep, axis_key = self.extrude_panel, self._extruding, self._sweep, self.view.axis_key
         operation, target = panel.operation_key(), panel.body_names()
+        extent, to = panel.extent_key(), panel.target_name()
         target = target[0] if target and len(target) == 1 else target
         self._end_extrude()
         if sweep == "revolve" and axis_key is None:
@@ -2672,8 +2690,8 @@ class MainWindow(QMainWindow):
             return
         profiles = [k[2] for k in keys]
         sketch = keys[0][1]
-        amount = {"distance": distance} if sweep == "extrude" else {"angle": distance,
-                                                                       "axis": self._axis_text(axis_key, sketch)}
+        amount = {"distance": distance, "extent": extent, "to": to} if sweep == "extrude" else \
+            {"angle": distance, "axis": self._axis_text(axis_key, sketch)}
         if edit:
             feature = self.part.feature(edit)
             if operation == "new":              # keeps its own name if it made a body already
@@ -3187,8 +3205,9 @@ class MainWindow(QMainWindow):
                        + "\nSelect: Origin X / Y below. Right click: Edit, Duplicate, Redefine (another plane)")
             elif feature.TYPE == "extrude":
                 what = {"new": "into", "join": "joined to", "cut": "cut from", "intersect": "intersected with"}
-                tip = (f"extrusion of {feature['sketch']} by {feature['distance']} mm "
-                       f"{what[feature['operation']]} {feature['body']}")
+                how = f"by {feature['distance']} mm" if feature["extent"] == "distance" else \
+                    f"up to {feature['extent']} {feature['to']}"
+                tip = f"extrusion of {feature['sketch']} {how} {what[feature['operation']]} {feature['body']}"
             elif feature.TYPE == "import":
                 tip = f"import of {feature['file']}: {', '.join(feature.bodies)}\nRight click: Reload"
             elif feature.TYPE == "revolve":
@@ -3479,7 +3498,9 @@ class MainWindow(QMainWindow):
             elif feature.TYPE == "extrude":
                 verb = {"new": "makes", "join": "joins", "cut": "cuts", "intersect": "intersects"}[feature["operation"]]
                 lines += [f"of {feature['sketch']}: {len(feature.profiles)} profile(s)",
-                          f"distance = {feature['distance']} mm", f"{verb} {', '.join(body_list(feature['body']))}"]
+                          f"distance = {feature['distance']} mm" if feature["extent"] == "distance" else
+                          f"up to {feature['extent']} {feature['to']}",
+                          f"{verb} {', '.join(body_list(feature['body']))}"]
                 lines += self._volumes_now(feature)
             elif feature.TYPE == "import":
                 lines += [f"of {feature['file']}", f"{len(feature.bodies)} bodies: {', '.join(feature.bodies)}"]

@@ -51,7 +51,10 @@ All paths below are relative to `myinventor/`; the Python is
   - a line reaching the edge ends exactly on it;
   - conductors may touch or overlap (no union needed); a round pin on a
     flat trace touches along a line only, so add a solder block that
-    overlaps it.
+    overlaps it;
+  - what must end on something else ends there by meaning: `extent =
+    "plane"` / `"body"`, `to = ...` (REFERENCE 8), not a distance computed
+    by hand (a post up to a connector's body, a wall up to a work plane).
 - Steps for showing: one meaningful thing each (the board, the trace,
   the connector, the solder), not one per line.
 

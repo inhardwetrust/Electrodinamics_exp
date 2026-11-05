@@ -9,6 +9,9 @@
 #   B-spline as one B-spline edge), minus its holes;
 # - extrude: the faces swept along the sketch's normal by a distance
 #   (negative: the other way), several regions fused into one solid;
+#   extrude_to_plane: up to a plane (parallel: exact by its distance;
+#   inclined: cut by it); extrude_to_body: until it meets a body (a long
+#   sweep minus the body, the pieces that start on the sketch);
 # - revolve: the faces turned around an axis by an angle, fused into one
 #   solid;
 # - boolean: join (fuse), cut or intersect (common) of two shapes, for the
@@ -25,23 +28,23 @@ import io
 
 import numpy as np
 
-from OCP.BRep import BRep_Builder
+from OCP.BRep import BRep_Builder, BRep_Tool
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
 from OCP.BRepBndLib import BRepBndLib
 from OCP.Bnd import Bnd_Box
 from OCP.BRepCheck import BRepCheck_Analyzer
 from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
 from OCP.BRepGProp import BRepGProp
-from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism, BRepPrimAPI_MakeRevol
+from OCP.BRepPrimAPI import BRepPrimAPI_MakeHalfSpace, BRepPrimAPI_MakePrism, BRepPrimAPI_MakeRevol
 from OCP.BRepTools import BRepTools
 from OCP.GC import GC_MakeArcOfCircle, GC_MakeArcOfParabola
 from OCP.GProp import GProp_GProps
 from OCP.GeomAbs import GeomAbs_C3
 from OCP.ShapeUpgrade import ShapeUpgrade_ShapeDivideContinuity, ShapeUpgrade_UnifySameDomain
-from OCP.TopAbs import TopAbs_SOLID
+from OCP.TopAbs import TopAbs_SOLID, TopAbs_VERTEX
 from OCP.TopExp import TopExp_Explorer
 from OCP.TopoDS import TopoDS, TopoDS_Shape
-from OCP.gp import gp_Ax1, gp_Ax2, gp_Circ, gp_Dir, gp_Parab, gp_Pnt, gp_Vec
+from OCP.gp import gp_Ax1, gp_Ax2, gp_Circ, gp_Dir, gp_Parab, gp_Pln, gp_Pnt, gp_Vec
 
 from geometry.tessellate import body_from_shape
 
@@ -141,6 +144,112 @@ def extrude(frame, regions, distance):
     solid = unify.Shape()
     _check_valid(solid)
     return solid
+
+
+REACH_TOL = 1e-6        # mm: a piece "starts on the sketch" / "reaches the far end" within this
+
+
+def _profile_points(frame, regions):
+    """(N, 3) mm: the outer polygons of the regions in 3D (enough to bound them)."""
+    xy = np.concatenate([r.outer.polygon for r in regions]) * 1e-3
+    return frame.to_world(xy) * 1e3
+
+
+def extrude_to_plane(frame, regions, origin, normal):
+    """
+    The regions swept along the frame's normal up to the plane through
+    `origin` (3,) mm with normal `normal`, on whichever side it is.
+    Returns (shape mm, distance): a plane parallel to the sketch gives an
+    exact extrusion by that distance (signed); an inclined one, a longer one
+    cut by the plane (distance None: no flat end of its own). ValueError if
+    the plane never meets the sweep or crosses a profile.
+    """
+    n, m = np.asarray(frame.normal, float), np.asarray(normal, float)
+    m = m / np.linalg.norm(m)
+    along = float(n @ m)
+    if abs(along) < 1e-9:
+        raise ValueError("the plane runs along the extrusion: it is never reached")
+    points = _profile_points(frame, regions)
+    reach = (np.asarray(origin, float) - points) @ m / along      # mm along n from each profile point
+    if np.all(np.abs(reach) < REACH_TOL):
+        raise ValueError("the plane is the sketch's own: nothing to extrude")
+    if reach.min() < -REACH_TOL and reach.max() > REACH_TOL:
+        raise ValueError("the plane crosses the profile")
+    if abs(abs(along) - 1.0) < 1e-12 or np.ptp(reach) < REACH_TOL:          # parallel: exact
+        distance = float(np.mean(reach))
+        return extrude(frame, regions, distance), distance
+    side = 1.0 if reach.mean() > 0 else -1.0
+    long = extrude(frame, regions, side * (float(np.abs(reach).max()) * 1.5 + 1.0))
+    plane = BRepBuilderAPI_MakeFace(gp_Pln(gp_Pnt(*map(float, origin)), gp_Dir(*map(float, m)))).Face()
+    keep = BRepPrimAPI_MakeHalfSpace(plane, gp_Pnt(*map(float, points[0]))).Solid()     # the sketch's side
+    solid = BRepAlgoAPI_Common(long, keep).Shape()
+    unify = ShapeUpgrade_UnifySameDomain(solid, True, True, False)
+    unify.Build()
+    solid = unify.Shape()
+    _check_valid(solid)
+    return solid, None
+
+
+def extrude_to_body(frame, regions, body):
+    """
+    The regions swept along the frame's normal until they meet `body` (an
+    OCP shape, mm), on the side the body is: a long sweep minus the body,
+    the pieces that start on the sketch. Returns (shape mm, reach: the
+    longest it went, signed). ValueError if no profile meets the body, a
+    part of one misses it (it would go on forever) or starts inside it.
+    """
+    n = np.asarray(frame.normal, float)
+    start = np.asarray(frame.origin, float) * 1e3
+    lo, hi = bounds(body)
+    corners = np.array([[x, y, z] for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])])
+    depth = (corners - start) @ n
+    side = 1.0 if (lo + hi) @ n / 2 - start @ n >= 0 else -1.0
+    far = float(max(side * depth.max(), side * depth.min(), 0.0))
+    if side * depth.max() <= REACH_TOL and side * depth.min() <= REACH_TOL:
+        raise ValueError("the body is not on either side of the sketch")
+    length = far + 1.0 + 0.1 * far
+    long = extrude(frame, regions, side * length)
+    rest = BRepAlgoAPI_Cut(long, body).Shape()
+    if abs(volume(rest) - volume(long)) <= 1e-9 * max(volume(long), 1.0):
+        raise ValueError("the profile never meets the body")
+    pieces, reach = [], 0.0
+    for solid in _each_solid(rest):
+        heights = (_vertices(solid) - start) @ (side * n)
+        if heights.min() > REACH_TOL:
+            continue                            # beyond the body (the sweep went through it)
+        if heights.max() > length - REACH_TOL:
+            raise ValueError("a part of the profile misses the body (it would go on forever)")
+        pieces.append(solid)
+        reach = max(reach, float(heights.max()))
+    if not pieces:
+        raise ValueError("the profile starts inside the body")
+    solid = pieces[0]
+    for piece in pieces[1:]:
+        solid = BRepAlgoAPI_Fuse(solid, piece).Shape()
+    unify = ShapeUpgrade_UnifySameDomain(solid, True, True, False)
+    unify.Build()
+    solid = unify.Shape()
+    _check_valid(solid)
+    return solid, side * reach
+
+
+def _each_solid(shape):
+    explorer, out = TopExp_Explorer(shape, TopAbs_SOLID), []
+    while explorer.More():
+        out.append(TopoDS.Solid(explorer.Current()))
+        explorer.Next()
+    return out
+
+
+def _vertices(shape):
+    """(N, 3) mm: the points of a shape's vertices."""
+    explorer, out = TopExp_Explorer(shape, TopAbs_VERTEX), []
+    while explorer.More():
+        vertex = TopoDS.Vertex(explorer.Current())
+        p = BRep_Tool.Pnt_s(vertex)
+        out.append((p.X(), p.Y(), p.Z()))
+        explorer.Next()
+    return np.array(out)
 
 
 def revolve(frame, regions, point, direction, angle):

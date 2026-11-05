@@ -371,9 +371,10 @@ class Part:
 
     def duplicate_sketch(self, name):
         """
-        A copy of sketch `name` (every entity, its plane and origin), right
-        after it in the history, under a free name (Sketch2...): independent
-        (no extrusion uses it). Returns the copy's name.
+        A copy of sketch `name` (every entity, its plane and origin) at the
+        end of the history (as a new sketch: after what uses the original),
+        under a free name (Sketch2...): independent (nothing uses it).
+        Returns the copy's name.
         """
         original = self.feature(name)
         if original.TYPE != "sketch":
@@ -381,31 +382,75 @@ class Part:
         data = original.to_dict()
         data["name"] = self.free_feature_name("Sketch")
         copy = type(original).from_dict(data)
-        self.features.insert(self.features.index(original) + 1, copy)
+        self.features.append(copy)
         return copy.name
 
     def redefine_sketch(self, name, plane, origin=("0", "0")):
         """
         Sketch `name` moved to another plane (a datum, a work plane, a face
-        "Feature:face") above it in the history, its origin there [x, y]
-        (formulas); its entities keep their own x, y. PartError if the plane
-        is not above it (a feature using the sketch would go round in a circle).
+        "Feature:face"), its origin there [x, y] (formulas); its entities keep
+        their own x, y. A plane below it in the history: the sketch moves to
+        right after that plane, with what depends on it there (moved_after);
+        PartError if the plane itself depends on the sketch (a circle).
+        Returns the features moved (besides the sketch), [] if none.
         """
         sketch = self.feature(name)
         if sketch.TYPE != "sketch":
             raise PartError(f"{name!r} is not a sketch")
         ref = plane.partition(":")[0]
-        above = [d.name for d in self.origin] + [f.name for f in self.features[:self.features.index(sketch)]]
-        if ref not in above:
-            raise PartError(f"{ref!r} is not above {name} in the history" if ref in self.object_names()
-                            else f"no plane {plane!r}")
+        if ref not in self.object_names():
+            raise PartError(f"no plane {plane!r}")
         if ":" not in plane:
             datum = next((d for d in self.origin if d.name == plane), None)
             if (datum is not None and datum.kind != "plane") or \
                     (datum is None and self.feature(plane).TYPE != "workplane"):
                 raise PartError(f"{plane!r} is not a plane")
+        moved = []
+        if ref not in [d.name for d in self.origin] + [f.name for f in self.features[:self.features.index(sketch)]]:
+            moved = self.move_after(name, ref)
         sketch.values["plane"] = plane
         sketch.values["origin"] = [str(v) for v in origin]
+        return moved
+
+    def depends_on(self, feature, names):
+        """
+        Whether a feature uses any of the features `names`: refers to one (a
+        sketch, a plane, a face), or changes / goes up to a body one of them
+        makes or changes.
+        """
+        if set(feature.references()) & set(names):
+            return True
+        used = []
+        if "operation" in feature.values and feature["operation"] != "new":
+            used += body_list(feature["body"])
+        if feature.values.get("extent") == "body":
+            used.append(feature["to"])
+        made = {b for n in names for b in self.feature_bodies(self.feature(n))}
+        return bool(made & set(used))
+
+    def move_after(self, name, target):
+        """
+        Feature `name` moved down the history to right after feature
+        `target`, with the features between them that depend on it (in their
+        order). PartError if `target` depends on it (through them). Returns
+        the other features moved.
+        """
+        order = [f.name for f in self.features]
+        start, end = order.index(name), order.index(target)
+        if end < start:
+            return []
+        moved = [name]
+        for other in order[start + 1:end + 1]:
+            if self.depends_on(self.feature(other), moved):
+                if other == target:
+                    raise PartError(f"{target!r} depends on {name}"
+                                    + (f" (through {', '.join(moved[1:])})" if len(moved) > 1 else "")
+                                    + ": it cannot be its plane")
+                moved.append(other)
+        kept = [f for f in self.features if f.name not in moved]
+        at = [f.name for f in kept].index(target) + 1
+        self.features = kept[:at] + [self.feature(n) for n in moved] + kept[at:]
+        return moved[1:]
 
     def feature_users(self, name):
         """Features that refer to `name`."""

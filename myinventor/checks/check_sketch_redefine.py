@@ -123,7 +123,13 @@ body = "Pad"
 name = "Sketch3"
 type = "sketch"
 plane = "XY Plane"
-{rect("R", 30, 0, 32, 2)}'''
+{rect("R", 30, 0, 32, 2)}
+[[feature]]
+name = "WorkPlane3"
+type = "workplane"
+base = "XY Plane"
+offset = "20"
+'''
 
 
 def pad_bounds(part):
@@ -166,8 +172,8 @@ def check_model():
     copy = part.duplicate_sketch("Sketch2")
     names = [f.name for f in part.features]
     original = part.feature("Sketch2")
-    check("Duplicate: Sketch4 right after Sketch2", copy == "Sketch4" and names.index(copy) == names.index("Sketch2") + 1,
-          f"{names}")
+    check("Duplicate: Sketch4 at the end of the history (after what uses the original)",
+          copy == "Sketch4" and names[-1] == copy, f"{names}")
     duplicate = part.feature(copy)
     same = {k: v for k, v in original.to_dict().items() if k != "name"} == \
         {k: v for k, v in duplicate.to_dict().items() if k != "name"}
@@ -184,14 +190,36 @@ def check_model():
     part.redefine_sketch("Sketch2", "WorkPlane1", ["1", "0"])
     bounds, _ = pad_bounds(part)
     check("  onto WorkPlane1, origin (1, 0): z 5..6, x 3..5", near(bounds, [[3, 2, 5], [5, 4, 6]]), f"{bounds}")
-    check("  onto its own extrusion's face: refused (below it)",
-          refused(lambda: part.redefine_sketch("Sketch2", "PadExt:end"), "not above"))
+    check("  onto its own extrusion's face: refused (PadExt depends on it)",
+          refused(lambda: part.redefine_sketch("Sketch2", "PadExt:end"), "depends on Sketch2"))
     check("  onto an axis: refused", refused(lambda: part.redefine_sketch("Sketch2", "X Axis"), "not a plane"))
     check("  onto a sketch: refused", refused(lambda: part.redefine_sketch("Sketch2", "Sketch1"), "not a plane"))
-    check("  onto a sketch below: refused", refused(lambda: part.redefine_sketch("Sketch2", "Sketch3"), "not above"))
+    check("  onto a sketch below: refused", refused(lambda: part.redefine_sketch("Sketch2", "Sketch3"), "not a plane"))
     part.redefine_sketch("Sketch2", "XY Plane")
     bounds, _ = pad_bounds(part)
     check("  back onto XY: where it was", near(bounds, [[2, 2, 0], [4, 4, 1]]), f"{bounds}")
+
+    # A plane made later (below it in the history): the sketch goes after it, with what depends on it.
+    from model.extrude import Extrude
+    from model.workplane import WorkPlane
+
+    part.add_feature(Extrude("Grow", profiles=[["PL0", "PL1", "PL2", "PL3"]], sketch="Sketch2", distance="-1",
+                             operation="join", body="Pad"))
+    part.features.insert([f.name for f in part.features].index("Sketch3"), part.features.pop())   # before Sketch3
+    part.add_feature(WorkPlane("WorkPlane2", base="XY Plane", offset="10"))
+    before = [f.name for f in part.features]
+    moved = part.redefine_sketch("Sketch2", "WorkPlane2")
+    after = [f.name for f in part.features]
+    check("onto a work plane made later: Sketch2 moves after it, with PadExt and Grow (joins Pad)",
+          after[after.index("WorkPlane2") + 1:after.index("WorkPlane2") + 4] == ["Sketch2", "PadExt", "Grow"]
+          and moved == ["PadExt", "Grow"], f"{before} -> {after}")
+    check("  the rest keeps its order", [n for n in after if n not in ("Sketch2", "PadExt", "Grow")]
+          == [n for n in before if n not in ("Sketch2", "PadExt", "Grow")])
+    bounds, result = pad_bounds(part)
+    check("  it builds there: the pad at z 9..11", not result.feature_errors and near(bounds, [[2, 2, 9], [4, 4, 11]]),
+          f"{bounds} {result.feature_errors}")
+    check("  the file reads back (every reference above its user)",
+          from_data(tomllib.loads(dumps(part))).to_dict() == part.to_dict())
 
 
 def props(window):
@@ -254,7 +282,7 @@ def check_window():
     window._plane_picked(pad_top)
     settle()
     check("  a face of its own extrusion: refused, said why", window.part.feature("Sketch2")["plane"] == "XY Plane"
-          and "not above" in window.statusBar().currentMessage(), window.statusBar().currentMessage())
+          and "depends on Sketch2" in window.statusBar().currentMessage(), window.statusBar().currentMessage())
 
     steps = len(window.doc._undo)
     window.start_redefine("Sketch2")
@@ -290,8 +318,31 @@ def check_window():
     lo, _ = kernel.bounds(window.result.shapes["Pad"])
     check("a click on WorkPlane1: onto it, origin (0, 0), z 5", window.part.feature("Sketch2")["plane"] == "WorkPlane1"
           and window.part.feature("Sketch2")["origin"] == ["0", "0"] and abs(lo[2] - 5) < 1e-9, f"{lo}")
+
+    window.start_redefine("Sketch2")
+    settle()
+    window._plane_picked(("datum", "WorkPlane3"))           # the last feature: below Sketch2
+    settle()
+    order = [f.name for f in window.part.features]
+    lo, _ = kernel.bounds(window.result.shapes["Pad"])
+    check("a click on WorkPlane3 (made after it): Sketch2 and PadExt move after it, the pad at z 20",
+          order[-3:] == ["WorkPlane3", "Sketch2", "PadExt"] and abs(lo[2] - 20) < 1e-9, f"{order} {lo}")
+    message = window.statusBar().currentMessage()
+    check("  said so: moved after WorkPlane3 with PadExt", "moved after WorkPlane3 with PadExt" in message, message)
+    check("  the browser in that order (PadExt with Sketch2 under it, after WorkPlane3)",
+          _top_rows(window).index("PadExt") > _top_rows(window).index("WorkPlane3"), f"{_top_rows(window)}")
+    window.undo()
+    settle()
+    check("  undo: the old order", [f.name for f in window.part.features].index("Sketch2")
+          < [f.name for f in window.part.features].index("WorkPlane3"))
     window.close()
     check("no error dialogs", not errors, f"{errors}")
+
+
+def _top_rows(window):
+    """The names of the part's top rows in the browser, in order."""
+    root = window.tree.topLevelItem(0)
+    return [root.child(i).text(0) for i in range(root.childCount())]
 
 
 BREAK = f'''format = "mycad-part"
