@@ -4,7 +4,8 @@
 #   - its value drawn at its right, in grey ("= 12.5"); a formula that does
 #     not evaluate: a red frame, the error in its tooltip;
 #   - the parameter names completed while typing: a popup of the names that
-#     start with the word at the cursor (any case); Enter / Tab / a click
+#     start with the word at the cursor (any case; "mycenter." offers its
+#     fields, mycenter.x...); Enter / Tab / a click
 #     puts the name in place of that word, and only that (the Enter that
 #     takes a name does not finish the field: editingFinished waits).
 # accepted() is whether the text evaluates. Qt only (no model but the
@@ -18,7 +19,7 @@ from PySide6.QtWidgets import QCompleter, QLineEdit
 
 from model.expressions import ExpressionError, evaluate
 
-WORD = re.compile(r"[A-Za-z_][A-Za-z_0-9]*$")
+WORD = re.compile(r"[A-Za-z_][A-Za-z_0-9]*(\.[A-Za-z_0-9]*)?$")       # a field too: "mycenter.x"
 ERROR_STYLE = "QLineEdit { border: 1px solid #c81e1e; }"
 
 

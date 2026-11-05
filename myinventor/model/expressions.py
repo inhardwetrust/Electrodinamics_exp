@@ -13,6 +13,13 @@
 # order (a parameter may use one defined below it); every error names its
 # parameter: a syntax error, an unknown name, a cycle, a dependency with an
 # error, a value that is not finite.
+#
+# A parameter with fields (model/part.py: `mycenter` with x, y) is one value
+# per field, named "mycenter.x", "mycenter.y": a formula reads a field as
+# `mycenter.x` (one level: name.field, nothing else after a dot), and the
+# values, errors and dependencies are per field. The bare name of such a
+# parameter is not a number (an error saying which fields it has); using it
+# whole is for later.
 
 import ast
 import keyword
@@ -71,6 +78,10 @@ def parse(text):
 def _check(node, text):
     if isinstance(node, (ast.Expression, ast.Load, ast.Name)) or type(node) in _BINARY or type(node) in _UNARY:
         return
+    if isinstance(node, ast.Attribute):
+        if isinstance(node.value, ast.Name):
+            return
+        raise ExpressionError(f"only name.field is allowed after a dot in {text!r}")
     if isinstance(node, (ast.BinOp, ast.UnaryOp)):
         if type(node.op) in _BINARY or type(node.op) in _UNARY:
             return
@@ -88,11 +99,27 @@ def _check(node, text):
 
 
 def names(text):
-    """The parameter names a formula uses (functions and constants left out)."""
+    """
+    The parameter names a formula uses (functions and constants left out);
+    a field as "name.field".
+    """
     tree = parse(text)
-    called = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
-    return {n.id for n in ast.walk(tree)
-            if isinstance(n, ast.Name) and id(n) not in called and n.id not in CONSTANTS}
+    skip = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
+    used = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Attribute):
+            skip.add(id(n.value))
+            used.add(f"{n.value.id}.{n.attr}")
+    return used | {n.id for n in ast.walk(tree)
+                   if isinstance(n, ast.Name) and id(n) not in skip and n.id not in CONSTANTS}
+
+
+def unknown(name, known):
+    """The error text for a name that is not among `known` (names, "s.f" fields)."""
+    fields = sorted(k for k in known if k.startswith(name + "."))
+    if fields:
+        return f"{name!r} has fields ({', '.join(fields)}): use one of them"
+    return f"unknown name {name!r}"
 
 
 def evaluate(text, values):
@@ -130,7 +157,12 @@ def _eval(node, values):
             return float(values[node.id])
         if node.id in CONSTANTS:
             return CONSTANTS[node.id]
-        raise ExpressionError(f"unknown name {node.id!r}")
+        raise ExpressionError(unknown(node.id, values))
+    if isinstance(node, ast.Attribute):
+        key = f"{node.value.id}.{node.attr}"
+        if key in values:
+            return float(values[key])
+        raise ExpressionError(f"unknown name {key!r}")
     if isinstance(node, ast.BinOp):
         return float(_BINARY[type(node.op)](_eval(node.left, values), _eval(node.right, values)))
     if isinstance(node, ast.UnaryOp):
@@ -141,8 +173,18 @@ def _eval(node, values):
 
 
 def rename(text, old, new):
-    """The formula with the parameter `old` renamed to `new` (whole names only)."""
-    return re.sub(rf"\b{re.escape(old)}\b", new, text)
+    """
+    The formula with the parameter `old` renamed to `new` (whole names
+    only, never a field of something else: renaming x leaves c.x alone).
+    `old` may be a field ("c.x" -> "c.u"); renaming c renames c.x to new.x.
+    """
+    pattern = r"\s*\.\s*".join(re.escape(p) for p in old.split("."))
+
+    def replace(match):
+        before = text[:match.start()].rstrip()
+        return match.group() if before.endswith(".") else new        # a field of something else
+
+    return re.sub(rf"(?<!\w){pattern}\b", replace, text)
 
 
 def evaluate_parameters(parameters):
@@ -168,7 +210,7 @@ def evaluate_parameters(parameters):
             return
         for used in uses[name]:
             if used not in formulas:
-                errors[name] = f"unknown name {used!r}"
+                errors[name] = unknown(used, formulas)
                 return
             visit(used, path + [name])
             if name in errors:                  # it was on a cycle found below

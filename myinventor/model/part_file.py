@@ -13,7 +13,13 @@
 #   formula = "1.6"
 #   comment = "line width"        # optional
 #
-#   [[feature]]                   # in history order, see model/features.py
+#   [[parameter]]                 # with fields instead of a formula (read as c.x)
+#   name = "c"
+#   [parameter.fields]
+#   x = "w / 2"
+#   y = "c.x + 1"
+#
+#   [[feature]]                # in history order, see model/features.py
 #   name = "Extrusion1"
 #   type = "extrude"
 #   ...

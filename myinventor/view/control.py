@@ -33,7 +33,7 @@
 #   unlock [message]            give it back; message in the status bar
 #   open path / reload          read a part / the open one again (no dialog:
 #                               a file that does not read is an error answer)
-#   set NAME=FORMULA ...        parameters, one undo step; answer: the report
+#   set NAME=FORMULA ...        parameters (a field: mycenter.x=5), one undo step; answer: the report
 #   save                        write the part (and its STEP if STEP on Save)
 #   export_step path            the bodies to a STEP file
 #   view name / fit             a standard view (iso, top, ...) / frame the model

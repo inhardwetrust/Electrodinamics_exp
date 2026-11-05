@@ -573,6 +573,8 @@ class MainWindow(QMainWindow):
         self.parameters = ParametersPanel()
         self.parameters.edited.connect(self._parameter_edited)
         self.parameters.add_requested.connect(self._add_parameter)
+        self.parameters.add_fields_requested.connect(self._add_parameter)
+        self.parameters.add_field_requested.connect(self._add_parameter_field)
         self.parameters.delete_requested.connect(self._delete_parameters)
 
         self.side_tabs = QTabWidget()
@@ -2894,7 +2896,7 @@ class MainWindow(QMainWindow):
         if QApplication.activeModalWidget() is not None or QApplication.activePopupWidget() is not None:
             return "a dialog or a menu is open"
         if self.tree.state() == QAbstractItemView.EditingState \
-                or self.parameters.table.state() == QAbstractItemView.EditingState:
+                or self.parameters.tree.state() == QAbstractItemView.EditingState:
             return "editing a field"
         return ""
 
@@ -2937,14 +2939,14 @@ class MainWindow(QMainWindow):
         name that is not a parameter, or a formula that does not evaluate:
         the error text, nothing changed.
         """
-        names = [p.name for p in self.part.parameters]
+        names = self.part.value_names()
         missing = [name for name in formulas if name not in names]
         if missing:
             return f"no parameter named {missing}; parameters: {names}"
-        before = evaluate_parameters([(p.name, p.formula) for p in self.part.parameters])[1]
+        before = evaluate_parameters(self.part.formula_rows())[1]
         for name, formula in formulas.items():
-            self.part.parameter(name).formula = formula
-        errors = evaluate_parameters([(p.name, p.formula) for p in self.part.parameters])[1]
+            self.part.set_formula(name, formula)
+        errors = evaluate_parameters(self.part.formula_rows())[1]
         broken = {name: error for name, error in errors.items() if name in formulas or name not in before}
         if broken:
             self.doc.revert()
@@ -2967,11 +2969,12 @@ class MainWindow(QMainWindow):
     # =====================================================
 
     def _parameter_edited(self, name, column, text):
+        """name: a parameter's or a field's ("mycenter.x")."""
         try:
             if column == NAME:
                 self.part.rename_parameter(name, text.strip())
             elif column == FORMULA:
-                self.part.parameter(name).formula = text.strip()
+                self.part.set_formula(name, text.strip())
             elif column == COMMENT:
                 self.part.parameter(name).comment = text
         except PartError as error:
@@ -2981,12 +2984,16 @@ class MainWindow(QMainWindow):
             return
         self._commit()
 
-    def _add_parameter(self):
-        name = self.part.add_parameter()
+    def _add_parameter(self, fields=None):
+        """A new parameter (fields: a list of field names: one with fields, each = 0), its name being edited."""
+        name = self.part.add_parameter(fields=None if fields is None else {f: "0" for f in fields})
         self._commit()
-        row = self.parameters.row_of(name)
-        self.parameters.table.setCurrentCell(row, NAME)
-        self.parameters.table.editItem(self.parameters.table.item(row, NAME))
+        self.parameters.edit(name)
+
+    def _add_parameter_field(self, name):
+        field_ = self.part.add_field(name)
+        self._commit()
+        self.parameters.edit(f"{name}.{field_}")
 
     def _delete_parameters(self, names):
         try:

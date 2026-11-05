@@ -80,7 +80,7 @@ def rebuild(part, upto=None, folder=None, tessellate=True, placement=True):
     sees: a sketch, its faces), no transform applied.
     """
     result = Result(upto=upto)
-    result.values, result.errors = evaluate_parameters([(p.name, p.formula) for p in part.parameters])
+    result.values, result.errors = evaluate_parameters(part.formula_rows())
     ctx = BuildContext(part, result.values, result.outputs, parameter_errors=result.errors, folder=folder)
 
     for feature in part.features:

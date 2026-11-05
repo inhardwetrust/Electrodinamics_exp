@@ -81,6 +81,12 @@ its text): `"1.6"`, `"patch_w / 2 + gap"`, `"sqrt(a^2 + b^2)"`.
 - Names: the parameters only. A parameter may use one defined below it;
   cycles, unknown names, non-finite values are errors naming the
   parameter (and every feature using it fails).
+- **Fields**: a parameter with fields (`mycenter` with `x`, `y`; any
+  field names, one level) is read field by field: `mycenter.x`. Each field
+  is its own formula, value and error (`mycenter.y = "mycenter.x / 2"`
+  works; cycles through fields are found). The bare name `mycenter` is not
+  a number: an error listing its fields (using it whole is for later).
+  Nothing else goes after a dot (`a.b.c`, `sqrt(a).x` are refused).
 - Lengths in mm, angles in degrees. Walked as an `ast`, never `eval`ed.
 
 ## 4. The part file
@@ -95,6 +101,13 @@ its text): `"1.6"`, `"patch_w / 2 + gap"`, `"sqrt(a^2 + b^2)"`.
     name = "h"
     formula = "1.6"
     comment = "substrate"          # optional
+
+    [[parameter]]                  # a parameter with fields: no formula of its own
+    name = "mycenter"
+    comment = "the patch's center" # optional
+    [parameter.fields]             # field = formula, in order (read as mycenter.x)
+    x = "board_w / 2"
+    y = "mycenter.x - 3"
 
     [[feature]]                    # in history order: a feature uses only what is above it
     name = "Sketch1"
@@ -369,7 +382,8 @@ construction line on the axis:
 `cli.report(part, result)` (the CLI's `--json`, the window's `status`,
 the answers of `set` / `undo` / `redo`):
 
-    {"parameters": [{"name", "formula", "value" | "error"}],
+    {"parameters": [{"name", "formula", "value" | "error"}
+                    | {"name", "fields": {field: {"formula", "value" | "error"}}}],
      "features": [{"name", "type", "error"?,
                    sketch: "plane", "points" (count), "lines", "circles", "polylines", "arcs",
                            "curves" [{name, kind, args, visible, start, end}],
@@ -395,7 +409,7 @@ without `--json`) has one fact per line and ends with `ok` or `NOT OK`.
 - `--export-step X`: the bodies built (a failed feature's are left out;
   the output says which).
 - `--set NAME=FORMULA` (repeatable): a parameter's formula for this run
-  only, the file untouched: sweep variants.
+  only, the file untouched: sweep variants. A field: `--set mycenter.x=5`.
 - Exit code 0 all built, 1 something failed (the report says what; the
   STEP is still written), 2 the file does not read, `--set` names no
   parameter, or the STEP was not written.
@@ -426,7 +440,7 @@ load `ui.py` by path and call `send("set", app="mycad", h="1.6")`.
 | `unlock` | yes | `message` | control back; the message in the status bar |
 | `open` | yes | `path` | open a part (refused with unsaved edits; a bad file: error, nothing changes) |
 | `reload` | yes | | the file again, one undo step, the camera kept |
-| `set` | yes | `NAME=FORMULA ...` | parameters, one undo step; answer: the report. Unknown name or a formula that does not evaluate: error, nothing changed |
+| `set` | yes | `NAME=FORMULA ...` | parameters (a field: `mycenter.x=5`), one undo step; answer: the report. Unknown name or a formula that does not evaluate: error, nothing changed |
 | `save` | yes | | write the part (and `name.step` beside it if the user's STEP on Save is on). Refused if the file changed on disk since read |
 | `export_step` | yes | `path` | the bodies to STEP; answer `{path, note}` (note: failed features left out) |
 | `view` | yes | `name` | `iso`, `top`, `bottom`, `front`, `back`, `left`, `right` (as the view buttons) |
@@ -475,7 +489,10 @@ What the user can do by hand (to talk about it, and to know what they see):
   Selecting a feature lights what it made (blue; a cut's removed volume
   red). Right click: rename, color, group, delete, edit. A transform's eye
   suppresses it (one undo step).
-  **Parameters** tab: the table of formulas.
+  **Parameters** tab: the table of formulas, as a tree: a parameter with
+  fields is a row (its values together, "(10, 5)") with a row per field
+  under it. Add, With Fields (Point 2D: x, y; Point 3D: x, y, z; none),
+  Add Field (to the selected one), Delete (refused while used).
 - **3D**: middle drag rotates, Ctrl + middle (or Space + left) pans, the
   wheel or a right drag zooms, a right click opens a menu (New Sketch on
   a face), left click selects. View buttons (Iso, Top, Front...) top

@@ -64,9 +64,25 @@ def settle(ms=30):
     QTest.qWait(ms)
 
 
+class _Cell:
+    """A parameter row's cell (the panel is a tree: an item and a column)."""
+
+    def __init__(self, item, column):
+        self.item, self.column = item, column
+
+    def text(self):
+        return self.item.text(self.column)
+
+    def toolTip(self):
+        return self.item.toolTip(self.column)
+
+    def setText(self, text):
+        self.item.setText(self.column, text)
+
+
 def cell(window, name, column):
-    table = window.parameters.table
-    return table.item(window.parameters.row_of(name), column)
+    item = window.parameters.item_of(name)
+    return None if item is None else _Cell(item, column)
 
 
 def edit(window, name, column, text):

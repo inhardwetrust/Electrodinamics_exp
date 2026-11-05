@@ -8,10 +8,12 @@
 #   python main.py name.part.toml --report --json          the same as JSON
 #   python main.py name.part.toml --export-step out.step   rebuild, write STEP
 #   python main.py name.part.toml --set NAME=FORMULA ...   a parameter's formula
-#       for this run only (the file is not written): a variant of a sweep
+#       for this run only (the file is not written): a variant of a sweep;
+#       a field of a parameter with fields: --set mycenter.x=5
 #   (the flags may go together)
 #
-# The report: the parameters (formula -> value, or the error), each feature
+# The report: the parameters (formula -> value, or the error; one with
+# fields: "fields" {field: {formula, value | error}}), each feature
 # (ok or why it failed; a sketch: its curves and its profiles, each with its
 # key as an extrusion names it and its area; an extrusion: its profiles,
 # distance, operation, body) and the bodies (exact volume, solids, exact
@@ -33,9 +35,12 @@ from model.rebuild import rebuild
 def report(part, result):
     """The report as plain data (see the top)."""
     values = result.values
-    parameters = [{"name": p.name, "formula": p.formula,
-                   **({"error": result.errors[p.name]} if p.name in result.errors
-                      else {"value": values.get(p.name)})} for p in part.parameters]
+    def evaluated(name, formula):
+        return {"formula": formula, **({"error": result.errors[name]} if name in result.errors
+                                       else {"value": values.get(name)})}
+
+    parameters = [{"name": p.name, "fields": {row.partition(".")[2]: evaluated(row, text) for row, text in p.rows()}}
+                  if p.has_fields else {"name": p.name, **evaluated(p.name, p.formula)} for p in part.parameters]
     features = []
     for feature in part.features:
         row = {"name": feature.name, "type": feature.TYPE}
@@ -113,8 +118,11 @@ def text(data):
     """The report as text, one fact per line."""
     lines = ["parameters:" if data["parameters"] else "parameters: none"]
     for p in data["parameters"]:
-        lines.append(f"  {p['name']} = {p['formula']}  ->  "
-                     + (f"ERROR: {p['error']}" if "error" in p else f"{p['value']:g}"))
+        rows = ([(f"{p['name']}.{f}", v) for f, v in p["fields"].items()] or [(f"{p['name']}", None)]) \
+            if "fields" in p else [(p["name"], p)]
+        for name, v in rows:
+            lines.append(f"  {name}: no fields" if v is None else f"  {name} = {v['formula']}  ->  "
+                         + (f"ERROR: {v['error']}" if "error" in v else f"{v['value']:g}"))
     lines.append("features:" if data["features"] else "features: none")
     for f in data["features"]:
         head = f"  {f['name']} ({f['type']}): " + (f"FAILED: {f['error']}" if "error" in f else "ok")
@@ -183,12 +191,12 @@ def run(path, want_report, as_json, step_path, out=sys.stdout, formulas=None):
     except PartFileError as error:
         print(f"cannot read the part: {error}", file=out)
         return 2
-    names = [p.name for p in part.parameters]
+    names = part.value_names()
     for name, formula in (formulas or {}).items():
         if name not in names:
             print(f"--set {name}: no such parameter; parameters: {', '.join(names) or 'none'}", file=out)
             return 2
-        part.parameter(name).formula = formula
+        part.set_formula(name, formula)
     result = rebuild(part, folder=os.path.dirname(os.path.abspath(path)))
     data = report(part, result)
     if want_report:

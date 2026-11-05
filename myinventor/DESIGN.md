@@ -66,6 +66,12 @@ Principles that sidestep them:
 - **Every numeric field is a formula** of the parameters (mm, deg; trig in
   degrees). Parameters evaluate in dependency order; errors name the
   parameter. Formulas are walked as an `ast`, never `eval`ed.
+- **Parameters with fields** (`mycenter` with x, y; any names, one level;
+  `[parameter.fields]`): each field is one value named "mycenter.x" in the
+  flat value table, so dependencies, cycles and errors are per field and
+  nothing downstream changes. Formulas read `name.field`; the bare name is
+  an error for now. Later: the whole parameter where a field takes several
+  numbers (a point's x, y; a Move's offset), checked by its field names.
 - **A feature type** is a `Feature` subclass registered with
   `@feature_type`: `TYPE`, `FIELDS` (validation, later the property panel),
   `build(ctx)`. A failing feature is marked; the ones that use it fail too,

@@ -1,7 +1,8 @@
 # part.py
 #
 # The part document: what is saved and edited, never what is computed.
-#   parameters   [Parameter]: name = formula, in table order (model/expressions.py)
+#   parameters   [Parameter]: name = formula, in table order (model/expressions.py),
+#                or a name with fields ({field: formula}), read as name.field
 #   origin       YZ / XZ / XY Plane, X / Y / Z Axis, Center Point: fixed,
 #                only their visibility is the user's
 #   features     [Feature] in history order (model/features.py); a feature
@@ -35,7 +36,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from model.expressions import ExpressionError, name_error, names, rename
+from model.expressions import RESERVED, ExpressionError, name_error, names, rename
 from model.features import FEATURE_TYPES, FeatureError
 from model.features import body_list
 from model import extrude, importstep, revolve, sketch, workplane  # noqa: F401  (register the feature types)
@@ -111,9 +112,35 @@ class Group:
 
 @dataclass
 class Parameter:
+    """
+    A plain parameter (name = formula), or one with fields (`fields` not
+    None: {field: formula}, in order), read in formulas as name.field:
+        [[parameter]]
+        name = "mycenter"
+        [parameter.fields]
+        x = "board_w / 2"
+        y = "mycenter.x - 3"
+    """
     name: str
-    formula: str
+    formula: str = ""
     comment: str = ""
+    fields: dict = None
+
+    @property
+    def has_fields(self):
+        return self.fields is not None
+
+    def rows(self):
+        """[(name, formula)] of what it evaluates: itself, or each field as "name.field"."""
+        if self.fields is None:
+            return [(self.name, self.formula)]
+        return [(f"{self.name}.{f}", text) for f, text in self.fields.items()]
+
+    def rename_formulas(self, rename):
+        if self.fields is None:
+            self.formula = rename(self.formula)
+        else:
+            self.fields = {f: rename(text) for f, text in self.fields.items()}
 
 
 @dataclass
@@ -344,41 +371,130 @@ class Part:
             n += 1
         return f"{stem}{n}"
 
-    def add_parameter(self, name=None, formula="0", comment=""):
+    def add_parameter(self, name=None, formula="0", comment="", fields=None):
+        """A parameter at the end; fields ({field: formula}, maybe empty): one with fields. Returns its name."""
         name = name or self.free_parameter_name()
         self._check_parameter_name(name)
-        self.parameters.append(Parameter(name, formula, comment))
+        if fields is not None:
+            fields = dict(fields)
+            for f in fields:
+                _check_field_name(name, f)
+        self.parameters.append(Parameter(name, "" if fields is not None else formula, comment, fields))
         return name
 
+    def formula_rows(self):
+        """[(name, formula)] of every value the parameters make, a field as "name.field", in table order."""
+        return [row for p in self.parameters for row in p.rows()]
+
+    def value_names(self):
+        """The names a formula may read (plain parameters, "name.field")."""
+        return [name for name, _ in self.formula_rows()]
+
+    def formula_of(self, name):
+        """The formula of a plain parameter or of a field "name.field"; PartError if there is none."""
+        owner, field_ = self._split(name)
+        return owner.formula if field_ is None else owner.fields[field_]
+
+    def set_formula(self, name, formula):
+        owner, field_ = self._split(name)
+        if field_ is None:
+            owner.formula = formula
+        else:
+            owner.fields[field_] = formula
+
+    def _split(self, name):
+        """(Parameter, field or None) of "name" / "name.field"; PartError if it holds no formula."""
+        stem, _, field_ = name.partition(".")
+        try:
+            owner = self.parameter(stem)
+        except KeyError:
+            raise PartError(f"no parameter {stem!r}") from None
+        if not field_ and owner.has_fields:
+            raise PartError(f"{stem!r} has fields ({', '.join(owner.fields) or 'none yet'}): "
+                            f"name one ({stem}.{next(iter(owner.fields), 'x')})")
+        if field_ and (not owner.has_fields or field_ not in owner.fields):
+            raise PartError(f"{stem!r} has no field {field_!r}")
+        return owner, field_ or None
+
+    def add_field(self, name, field_=None, formula="0"):
+        """A field at the end of parameter `name` (x, y, z, then f1, f2... when not given). Returns the field."""
+        owner = self.parameter(name)
+        if not owner.has_fields:
+            raise PartError(f"{name!r} is a plain parameter, it has no fields")
+        if field_ is None:
+            field_ = next((f for f in ("x", "y", "z") if f not in owner.fields), None)
+            n = 1
+            while field_ is None or field_ in owner.fields:
+                field_, n = f"f{n}", n + 1
+        _check_field_name(name, field_)
+        if field_ in owner.fields:
+            raise PartError(f"{name!r} has a field {field_!r} already")
+        owner.fields[field_] = formula
+        return field_
+
     def rename_parameter(self, old, new):
-        """Renames a parameter and every formula that uses it."""
-        if old == new:
-            return
-        parameter = self.parameter(old)
-        self._check_parameter_name(new)
-        parameter.name = new
+        """
+        Renames a parameter and every formula that uses it (its fields:
+        c.x -> new.x). A field: old "c.x", new "u" or "c.u" (it stays in c).
+        """
+        if "." in old:
+            owner, field_ = self._split(old)
+            new = new.rpartition(".")[2] if new.startswith(owner.name + ".") or "." not in new else new
+            if "." in new:
+                raise PartError(f"{new!r}: a field stays in its parameter ({owner.name}.<field>)")
+            if new == field_:
+                return
+            _check_field_name(owner.name, new)
+            if new in owner.fields:
+                raise PartError(f"{owner.name!r} has a field {new!r} already")
+            owner.fields = {(new if f == field_ else f): text for f, text in owner.fields.items()}
+            old, new = f"{owner.name}.{field_}", f"{owner.name}.{new}"
+        else:
+            if old == new:
+                return
+            parameter = self.parameter(old)
+            self._check_parameter_name(new)
+            parameter.name = new
         for p in self.parameters:
-            p.formula = rename(p.formula, old, new)
+            p.rename_formulas(lambda text: rename(text, old, new))
         for f in self.features + self.transforms:
             f.rename_formulas(lambda text: rename(text, old, new))
 
     def parameter_users(self, name):
-        """Parameters and features whose formulas use `name`."""
+        """
+        What uses `name`: parameters (a field as "c.y") and features. A
+        parameter with fields: the users of any of them but its own fields.
+        """
+        stem = name.partition(".")[0]
+        try:
+            owner = self.parameter(stem)
+        except KeyError:
+            owner = None
+        whole = "." not in name and owner is not None and owner.has_fields
+        targets = {name} | ({row for row, _ in owner.rows()} if whole else set())
         users = []
         for p in self.parameters:
-            if p.name != name and name in _names_or_empty(p.formula):
-                users.append(p.name)
+            for row, text in p.rows():
+                if row not in targets and not (whole and p is owner) and targets & _names_or_empty(text):
+                    users.append(row)
         for f in self.features + self.transforms:
-            if any(name in _names_or_empty(text) for _, text in f.formulas()):
+            if any(targets & _names_or_empty(text) for _, text in f.formulas()):
                 users.append(f.name)
         return users
 
     def delete_parameter(self, name):
-        """Deletes an unused parameter (PartError names the users otherwise)."""
+        """Deletes an unused parameter, or field "c.x" (PartError names the users otherwise)."""
+        if "." in name:
+            owner, field_ = self._split(name)
+        else:
+            owner, field_ = self.parameter(name), None
         users = self.parameter_users(name)
         if users:
             raise PartError(f"{name!r} is used by {', '.join(users)}")
-        self.parameters.remove(self.parameter(name))
+        if field_ is None:
+            self.parameters.remove(owner)
+        else:
+            del owner.fields[field_]
 
     def _check_parameter_name(self, name):
         error = name_error(name)
@@ -397,7 +513,9 @@ class Part:
         if visible:
             data["origin"] = {"visible": visible}
         if self.parameters:
-            data["parameter"] = [{"name": p.name, "formula": p.formula, **({"comment": p.comment} if p.comment else {})}
+            data["parameter"] = [{"name": p.name,
+                                  **({"fields": dict(p.fields)} if p.has_fields else {"formula": p.formula}),
+                                  **({"comment": p.comment} if p.comment else {})}
                                  for p in self.parameters]
         if self.features:
             data["feature"] = [f.to_dict() for f in self.features]
@@ -456,16 +574,24 @@ class Part:
             where = f"parameter {i}"
             if not isinstance(row, dict):
                 raise PartError(f"{where} must be a table")
-            _keys(row, where, allowed={"name", "formula", "comment"}, required={"name", "formula"})
-            name, formula, comment = row["name"], row["formula"], row.get("comment", "")
+            _keys(row, where, allowed={"name", "formula", "fields", "comment"}, required={"name"})
+            name, comment = row["name"], row.get("comment", "")
             if not isinstance(name, str):
                 raise PartError(f"{where}: name must be a string")
+            if ("formula" in row) == ("fields" in row):
+                raise PartError(f"{where} ({name}): give either formula or fields")
+            formula, fields = row.get("formula", "0"), row.get("fields")
             if isinstance(formula, bool) or not isinstance(formula, (str, int, float)):
                 raise PartError(f"{where} ({name}): formula must be a string or a number")
+            if fields is not None:
+                if not isinstance(fields, dict) or any(
+                        isinstance(v, bool) or not isinstance(v, (str, int, float)) for v in fields.values()):
+                    raise PartError(f"{where} ({name}): fields must be a table of formulas ([parameter.fields])")
+                fields = {f: v if isinstance(v, str) else repr(v) for f, v in fields.items()}
             if not isinstance(comment, str):
                 raise PartError(f"{where} ({name}): comment must be a string")
             try:
-                part.add_parameter(name, formula if isinstance(formula, str) else repr(formula), comment)
+                part.add_parameter(name, formula if isinstance(formula, str) else repr(formula), comment, fields)
             except PartError as error:
                 raise PartError(f"{where}: {error}") from None
 
@@ -568,6 +694,13 @@ def _check_group_name(name):
         raise PartError("a group needs a name")
     if "'" in name or any(ord(c) < 32 for c in name):
         raise PartError(f"{name!r}: no quotes or control characters in a group's name")
+
+
+def _check_field_name(owner, name):
+    """A field's name: an identifier (functions' and constants' names are fine: it is read after a dot)."""
+    error = name_error(name)
+    if error and name not in RESERVED:
+        raise PartError(f"{owner}: field {error}")
 
 
 def _names_or_empty(formula):
