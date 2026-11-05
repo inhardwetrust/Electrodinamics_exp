@@ -167,7 +167,7 @@ doubt: freeing is one click, the reverse is not.
 | `circle` | `name`, `center`, `radius`; `construction` | profile key `["C1"]` |
 | `arc` (center) | `name`, `kind = "center"`, `center`, `radius`, `from`, `to` | degrees from the sketch's x, counter-clockwise from `from` to `to`; its ends are points `A1.start`, `A1.end`; exact |
 | `arc` (three points) | `name`, `kind = "three"`, `start`, `end`, `through` | from start through `through` to end; exact |
-| `polyline` | `name`, `points`, `widths` (one per point), `width` (for new points), `start` / `end` = `flat` \| `round`; optional `bends`, `radii` (per point) | a wide line (a trace): its outline is a profile `["W1"]`; width tapers linearly between points |
+| `polyline` | `name`, `points`, `widths` (one per point), `width` (for new points), `start` / `end` = `flat` \| `round`; optional `bends`, `radii` (per point), `reference` (a point), `relative` | a wide line (a trace): its outline is a profile `["W1"]`; width tapers linearly between points; relative: its points offsets from the reference (below) |
 | `spline` | `name`, `points` (first again at the end: closed); `construction` | interpolating cubic, one exact B-spline; closed: profile `["Spline1"]`, open: joins lines at its ends |
 | `curve` | `name`, `kind`, its arguments; `construction`, `visible` | a generator (below); ends `Name.start`, `Name.end` |
 | `offset` | `of`, `left`, `right`, `start`, `end` | a band around a line / circle / spline / curve; that entity becomes its spine |
@@ -182,6 +182,21 @@ doubt: freeing is one click, the reverse is not.
   (default w/2): the classic microstrip miter.
 
 A bend that does not fit between its neighbours fails the sketch, naming it.
+
+**Polyline reference point** (`reference = "P1"`, one of its sketch points;
+`relative = true`): its other points' `x`, `y` are offsets from the
+reference (formulas still). Moving the reference moves the whole polyline;
+a line ending on one of its points follows (points are shared objects).
+- Switching relative, changing the reference, deleting it (or the
+  polyline), extending and inserting keep every point where it is: a point
+  keeps its own formula, minus the reference's place as a number (`12` from
+  a reference at 10: `2`; `w * 5`: `(w * 5) - (10)`). Never the reference's
+  formula: an offset holding `- (lineorig.x)` would cancel the reference's
+  moves.
+- A point follows one reference: two relative polylines with different
+  references on one point are refused. One may hang on another (its
+  reference a point of the first); round in a circle: refused.
+- Writing a file by hand: give the relative points their offsets.
 
 **Generators** (`model/curves.py`):
 - `parabola`: `focal` (> 0), `from`, `to` (signed distance from its axis
@@ -557,6 +572,11 @@ What the user can do by hand (to talk about it, and to know what they see):
   wheel or a right drag zooms, a right click opens a menu (New Sketch on
   a face), left click selects. View buttons (Iso, Top, Front...) top
   right.
+- **Polyline reference** (sketch mode): a point of a polyline selected:
+  "Reference of W1" (one per polyline: ticking another moves it); the
+  polyline selected: "Relative to P1". A relative point's fields read
+  "x (from P1)", its place in the sketch in grey below. A reference point
+  is drawn as an orange X at 45 degrees (in sketch mode).
 - **Sketch mode**: snapping to points and curves, alignment hints, drags
   (a point given by a formula does not drag: Deparametrize frees it).
 - The window reloads the file when it changes on disk (one undo step),

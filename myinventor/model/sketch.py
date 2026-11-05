@@ -40,6 +40,9 @@
 #   radii = ["", "2", ""]     # optional, per point: the bend's number ("": its default):
 #                             # arc: the center line's radius, chamfer: the setback,
 #                             # miter: the cutting circle's radius
+#   reference = "P1"          # optional: one of its points (a sketch point)
+#   relative = true           # optional: its other points' x, y are offsets from the reference (moving
+#                             # it moves them all; a line ending on one follows); see bases()
 #
 #   [[feature.circle]]
 #   name = "C1"
@@ -111,6 +114,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from model.expressions import ExpressionError, evaluate
 from model.features import Feature, FeatureError, Field, PartialBuild, feature_type
 from model.curves import KINDS, CurveError, end_points, spline_points, spline_shape
 from model.offsets import CAPS, OffsetError, offset_loops
@@ -173,6 +177,8 @@ class SketchPolyline:
     end: str = "flat"
     bends: list = None      # per point: "normal" | "round" | "chamfer"; None: all normal
     radii: list = None      # per point: a formula (mm), "" for the bend's default; None: all ""
+    reference: str = ""     # one of its points (a sketch point), or "": what its other points are relative to
+    relative: bool = False  # its other points' x, y are offsets from the reference (it moves them all)
 
     def __post_init__(self):
         n = len(self.points)
@@ -398,6 +404,15 @@ class Sketch(Feature):
                 raise FeatureError(f"{name}: polyline {w.name} needs two points or more and a width for each")
             if w.start not in ENDS or w.end not in ENDS:
                 raise FeatureError(f"{name}: polyline {w.name}: an end is 'flat' or 'round'")
+            if w.reference and (w.reference not in w.points or w.reference not in {p.name for p in self.points}):
+                raise FeatureError(f"{name}: polyline {w.name}: its reference {w.reference!r} is not one of its "
+                                   "sketch points")
+            if w.relative and not w.reference:
+                raise FeatureError(f"{name}: polyline {w.name}: relative needs a reference point")
+        try:
+            self.bases()
+        except ValueError as error:
+            raise FeatureError(f"{name}: {error}") from None
             if len(w.bends) != len(w.points) or len(w.radii) != len(w.points) \
                     or any(b not in BENDS for b in w.bends):
                 raise FeatureError(f"{name}: polyline {w.name}: a bend per point, one of {', '.join(BENDS)}, "
@@ -442,7 +457,9 @@ class Sketch(Feature):
                               for c in self.circles]
         if self.polylines:
             data["polyline"] = [{"name": w.name, "points": list(w.points), "widths": list(w.widths),
-                                 "width": w.width, "start": w.start, "end": w.end, **_bends(w)}
+                                 "width": w.width, "start": w.start, "end": w.end, **_bends(w),
+                                 **({"reference": w.reference} if w.reference else {}),
+                                 **({"relative": True} if w.relative else {})}
                                 for w in self.polylines]
         if self.curves:
             data["curve"] = [{"name": c.name, "kind": c.kind, **c.args, **_construction(c),
@@ -541,6 +558,135 @@ class Sketch(Feature):
     def polyline(self, name):
         return next(w for w in self.polylines if w.name == name)
 
+    # ---- Reference points: a polyline's points relative to one of them ----
+    #
+    # A relative polyline's points (but its reference) hold offsets from its
+    # reference point (x, y as formulas still): moving the reference moves
+    # them all. A point is a shared object: one of two relative polylines must
+    # have the same reference (bases() refuses two), and a line ending on it
+    # follows it. A reference may itself be a point of another relative
+    # polyline (one hangs on the other), not round in a circle. Switching
+    # relative, changing the reference, deleting it and adding points keep
+    # the geometry where it is (keeping_places): a point keeps its own
+    # formula, plus the old reference's place minus the new one's as numbers
+    # ("w * 5" from a reference at 10: "(w * 5) - (10)"); never the
+    # reference's formula, which would cancel its moves.
+
+    def bases(self):
+        """{point: the reference its x, y are offsets from}; ValueError on two references or a circle."""
+        own = {p.name for p in self.points}
+        bases = {}
+        for w in self.polylines:
+            if not w.relative or not w.reference:
+                continue
+            for p in w.points:
+                if p == w.reference or p not in own:
+                    continue                    # the reference itself; a curve's end (its curve sets it)
+                if bases.get(p, w.reference) != w.reference:
+                    raise ValueError(f"point {p} is relative to two references ({bases[p]}, {w.reference}): "
+                                     "a point follows one")
+                bases[p] = w.reference
+        for p in bases:                         # no reference relative to itself, round the chain
+            seen, q = {p}, bases[p]
+            while q in bases:
+                if q in seen:
+                    raise ValueError(f"the reference points go round in a circle ({' -> '.join(sorted(seen))})")
+                seen.add(q)
+                q = bases[q]
+        return bases
+
+    def _absolute(self, name, raw, bases):
+        """A point's place (mm): its own x, y, plus its reference's place if it has one."""
+        total = np.array(raw[name], float)
+        while name in bases:
+            name = bases[name]
+            total = total + raw[name]
+        return total
+
+    def absolute_formulas(self, name, bases=None):
+        """(x, y) formulas of a point's place in the sketch: its own, plus its reference's, all the way up."""
+        bases = self.bases() if bases is None else bases
+        p = self.point(name)
+        if name not in bases:
+            return p.x, p.y
+        rx, ry = self.absolute_formulas(bases[name], bases)
+        return _plus(p.x, rx), _plus(p.y, ry)
+
+    def set_reference(self, polyline, point, values=None):
+        """A polyline's reference point ("" for none); relative, its points keep their places (offsets anew)."""
+        w = self.polyline(polyline)
+        if point and point not in w.points:
+            raise FeatureError(f"{self.name}: {point} is not a point of {polyline}")
+        if point and point not in {p.name for p in self.points}:
+            raise FeatureError(f"{self.name}: {point} is a curve's end: a reference is a sketch point")
+        self._rebase(w, point, w.relative and bool(point), values)
+
+    def set_relative(self, polyline, on, values=None):
+        """A polyline's points relative to its reference (on) or absolute; they keep their places."""
+        w = self.polyline(polyline)
+        if on and not w.reference:
+            raise FeatureError(f"{self.name}: {polyline} has no reference point")
+        self._rebase(w, w.reference, bool(on), values)
+
+    def _rebase(self, w, reference, relative, values=None):
+        """
+        Polyline w with this reference and relative flag, every point kept
+        where it is (keeping_places); refused (FeatureError): as it was.
+        """
+        old = (w.reference, w.relative)
+
+        def change():
+            w.reference, w.relative = reference, relative
+
+        try:
+            self.keeping_places(change, values)
+        except FeatureError:
+            w.reference, w.relative = old
+            raise
+
+    def keeping_places(self, change, values=None):
+        """
+        Runs change() (any edit of the polylines and points), then writes
+        back the points whose reference changed so that each stays where it
+        is now: its own formula plus the old reference's place minus the new
+        one's, those places as numbers (values: the parameters'). Never the
+        reference's formula: an offset holding "- (ref)" would cancel the
+        reference's moves. FeatureError if the change makes a point follow
+        two references or a circle, or a place does not evaluate (the edit
+        is then the caller's to undo: the window reverts).
+        """
+        values = values or {}
+        before = self.bases()
+        where = {}
+
+        def place(name):                        # (x, y) mm of a point before the change, as numbers
+            if name not in where:
+                try:
+                    where[name] = tuple(evaluate(t, values) for t in self.absolute_formulas(name, before))
+                except ExpressionError as error:
+                    raise FeatureError(f"{self.name}: {name}'s place does not evaluate ({error}): it cannot be "
+                                       "kept where it is") from None
+            return where[name]
+
+        moving = {p.name: (before.get(p.name), place(before[p.name]) if p.name in before else (0.0, 0.0))
+                  for p in self.points}
+        change()
+        own = {p.name for p in self.points}
+        for w in self.polylines:                # a reference gone (deleted, cut off): none
+            if w.reference and (w.reference not in w.points or w.reference not in own):
+                w.reference, w.relative = "", False
+        try:
+            after = self.bases()
+        except ValueError as error:
+            raise FeatureError(f"{self.name}: {error}") from None
+        for p in self.points:
+            if p.name not in moving or moving[p.name][0] == after.get(p.name):
+                continue                        # new, or the same reference: its offset still holds
+            old = moving[p.name][1]
+            base = after.get(p.name)
+            new = place(base) if base is not None else (0.0, 0.0)   # the base stays where it is: its place
+            p.x, p.y = _plus(p.x, _plain(old[0] - new[0])), _plus(p.y, _plain(old[1] - new[1]))
+
     # ---- Deparametrize: formulas -> plain numbers (the geometry stays, it becomes draggable) ----
 
     def formula_slots(self, names=None):
@@ -631,25 +777,39 @@ class Sketch(Feature):
         self.polylines.append(SketchPolyline(name, [start, end], [str(width)] * 2, str(width)))
         return name
 
-    def extend_polyline(self, name, point):
-        """Appends a point at its end; it gets the polyline's width (its text, then its own)."""
+    def extend_polyline(self, name, point, values=None):
+        """
+        Appends a point at its end; it gets the polyline's width (its text,
+        then its own); it stays where it is (relative: its offset is written).
+        """
         self._check_point(point)
         w = self.polyline(name)
-        w.points.append(point)
-        w.widths.append(w.width)
-        w.bends.append("normal")
-        w.radii.append("")
 
-    def insert_into_polyline(self, name, index, point, width):
-        """A point put into the center line before point `index` (1..N-1), with this width (a formula)."""
+        def change():
+            w.points.append(point)
+            w.widths.append(w.width)
+            w.bends.append("normal")
+            w.radii.append("")
+
+        self.keeping_places(change, values)
+
+    def insert_into_polyline(self, name, index, point, width, values=None):
+        """
+        A point put into the center line before point `index` (1..N-1), with
+        this width (a formula); it stays where it is (as extend_polyline).
+        """
         self._check_point(point)
         w = self.polyline(name)
         if not 1 <= index < len(w.points):
             raise FeatureError(f"{self.name}: polyline {w.name}: no segment before point {index}")
-        w.points.insert(index, point)
-        w.widths.insert(index, str(width))
-        w.bends.insert(index, "normal")
-        w.radii.insert(index, "")
+
+        def change():
+            w.points.insert(index, point)
+            w.widths.insert(index, str(width))
+            w.bends.insert(index, "normal")
+            w.radii.insert(index, "")
+
+        self.keeping_places(change, values)
 
     def spline(self, name):
         return next(w for w in self.splines if w.name == name)
@@ -883,9 +1043,13 @@ class Sketch(Feature):
         return ({e for line in self.lines for e in (line.start, line.end)} | {c.center for c in self.circles}
                 | {p for w in self.polylines + self.splines for p in w.points} | {p for a in self.arcs for p in a.points()})
 
-    def delete(self, name):
-        """Deletes an entity (_delete), and the offsets of what is gone with it."""
-        self._delete(name)
+    def delete(self, name, values=None):
+        """
+        Deletes an entity (_delete), and the offsets of what is gone with it;
+        the points left stay where they are (a reference deleted, or a
+        relative polyline gone: its points become absolute).
+        """
+        self.keeping_places(lambda: self._delete(name), values)
         alive = {e.name for e in self.lines + self.circles + self.splines + self.curves + self.arcs}
         self.offsets = [o for o in self.offsets if o.of in alive]
 
@@ -936,6 +1100,8 @@ class Sketch(Feature):
             w, k = self.polyline(owner), int(index)
             second = SketchPolyline(self.free_name("W"), w.points[k:], w.widths[k:], w.width, "flat", w.end,
                                     w.bends[k:], w.radii[k:])
+            if w.reference in second.points:    # the half with the reference keeps it (the other: absolute)
+                second.reference, second.relative = w.reference, w.relative
             w.take(range(k))
             w.end = "flat"
             at = self.polylines.index(w)
@@ -995,6 +1161,11 @@ class Sketch(Feature):
         points = {}
         for p in self.points:
             points[p.name] = np.array([ctx.evaluate(p.x, f"point {p.name}"), ctx.evaluate(p.y, f"point {p.name}")])
+        bases = self.bases()                    # the points of relative polylines: offsets from their reference
+        offsets = dict(points)                  # (read from a copy: a chain adds each offset once)
+        for p in self.points:
+            if p.name in bases:
+                points[p.name] = self._absolute(p.name, offsets, bases)
         shapes, broken = {}, []
         for c in self.curves:
             try:
@@ -1174,6 +1345,58 @@ def _is_number(text):
         return False
 
 
+def _number(text):
+    """The value of a formula that is a plain number, else None."""
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return None
+
+
+_SHIFTED = re.compile(r"\((.+)\) ([+-]) \(([-+0-9.eE]+)\)\Z")
+
+
+def _parts(text):
+    """A formula as (core, constant): "12" -> ("", 12); "(w * 5) - (10)" -> ("w * 5", -10); "w" -> ("w", 0)."""
+    text = text.strip()
+    value = _number(text)
+    if value is not None:
+        return "", value
+    match = _SHIFTED.match(text)
+    if match and _number(match.group(3)) is not None:
+        core, sign, number = match.groups()
+        return core, (1 if sign == "+" else -1) * float(number)
+    return text, 0.0
+
+
+def _shifted(core, constant):
+    """The formula core + constant, as _parts reads it back."""
+    if not core:
+        return _plain(constant)
+    if abs(constant) < 1e-12:
+        return core
+    return f"({core}) {'+' if constant > 0 else '-'} ({_plain(abs(constant))})"
+
+
+def _plus(a, b):
+    """The formula a + b, numbers folded: "(w) + (3)" + "2" -> "(w) + (5)"."""
+    (ca, xa), (cb, xb) = _parts(a), _parts(b)
+    if ca and cb:
+        return _shifted(f"({ca}) + ({cb})", xa + xb)
+    return _shifted(ca or cb, xa + xb)
+
+
+def _minus(a, b):
+    """The formula a - b, numbers folded and a core taken from itself: "(w) + (3)" - "w" -> "3"."""
+    (ca, xa), (cb, xb) = _parts(a), _parts(b)
+    if cb and not ca:
+        constant = xa - xb
+        return f"({_plain(constant)}) - ({cb})" if abs(constant) > 1e-12 else f"-({cb})"
+    if cb and ca != cb:
+        return _shifted(f"({ca}) - ({cb})", xa - xb)
+    return _shifted(ca if cb == "" else "", xa - xb)
+
+
 def _plain(value):
     """A value as the text of a plain number: 12 significant digits, no "-0"."""
     text = f"{value + 0.0:.12g}"
@@ -1189,7 +1412,8 @@ def _bends(polyline):
 
 def _polyline(owner, i, row):
     where = _where("polyline", i, row)
-    _keys(owner, where, row, ("name", "points", "widths", "width", "start", "end", "bends", "radii"))
+    _keys(owner, where, row, ("name", "points", "widths", "width", "start", "end", "bends", "radii", "reference",
+                              "relative"))
     points, widths = row.get("points"), row.get("widths")
     if not isinstance(points, list) or not all(isinstance(p, str) for p in points):
         raise FeatureError(f"{owner}: {where}: points must be a list of point names")
@@ -1208,7 +1432,9 @@ def _polyline(owner, i, row):
                           [t if isinstance(t, str) else repr(t) for t in widths],
                           _text(owner, where, row, "width", True) if "width" in row else "1",
                           row.get("start", "flat"), row.get("end", "flat"), bends,
-                          None if radii is None else [t if isinstance(t, str) else repr(t) for t in radii])
+                          None if radii is None else [t if isinstance(t, str) else repr(t) for t in radii],
+                          _text(owner, where, row, "reference") if "reference" in row else "",
+                          _flag(owner, where, row, "relative"))
 
 
 def _spline(owner, i, row):

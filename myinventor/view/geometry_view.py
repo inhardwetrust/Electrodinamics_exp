@@ -150,6 +150,7 @@ AXIS_OVERHANG = 1.2         # an axis reaches this times past the planes
 SKETCH_POINT_COLOR = (0.85, 0.88, 0.95, 1.0)      # a sketch's origin point
 SKETCH_LINE_COLOR = (0.85, 0.88, 0.95, 1.0)       # its lines
 SKETCH_DOT_COLOR = (0.95, 0.95, 1.0, 1.0)         # its points, in sketch mode
+REFERENCE_COLOR = (1.0, 0.72, 0.25, 1.0)         # a polyline's reference point (its X), in sketch mode
 GUIDE_COLOR = (0.55, 0.85, 1.0, 0.9)              # alignment hints (dashed)
 GUIDE_DASH_PX, GUIDE_GAP_PX = 6.0, 4.0
 PROFILE_HOVER_COLOR = (0.25, 1.0, 0.35, 0.35)      # a profile under the cursor
@@ -168,6 +169,7 @@ COINCIDENT_MM = 1e-6        # points this close are at the same place
 CONSTRUCTION_DASH_PX, CONSTRUCTION_GAP_PX = 8.0, 5.0     # construction lines: dashed
 CROSS_GAP_PX = 3.0          # an explicit point's cross: its arms run from this far from the point
 CROSS_ARM_PX = 9.0          # to this far (pixels)
+XMARK_PX = 8.0              # a polyline's reference point: its X runs this far from the point (pixels)
 SKETCH_AXIS_COLORS = ((1.0, 0.45, 0.4, 0.9), (0.45, 0.9, 0.45, 0.9))    # the sketch's x, y
 SKETCH_AXIS_REACH = 1000.0  # the sketch's axes reach this many model sizes each way (endless)
 CLICK_PX = 4                # a press and release closer than this is a click, not a drag
@@ -511,6 +513,8 @@ class _SketchVisual:
         self.point_names = list(shown)
         self.point_pos = np.array([result.world_mm(n) for n in self.point_names]).reshape(-1, 3)
         self.explicit = [n in result.explicit for n in self.point_names]
+        references = {w.reference for w in polylines if getattr(w, "reference", "")}
+        self.reference = [n in references for n in self.point_names]   # polylines' reference points: an X
         self.axes = (result.frame.u, result.frame.v)
         self.lines = scene.visuals.Line(connect="segments", width=2.0, parent=parent)
         self.lines.order = 6
@@ -524,6 +528,12 @@ class _SketchVisual:
         self.crosses.visible = any(self.explicit)
         self.cross_segments = np.zeros((0, 2, 3))             # as last drawn, mm (for the checks)
         self._cross_colors = []
+        self.xmarks = scene.visuals.Line(connect="segments", width=1.5, parent=parent)
+        self.xmarks.set_gl_state("translucent", depth_test=False)
+        self.xmarks.order = 8
+        self.xmarks.visible = False
+        self.xmark_segments = np.zeros((0, 2, 3))             # the reference points' X, mm (for the checks)
+        self._xmark_colors = []
         self.dashes = scene.visuals.Line(connect="segments", width=2.0, parent=parent)
         self.dashes.order = 6
         self.dashes.visible = bool(self.construction)
@@ -534,7 +544,7 @@ class _SketchVisual:
         self.shown_colors = {}      # key -> color last drawn (for the checks)
 
     def remove(self):
-        for visual in (self.lines, self.dots, self.crosses, self.dashes):
+        for visual in (self.lines, self.dots, self.crosses, self.dashes, self.xmarks):
             visual.parent = None
 
     def key(self, entity, editing):
@@ -583,11 +593,33 @@ class _SketchVisual:
                                edge_width=1.0, face_color=np.array(colors), edge_color=(0, 0, 0, 1))
         self._cross_colors = [self.shown_colors.get(self.key(n, editing), SKETCH_LINE_COLOR)
                               for n, e in zip(self.point_names, self.explicit) if e]
+        # A polyline's reference point: an X at 45 degrees (in sketch mode, as the other points' dots).
+        self.xmarks.visible = editing and any(self.reference)
+        self._xmark_colors = [self.shown_colors.get(self.key(n, editing)) or REFERENCE_COLOR
+                              for n, r in zip(self.point_names, self.reference) if r] if editing else []
         self.draw_screen_sized(mm_per_px)
 
     def draw_screen_sized(self, mm_per_px):
         self._draw_dashes(mm_per_px)
         self._draw_crosses(mm_per_px)
+        self._draw_xmarks(mm_per_px)
+
+    def _draw_xmarks(self, mm_per_px):
+        """The reference points' X: two diagonals at 45 degrees to the sketch's axes, XMARK_PX from the point."""
+        if not self._xmark_colors:
+            self.xmark_segments = np.zeros((0, 2, 3))
+            return
+        centers = self.point_pos[np.array(self.reference, bool)]
+        u, v = (np.asarray(a, float) for a in self.axes)
+        arm = XMARK_PX * mm_per_px
+        segments, colors = [], []
+        for center, c in zip(centers, self._xmark_colors):
+            for d in ((u + v) / np.sqrt(2), (u - v) / np.sqrt(2)):
+                segments.append([center - arm * d, center + arm * d])
+                colors += [c, c]
+        self.xmark_segments = np.array(segments)
+        self.xmarks.set_data(pos=self.xmark_segments.reshape(-1, 3).astype(np.float32),
+                             color=np.array(colors, np.float32), width=1.5)
 
     def _draw_dashes(self, mm_per_px):
         """Construction lines and circles: dashes of CONSTRUCTION_DASH_PX, gaps of CONSTRUCTION_GAP_PX."""

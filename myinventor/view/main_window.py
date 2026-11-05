@@ -132,7 +132,7 @@ from model.document import Document
 from model.part import Datum, Part, PartError, color_rgb
 from model.part_file import EXTENSION, PartFileError
 from model.rebuild import BuildContext, rebuild
-from model.features import body_list
+from model.features import FeatureError, body_list
 from model.extrude import Extrude, sweep as sweep_tool
 from model.revolve import Revolve, axis_of, check_side, onto_axis
 from model.workplane import WorkPlane
@@ -1385,7 +1385,13 @@ class MainWindow(QMainWindow):
         current = next((w for w in sketch.polylines if w.name == self._trace), None)
         note = None
         if current is not None and current.points[-1] == a:
-            sketch.extend_polyline(current.name, b)
+            try:                                # (a relative polyline: the new point's offset is written)
+                sketch.extend_polyline(current.name, b, self.result.values)
+            except FeatureError as error:       # that point follows another reference already
+                self.doc.revert()
+                self._refresh()
+                self.statusBar().showMessage(str(error), 10000)
+                return None
         else:
             width = self.trace_width.text().strip()
             if not self.trace_width.accepted():
@@ -1722,8 +1728,8 @@ class MainWindow(QMainWindow):
                        for p in dict.fromkeys(points)},
             "lines": [(e.start, e.end, e.construction) for e in lines],
             "circles": [(c.center, built.radii[c.name], c.radius, c.construction) for c in circles],
-            "polylines": [(list(w.points), list(w.widths), w.width, w.start, w.end, list(w.bends), list(w.radii))
-                          for w in polylines],
+            "polylines": [(list(w.points), list(w.widths), w.width, w.start, w.end, list(w.bends), list(w.radii),
+                           w.reference, w.relative) for w in polylines],
             "splines": [(list(w.points), w.construction) for w in splines],
         }
         # The anchor: the middle of the copy's extent (circles included).
@@ -1771,10 +1777,12 @@ class MainWindow(QMainWindow):
         new += [sketch.add_line(names[a], names[b], construction=c) for a, b, c in clip["lines"]]
         new += [sketch.add_circle(names[center], formula, construction=c)
                 for center, _, formula, c in clip["circles"]]
-        for points, widths, width, start, end, bends, radii in clip.get("polylines", []):
+        for points, widths, width, start, end, bends, radii, reference, relative in clip.get("polylines", []):
             name = sketch.free_name("W")
             sketch.polylines.append(SketchPolyline(name, [names[p] for p in points], list(widths), width, start, end,
-                                                   list(bends), list(radii)))
+                                                   list(bends), list(radii), names.get(reference, "")))
+            if relative and reference in names:     # the points came as places: offsets from the new reference
+                sketch.set_relative(name, True, self.result.values)
             new.append(name)
         for points, c in clip.get("splines", []):
             name = sketch.free_name("Spline")
@@ -1846,8 +1854,25 @@ class MainWindow(QMainWindow):
                     self.statusBar().showMessage(f"{', '.join(dict.fromkeys(names))}: a generated curve, it stays "
                                                  "(change its arguments in the properties)", 8000)
                 return
+            points = list(dict.fromkeys(points))
+            try:
+                bases = sketch.bases()
+            except ValueError:
+                bases = {}
+            taken = set(points)
+
+            def carried(p):                     # its reference (or one up its chain) moves too: it follows that
+                q = bases.get(p)
+                while q is not None:
+                    if q in taken:
+                        return True
+                    q = bases.get(q)
+                return False
+
+            built = self._shown_output(sketch_name)
             self._dragged = {"circle": None, "points": {
-                n: (_number(sketch.point(n).x), _number(sketch.point(n).y)) for n in dict.fromkeys(points)}}
+                n: (_number(sketch.point(n).x), _number(sketch.point(n).y)) for n in points if not carried(n)},
+                "start": {n: np.array(built.points[n], float) for n in points if n in built.points}}
             return
         if self._dragged is None:
             return
@@ -1874,7 +1899,8 @@ class MainWindow(QMainWindow):
                 if all(np.allclose(before.points[n], before.points[first], atol=1e-6) for n in group):
                     x0, y0 = dragged[first]
                     fixed = (x0 is None, y0 is None)
-                    target = np.where(fixed, before.points[first], np.array([x0 or 0.0, y0 or 0.0]) + offset)
+                    start = self._dragged["start"].get(first, before.points[first])    # in the sketch (relative
+                    target = np.where(fixed, before.points[first], start + offset)     # points: not their offsets)
                     mine = ({e.name for e in before.lines if {e.start, e.end} & set(group)}
                             | {c.name for c in before.circles if c.center in group}
                             | {w.name for w in before.splines + before.polylines if set(w.points) & set(group)})
@@ -1934,7 +1960,7 @@ class MainWindow(QMainWindow):
                     sketch.kind_of(name)
                 except KeyError:
                     continue                    # an earlier delete took it already
-                sketch.delete(name)
+                sketch.delete(name, self.result.values)
             if len(ends) == len(entities):
                 self.statusBar().showMessage(f"{', '.join(ends)}: the end of a curve, set by it: delete or hide "
                                              "the curve instead", 8000)
@@ -3643,9 +3669,27 @@ class MainWindow(QMainWindow):
                 combo.currentTextChanged.connect(
                     lambda text, w=w.name, end=end: _later(lambda: self._set_polyline(sketch_name, w, **{end: text})))
                 self.props_form.addRow(label, combo)
+            relative = QCheckBox(f"Relative to {w.reference}" if w.reference else "Relative (no reference point)")
+            relative.setChecked(w.relative)
+            relative.setEnabled(bool(w.reference))
+            relative.setToolTip("On: its points' x, y are offsets from its reference point (moving the reference "
+                                "moves them all). Off: absolute. Switching keeps every point where it is. A reference "
+                                "point: select one of its points, tick Reference of " + w.name)
+            relative.toggled.connect(lambda on, w=w.name: _later(lambda: self.set_polyline_relative(sketch_name, w, on)))
+            self.props_form.addRow(relative)
         elif kind == "point":
             self.props_form.addRow(QLabel(f"<b>{name}</b>: point"))
             self._add_point_rows(sketch, name, "")
+            own = {p.name for p in sketch.points}
+            for w, i in sketch.polyline_widths(name):
+                if name in own and name not in [w.points[j] for j in range(i)]:     # once per polyline
+                    box = QCheckBox(f"Reference of {w.name}")
+                    box.setChecked(w.reference == name)
+                    box.setToolTip(f"The point {w.name}'s other points are relative to (one per polyline: ticking "
+                                   "it takes it from the one that had it); its points keep their places")
+                    box.toggled.connect(lambda on, w=w.name: _later(
+                        lambda: self.set_polyline_reference(sketch_name, w, name if on else "")))
+                    self.props_form.addRow(box)
             for w, i in sketch.polyline_widths(name):
                 self.props_form.addRow(f"Width on {w.name}:", self._formula_field(
                     w.widths[i], lambda text, w=w.name, i=i: self._set_polyline(sketch_name, w, at=(i, text))))
@@ -3676,13 +3720,50 @@ class MainWindow(QMainWindow):
             p = sketch.point(point)
         except (KeyError, StopIteration):
             return                              # a curve's end: set by the curve
-        for axis in ("x", "y"):
+        try:
+            base = sketch.bases().get(point)
+        except ValueError:
+            base = None
+        built = self.result.outputs.get(sketch.name) if self.result is not None else None
+        for i, axis in enumerate(("x", "y")):
             field = self._formula_field(
                 getattr(p, axis), lambda text, axis=axis: self._set_point_coord(sketch.name, point, axis, text))
-            field.setToolTip(f"{point}'s {axis} in the sketch (mm): a number or a formula of the parameters (type "
+            where = f"from {base}" if base else "in the sketch"
+            field.setToolTip(f"{point}'s {axis} {where} (mm): a number or a formula of the parameters (type "
                              "a name: they are offered; Enter applies). A formula: the point follows it and no "
                              "longer drags")
-            self.props_form.addRow(f"{label}{axis}:" if label else f"{axis}:", field)
+            name = f"{axis} (from {base})" if base else axis
+            self.props_form.addRow(f"{label}{name}:" if label else f"{name}:", field)
+        if base and built is not None and point in built.points:   # where it is in the sketch, for reading
+            x, y = built.points[point]
+            place = QLabel(f"= ({x:.6g}, {y:.6g}) mm in the sketch")
+            place.setStyleSheet("color: gray")
+            self.props_form.addRow("", place)
+
+    def set_polyline_reference(self, sketch_name, polyline, point):
+        """A polyline's reference point ("" for none); its points stay where they are; one undo step."""
+        self._sketch_edit(sketch_name, lambda s: s.set_reference(polyline, point, self.result.values),
+                          f"{point} is the reference of {polyline}" if point else f"{polyline} has no reference point")
+
+    def set_polyline_relative(self, sketch_name, polyline, on):
+        """A polyline's points relative to its reference or absolute; they stay where they are; one undo step."""
+        w = self.part.feature(sketch_name).polyline(polyline)
+        self._sketch_edit(sketch_name, lambda s: s.set_relative(polyline, on, self.result.values),
+                          f"{polyline}'s points: offsets from {w.reference} (moving it moves them)" if on
+                          else f"{polyline}'s points: absolute")
+
+    def _sketch_edit(self, sketch_name, edit, said):
+        """An edit of a sketch (edit(sketch)): one undo step; refused (FeatureError): nothing changed, said why."""
+        try:
+            edit(self.part.feature(sketch_name))
+        except FeatureError as error:
+            self.doc.revert()
+            self._refresh()
+            self.statusBar().showMessage(str(error), 10000)
+            return False
+        self._commit()
+        self.statusBar().showMessage(said, 6000)
+        return True
 
     def _set_point_coord(self, sketch_name, point, axis, text):
         """A sketch point's x or y changed in the properties; one undo step."""
@@ -3991,7 +4072,7 @@ class MainWindow(QMainWindow):
             w0, w1 = (evaluate(text, self.result.values) for text in (w.widths[k - 1], w.widths[k]))
             width = fmt_mm(w0 + t * (w1 - w0))
         point = sketch.add_point(fmt_mm(at[0]), fmt_mm(at[1]))
-        sketch.insert_into_polyline(owner, k, point, width)
+        sketch.insert_into_polyline(owner, k, point, width, self.result.values)     # relative: its offset written
         self._commit()
         self.view.select_keys([("entity", sketch_name, point)])
         self._on_view_select(self.view.selected)

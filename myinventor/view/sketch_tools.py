@@ -393,7 +393,11 @@ class LineTool(SketchTool):
                 {line.start, line.end} == {anchor[1], self.last[1]} for line in self.sketch_result().lines):
             self.end_chain()                    # that line exists already (back to the first point of one)
             return
-        start, end = self.add_line(self.last, anchor)
+        made = self.add_line(self.last, anchor)
+        if made is None:                        # refused (the window said why): the chain ends
+            self.end_chain()
+            return
+        start, end = made
         if self.first[0] == "xy":
             self.first = ("point", start)       # the first point exists now
         if closing:
