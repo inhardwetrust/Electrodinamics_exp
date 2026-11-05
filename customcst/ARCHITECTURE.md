@@ -902,6 +902,57 @@ bigger one): `mesh/rectilinear.py` step 4, `Mesh > refine slanted metal`
   needs a pulse twice as long as 1-5 GHz: 70 000 steps against 32 000).
   The time step is the min step's (0.05 mm copper), not the refinement's.
 
+## Local mesh (a body's own)
+
+The global cells per feature refines every interval between fixpoints: a
+can antenna (research/TEM, a 37 mm can, a 1.27 mm probe) needed a finer
+step at its curved wall (a curved face puts no lines: the can is one
+feature across), and cells per feature 30 got it, but also put 30 cells
+across the pin: min step 0.033 mm, 8 M cells, 36 min on the server. Like
+CST's local mesh properties, a body can carry its own mesh instead.
+- `[local_mesh.NAME]` (project_file.py, LOCAL_MESH_PARAMS):
+  cells_per_wavelength, cells_per_feature, max_step (mm, 0 = none). Any
+  body, typed or not (an untyped box is a refinement region); kept when
+  the type is removed; an orphan when the body is gone (dropped with the
+  types on a KiCad re-import). In the fingerprint only when there is one
+  (older runs stay current).
+- Mesher step 4b (`_local_regions`): per axis, between consecutive faces
+  of the body's own (its extent and its planar faces normal to the axis),
+  the step is at most min(λ / N_local in the body's material, air for a
+  conductor; the gap / cells per feature local; max_step), >= min_step.
+  These regions grade like the slanted ones (`_place_lines`): only where
+  finer than the global rule do they change the grid. A conductor's gap
+  that is mostly its own metal (over half of its middle plane within its
+  box, 9 x 9 samples: a can's 1 mm bottom) is a wall: the cells per
+  feature rule skips it (no field inside metal), else it set the min step
+  again.
+- The window: right click a body > Create local mesh (the main mesh's
+  cells per λ and per feature, max step 0) / Remove local mesh; a "Local
+  mesh" group under the body (its finest step on the current mesh, the
+  three values, double click to edit); Mesh shows a row per local mesh.
+  Control command `local_mesh body [values] [remove=true]`.
+- The can (research/TEM/waveguide, 4-7 GHz, server):
+
+  | mesh | cells | S11 min | time |
+  |---|---|---|---|
+  | 20 / 8 | 0.46 M | 6.895 GHz | 2.9 min |
+  | 30 / 12 | 1.29 M | 6.107 GHz | 3.9 min |
+  | 30 / 30 | 8.04 M | 6.152 GHz | 35.6 min |
+  | 30 / 8 (laptop) | 0.91 M | 6.100 GHz | 5.3 min |
+  | 20 / 8 + CAN 30 / λ | 0.63 M | 6.100 GHz | 1.9 min |
+  | 20 / 8 + CAN 40 / λ | 0.91 M | 6.100 GHz | 2.2 min |
+
+  The step at the wall did it (2.06 -> 1.4 mm), not the cells per
+  feature; the can works ~25 % above the TE11 cutoff, where lambda_g
+  follows the radius ~1.5x.
+- `check_local_mesh`: the project file (created from the main mesh,
+  refused values, round trip, orphan, fingerprint), the grid (the can's
+  inside at its λ / N, the padding air and a probe pin untouched, max
+  step, cells per feature not in the can's 1 mm bottom, no local mesh =
+  the same grid) and a closed can's TM010 (2.405 c / 2 pi a, 11.47 GHz):
+  main 10 / λ +0.96 %, with the can at 40 / λ +0.15 % = main 40 / λ
+  everywhere, with fewer cells.
+
 ## Console runner
 
 `run.py` runs a simulation without the window (a faster Linux machine):

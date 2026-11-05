@@ -19,7 +19,8 @@
 # types, parameter values, hole rules and [simulation] / [mesh] settings
 # (not [view], not [farfield]: it does not change S), plus the auto padding
 # when the far field sets it (padding 0, far field on: λ/2 instead of λ/4,
-# another domain). When it differs from the current model, a run is still
+# another domain), and the bodies' local meshes when there are any. When
+# it differs from the current model, a run is still
 # shown but marked as outdated.
 #
 # An older single-result file (model.npz, format 1) is moved into the folder
@@ -89,6 +90,8 @@ def fingerprint(project):
                      if name not in NOT_IN_FINGERPRINT},
         "holes": [sorted(project.hole_diameters.items()), sorted(project.hole_single.items())],
     }
+    if project.local_mesh:              # bodies' own meshes (only then: older fingerprints stay the same)
+        inputs["local_mesh"] = {name: dict(sorted(v.items())) for name, v in sorted(project.local_mesh.items())}
     padding = far_field_padding_mm(project.settings)
     if padding is not None:             # the far field widens the auto padding: the domain changes
         inputs["far_field_padding_mm"] = padding

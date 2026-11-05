@@ -147,6 +147,11 @@ tan_d = 0.02
 f_ref = 5.757
 mu_r = 1.0
 
+[local_mesh.CAN]       # a body's own, finer mesh over its extent (any body, typed or not)
+cells_per_wavelength = 30.0
+cells_per_feature = 8.0        # between its own faces (a curved can is one feature across)
+max_step = 0.0         # mm, 0 = none
+
 [view]                 # the last display (camera, switches, hidden bodies): never a result input
 up = "z"
 
@@ -250,6 +255,15 @@ hexahedral mesh:
   material** (λ / sqrt(εr) in FR4), and a gap between two fixpoints gets
   at least cells_per_feature cells; neighbor steps grow at most
   max_ratio. Fixpoints closer than min_step merge (auto: λ/200-ish).
+- **Local mesh** (`[local_mesh.NAME]`, right click a body > Create local
+  mesh; ARCHITECTURE "Local mesh"): a body's own cells per λ, cells per
+  feature (between its own faces) and max step over its extent; finer
+  than the main mesh only there. For a curved body (a can, a horn) that
+  needs a fine step at its wall while small parts (a probe pin) and the
+  air around keep the main mesh: the can antenna at 20/8 + CAN 30/λ gave
+  Run 11's S11 (30/12 everywhere) with half the cells; cells per feature
+  30 everywhere cost 13x the cells and 9x the time for 0.7 %. A
+  conductor's own metal walls are not refined by its cells per feature.
 - **Slanted metal** (a 45° trace, a rotated pad, an arc) puts no lines:
   `slanted = true` refines the step around it to (gap or width) /
   cells_per_feature.
@@ -476,6 +490,7 @@ positionally; `show` takes the run names. From Python:
 | `run_server` | yes | | Run on server (refused: no model, cannot run, shorts, a run going, a transfer, Remote not set) |
 | `fetch` | yes | `take_server` | Fetch; take_server: take the server's model files where they differ (default: keep ours; also for the fetch after a followed run) |
 | `preset` | yes | `kind` (mesh / monitors), `name` | apply a preset (built-in or the model's); answer: the status |
+| `local_mesh` | yes | `body` (first word), `cells_per_wavelength`, `cells_per_feature`, `max_step` (mm), `remove` | a body's local mesh: created from the main mesh's values, the given ones set; `remove=true` drops it; answer: its values and the status |
 | `farfield` | yes | `frequency` (GHz), `plane` (phi / theta), `at` (deg), `quantity`, `component`, `span`, `show3d`, `cut3d`, `port` | sets the Far field tab (any subset); answer: its choices and the info text (cut maximum, beamwidth, D, G, efficiency) |
 | `view` | yes | `name` (iso, top, bottom, front, back, left, right), `ortho` | a standard view in the 3D View tab |
 | `section` | yes | `axis` (x / y / z), `at` (mm), `on` | the section plane there, shown or not |

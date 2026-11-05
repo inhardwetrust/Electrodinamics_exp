@@ -40,7 +40,8 @@ import socket
 import sys
 import time
 
-POSITIONAL = {"open": "path", "lock": "message", "unlock": "message", "tab": "name", "screenshot": "path"}
+POSITIONAL = {"open": "path", "lock": "message", "unlock": "message", "tab": "name", "screenshot": "path",
+              "local_mesh": "body"}
 LISTS = {"show": "runs"}                # every word after the command, as one list
 
 

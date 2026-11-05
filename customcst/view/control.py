@@ -38,6 +38,9 @@
 #   farfield_f ...               the Far field vs f tab: frequency (GHz, the marker),
 #                                show gain|beam, direction max|fixed, theta, phi (deg),
 #                                component, curves [names], port; answers the figures
+#   local_mesh body [remove] [cells_per_wavelength, cells_per_feature, max_step]
+#                                a body's local mesh: created from the main mesh's
+#                                values, the given ones set; remove=true drops it
 #   view name [ortho]            iso, top, bottom, front, back, left, right
 #   section axis at [on]         the section plane: x|y|z at mm, shown or not
 #   stop_server                  the server's run stopped (no question)
@@ -305,6 +308,36 @@ def preset(window, kind, name):
     return status(window)
 
 
+def local_mesh(window, body, remove=False, cells_per_wavelength=None, cells_per_feature=None, max_step=None):
+    """A body's local mesh: created (main mesh's values), values set (cells_per_wavelength, cells_per_feature, max_step mm), or remove=true."""
+    project = window.project
+    if project is None or window.geometry is None:
+        raise CommandError("no model open (or its project file has errors)")
+    if remove:
+        if body not in project.local_mesh:
+            raise CommandError(f"{body!r} has no local mesh")
+        project.remove_local_mesh(body)
+    else:
+        if not any(b.name == body for b in window.geometry.bodies):
+            raise CommandError(f"no body {body!r} in the model")
+        values = {k: v for k, v in (("cells_per_wavelength", cells_per_wavelength),
+                                    ("cells_per_feature", cells_per_feature), ("max_step", max_step))
+                  if v is not None}
+        trial = dict(project.local_mesh.get(body, {}))
+        project.create_local_mesh(body)
+        try:
+            for key, value in values.items():
+                project.set_local_mesh_value(body, key, value)
+        except ValueError as error:
+            if trial:
+                project.local_mesh[body] = trial
+            else:
+                project.remove_local_mesh(body)
+            raise CommandError(str(error)) from None
+    window._after_edit()
+    return {"local_mesh": dict(project.local_mesh.get(body, {})), "status": status(window)}
+
+
 def fetch(window, take_server=None):
     """The Remote tab's Fetch; take_server: take the server's model files where they differ (else keep ours)."""
     if take_server is not None:
@@ -523,6 +556,7 @@ COMMANDS = {
     "run_server": (run_server, True),
     "fetch": (fetch, True),
     "preset": (preset, True),
+    "local_mesh": (local_mesh, True),
     "farfield": (farfield, True),
     "farfield_f": (farfield_f, True),
     "view": (view, True),

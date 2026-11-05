@@ -51,6 +51,14 @@
 #
 #   [simulation] / [mesh]: project-wide settings, see settings.py
 #
+#   [local_mesh.CAN]    # a body's own, finer mesh (mesh/rectilinear.py step 4b):
+#   cells_per_wavelength = 40.0   #   over the body's extent along each axis,
+#   cells_per_feature = 8.0       #   between its own faces, at most max_step
+#   max_step = 0.0      # mm, 0 = none   (like CST's local mesh properties)
+#   Any body may have one, typed or not (an untyped box is a refinement
+#   region); it is a result input (in the fingerprint), kept when the type
+#   is removed, an orphan when the body is gone.
+#
 # Bodies without a section have no type yet. Sections whose body is missing
 # from the STEP file are kept (the body may come back after a CAD edit) and
 # reported as orphans. Missing parameters take their defaults; unknown types,
@@ -87,6 +95,18 @@ Z0PATH_PARAMS = (
 )
 
 
+LOCAL_MESH_PARAMS = (
+    Param("cells_per_wavelength", "cells per λ", 20.0, minimum=5.0, maximum=400.0,
+          tooltip="Over this body's extent along each axis: the step at most λ(f max) / N, λ in the "
+                  "body's own material (air for a conductor or an untyped body)"),
+    Param("cells_per_feature", "cells per feature", 4.0, minimum=1.0, maximum=200.0,
+          tooltip="Between this body's own faces (planar faces normal to the axis and its extent): "
+                  "at least N cells across each such gap. A curved body (a can) is one feature across"),
+    Param("max_step", "max step (0 = none)", 0.0, minimum=0.0, unit="mm",
+          tooltip="Over this body's extent: the step at most this, whatever the rules above give"),
+)
+
+
 class ProjectError(ValueError):
     pass
 
@@ -97,7 +117,7 @@ def project_path(step_path):
 
 class Project:
     def __init__(self, step_path, assignments=None, up="z", settings=None, materials=None,
-                 holes=None, view=None, z0path=None):
+                 holes=None, view=None, z0path=None, local_mesh=None):
         self.step_path = os.fspath(step_path)
         self.assignments = dict(assignments or {})     # {body name: Assignment}
         self.up = up                                   # vertical axis for the view
@@ -112,6 +132,7 @@ class Project:
         self.settings = {name: section.defaults() for name, section in SECTIONS.items()}
         for name, values in (settings or {}).items():
             self.settings[name].update(values)
+        self.local_mesh = {name: dict(values) for name, values in (local_mesh or {}).items()}   # {body: params}
 
     @property
     def path(self):
@@ -239,6 +260,26 @@ class Project:
             assignment.material = CUSTOM        # no longer the preset's values
         assignment.values[param_name] = value
 
+    # --- a body's local mesh ---------------------------------------------------
+    def create_local_mesh(self, body_name):
+        """A local mesh for a body, starting from the main mesh's values (no-op if it has one)."""
+        if body_name not in self.local_mesh:
+            mesh = self.settings["mesh"]
+            self.local_mesh[body_name] = {
+                "cells_per_wavelength": mesh["cells_per_wavelength"],
+                "cells_per_feature": mesh["cells_per_feature"],
+                "max_step": 0.0,
+            }
+
+    def set_local_mesh_value(self, body_name, param_name, value):
+        param = next((p for p in LOCAL_MESH_PARAMS if p.name == param_name), None)
+        if param is None:
+            raise ProjectError(f"local mesh: unknown parameter {param_name!r}")
+        self.local_mesh[body_name][param_name] = param.validate(value)
+
+    def remove_local_mesh(self, body_name):
+        self.local_mesh.pop(body_name, None)
+
     def set_setting(self, section, param_name, value):
         """Validates the value alone and against the other settings."""
         value = SECTIONS[section].param(param_name).validate(value)
@@ -356,7 +397,7 @@ class Project:
 
     def orphans(self, geometry):
         names = {b.name for b in geometry.bodies}
-        return sorted(n for n in self.assignments if n not in names)
+        return sorted(n for n in set(self.assignments) | set(self.local_mesh) if n not in names)
 
     # =====================================================
     # File
@@ -376,7 +417,7 @@ class Project:
         except tomllib.TOMLDecodeError as error:
             raise ProjectError(f"{path}: {error}") from None
 
-        unknown = set(data) - {"bodies", "view", "materials", "holes", "z0path"} - set(SECTIONS)
+        unknown = set(data) - {"bodies", "view", "materials", "holes", "z0path", "local_mesh"} - set(SECTIONS)
         if unknown:
             raise ProjectError(f"{path}: unknown top-level keys {sorted(unknown)}")
 
@@ -412,7 +453,9 @@ class Project:
 
         holes = _parse_holes(path, data.get("holes", {}))
         z0path = _parse_z0path(path, data["z0path"]) if "z0path" in data else None
-        return cls(step_path, assignments, up, settings, library, holes, view, z0path)
+        local_mesh = {name: _parse_local_mesh(path, name, section)
+                      for name, section in data.get("local_mesh", {}).items()}
+        return cls(step_path, assignments, up, settings, library, holes, view, z0path, local_mesh)
 
     def save(self):
         """Writes atomically (temp file + replace): a crash never leaves half a file."""
@@ -437,6 +480,13 @@ class Project:
                 comment = f"   # {param.unit}" if param.unit else ""
                 lines.append(f"{param.name} = {_toml_value(value)}{comment}")
 
+            lines.append("")
+
+        for name in sorted(self.local_mesh):
+            lines.append(f"[local_mesh.{_key(name)}]")
+            for param in LOCAL_MESH_PARAMS:
+                comment = f"   # {param.unit}" if param.unit else ""
+                lines.append(f"{param.name} = {_toml_value(self.local_mesh[name][param.name])}{comment}")
             lines.append("")
 
         lines += ["[view]", f'up = "{self.up}"']
@@ -614,6 +664,23 @@ def _key(name):
     if name and all(c.isascii() and (c.isalnum() or c in "_-") for c in name):
         return name
     return json.dumps(name, ensure_ascii=False)
+
+
+def _parse_local_mesh(path, name, section):
+    """A [local_mesh.NAME] table: missing parameters take the defaults."""
+    where = f"{path}: local mesh of {name!r}"
+    if not isinstance(section, dict):
+        raise ProjectError(f"{where}: expected a table")
+    values = {p.name: p.default for p in LOCAL_MESH_PARAMS}
+    params = {p.name: p for p in LOCAL_MESH_PARAMS}
+    for key, value in section.items():
+        if key not in params:
+            raise ProjectError(f"{where}: unknown key {key!r}")
+        try:
+            values[key] = params[key].validate(value)
+        except ValueError as error:
+            raise ProjectError(f"{where}: {error}") from None
+    return values
 
 
 def _parse_material(path, name, section, builtin):

@@ -46,8 +46,26 @@
 #      +- f, the step is at most max(f / cells_per_feature, min_step).
 #      Curved faces (round pad ends, via holes) cast no rays: their
 #      extremes are fixpoints already.
+#   4b. Local meshes ([local_mesh.NAME] of the project, like CST's local
+#      mesh properties): a body's own bound on the step over its extent
+#      along each axis, between consecutive faces of its own (its planar
+#      faces normal to the axis, merged at min_step, and its extent):
+#        min( lambda(f_max) / N_local in the body's material (air for a
+#             conductor or an untyped body),
+#             gap between its own faces / cells_per_feature_local,
+#             max_step ),  but >= min_step.
+#      A conductor's gap that is mostly its own metal (over half of its
+#      middle plane within the body's box: a can's 1 mm bottom, a plate's
+#      thickness) is a wall, not a feature: no field inside, only the
+#      lambda rule and max_step there.
+#      Only where it is finer than the global rule does it change the grid.
+#      A curved body is one feature across (a can's wall puts no lines), so
+#      this refines it without touching the small parts inside it (a probe
+#      pin), which the global cells per feature would refine too. Any body
+#      may carry one, typed or not: an untyped box is a refinement region.
 #   5. Grading: the step may grow by at most (max_ratio - 1) per unit
-#      distance from any interval (or slanted region) with a smaller target:
+#      distance from any interval (or slanted / local region) with a
+#      smaller target:
 #        h(x) = min_j ( h_j + (max_ratio - 1) * dist(x, interval_j) ).
 #   6. Lines: in each interval, n = ceil(integral dx / h) cells, placed by
 #      inverting that integral, so steps follow h(x) and hit both ends.
@@ -68,6 +86,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from geometry.queries import points_inside
 from project.object_types import CONDUCTOR_TYPES
 from project.settings import C0, GHZ, MM, padding_m
 
@@ -133,6 +152,8 @@ class MeshResult:
     slanted: list = field(default_factory=list)     # per axis: [(lo, hi, step m)] refined regions
     slanted_faces: int = 0                          # slanted conductor triangles that refine
     slanted_feature: float = 0.0                    # their narrowest feature (m)
+    local: list = field(default_factory=list)       # per axis: [(lo, hi, step m)] of the local meshes
+    local_steps: dict = field(default_factory=dict) # body name -> its finest local step (m); missing: no body
 
     @property
     def ok(self):
@@ -199,6 +220,19 @@ def build_grid(geometry, project, ports=None, waveports=None, vias=(), region=No
         _slanted_kept(result, [b for b, n in materials if n is None], mesh["cells_per_feature"], min_step,
                       C0 / f_max / n_per_lambda, region)
 
+    result.local = [[], [], []]
+    refractive = {body.name: n for body, n in materials}
+    for name, values in getattr(project, "local_mesh", {}).items():
+        body = next((b for b in geometry.bodies if b.name == name), None)
+        if body is None:
+            continue                        # an orphan: the window reports it
+        regions = _local_regions(body, values, refractive.get(name) or 1.0, f_max, min_step,
+                                 conductor=name in refractive and refractive[name] is None)
+        for axis in range(3):
+            result.local[axis] += regions[axis]
+        steps = [h for axis_regions in regions for _, _, h in axis_regions]
+        result.local_steps[name] = min(steps) if steps else math.inf
+
     lines = []
     for axis in range(3):
         points = _fixpoints(axis, materials, valid_ports, lo[axis], hi[axis], min_step)
@@ -210,7 +244,8 @@ def build_grid(geometry, project, ports=None, waveports=None, vias=(), region=No
             axis, result.fixpoints[axis], materials, f_max, n_per_lambda,
             mesh["cells_per_feature"], min_step,
         )
-        lines.append(_place_lines(result.fixpoints[axis], targets, mesh["max_ratio"], result.slanted[axis]))
+        lines.append(_place_lines(result.fixpoints[axis], targets, mesh["max_ratio"],
+                                  result.slanted[axis] + result.local[axis]))
 
     result.grid = RectilinearGrid(tuple(lines))
     return result
@@ -230,18 +265,7 @@ def _fixpoints(axis, materials, ports, lo, hi, min_step):
         size = float(b_hi[axis] - b_lo[axis])
         points += [(b_lo[axis], priority, size), (b_hi[axis], priority, size)]
 
-        # Planar CAD faces normal to this axis (exact for boxes, caps of
-        # cylinders), or a hair off it: KiCad's polygon edges lean by a few
-        # um, at their mean coordinate.
-        v = body.vertices[body.triangles]                       # (T, 3, 3)
-        normal = np.cross(v[:, 1] - v[:, 0], v[:, 2] - v[:, 0])
-        length = np.linalg.norm(normal, axis=1)
-        flat = (length > 0) & body.planar
-        aligned = np.zeros(len(v), dtype=bool)
-        aligned[flat] = np.abs(normal[flat, axis]) >= ALIGNED * length[flat]
-        aligned &= np.ptp(v[:, :, axis], axis=1) < min_step
-        for c in np.unique(np.round(v[aligned, :, axis].mean(axis=1), 12)):
-            points.append((float(c), priority, size))
+        points += [(c, priority, size) for c in _planar_faces(body, axis, min_step)]
 
     for port in ports:
         direction = port.plus - port.minus
@@ -251,6 +275,65 @@ def _fixpoints(axis, materials, ports, lo, hi, min_step):
                 points += [(float(port.minus[axis]) + s * port.radius, PRIORITY_PORT, math.inf) for s in (-1, 1)]
 
     return [(c, p, s) for c, p, s in points if lo <= c <= hi]
+
+
+def _planar_faces(body, axis, min_step):
+    """
+    Coordinates of a body's planar CAD faces normal to an axis (exact for
+    boxes, caps of cylinders), or a hair off it: KiCad's polygon edges lean
+    by a few um, at their mean coordinate.
+    """
+    v = body.vertices[body.triangles]                       # (T, 3, 3)
+    normal = np.cross(v[:, 1] - v[:, 0], v[:, 2] - v[:, 0])
+    length = np.linalg.norm(normal, axis=1)
+    flat = (length > 0) & (body.planar if body.planar is not None else True)
+    aligned = np.zeros(len(v), dtype=bool)
+    aligned[flat] = np.abs(normal[flat, axis]) >= ALIGNED * length[flat]
+    aligned &= np.ptp(v[:, :, axis], axis=1) < min_step
+    return [float(c) for c in np.unique(np.round(v[aligned, :, axis].mean(axis=1), 12))]
+
+
+WALL_SAMPLES = 9            # per side of a local mesh's middle-plane test (is a gap a metal wall?)
+
+
+def _metal_wall(body, axis, a, b):
+    """Is over half of the body's box, on the plane midway between a and b, inside the body?"""
+    lo, hi = np.asarray(body.bounds[0], float), np.asarray(body.bounds[1], float)
+    u, v = [k for k in range(3) if k != axis]
+    s = (np.arange(WALL_SAMPLES) + 0.5) / WALL_SAMPLES
+    uu, vv = np.meshgrid(lo[u] + s * (hi[u] - lo[u]), lo[v] + s * (hi[v] - lo[v]), indexing="ij")
+    points = np.empty((uu.size, 3))
+    points[:, axis], points[:, u], points[:, v] = 0.5 * (a + b), uu.ravel(), vv.ravel()
+    return float(points_inside(body, points).mean()) > 0.5
+
+
+def _local_regions(body, values, refractive, f_max, min_step, conductor=False):
+    """
+    Per axis [(lo, hi, step)] of a body's local mesh (see the header, step
+    4b): between consecutive faces of its own, the finer of its rules (a
+    conductor's metal walls: the lambda rule and max_step only).
+    """
+    h_lambda = C0 / (f_max * refractive) / values["cells_per_wavelength"]
+    if values["max_step"] > 0:
+        h_lambda = min(h_lambda, values["max_step"] * MM)
+    regions = []
+    for axis in range(3):
+        b_lo, b_hi = float(body.bounds[0][axis]), float(body.bounds[1][axis])
+        own = sorted([b_lo, b_hi] + [c for c in _planar_faces(body, axis, min_step) if b_lo <= c <= b_hi])
+        faces = [own[0]]
+        for c in own[1:]:
+            if c - faces[-1] >= min_step:
+                faces.append(c)
+        if len(faces) < 2:
+            faces = [b_lo, max(b_hi, b_lo + min_step)]  # a body thinner than min_step: its extent
+        axis_regions = []
+        for a, b in zip(faces[:-1], faces[1:]):
+            h = h_lambda
+            if not (conductor and body.kind == "solid" and _metal_wall(body, axis, a, b)):
+                h = min(h, (b - a) / values["cells_per_feature"])
+            axis_regions.append((a, b, max(h, min_step)))
+        regions.append(axis_regions)
+    return regions
 
 
 def _merge(points, min_step):

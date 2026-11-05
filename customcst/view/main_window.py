@@ -33,7 +33,7 @@ from mesh.rectilinear import ACCURATE_CELLS_PER_FEATURE, build_grid, z0_error_pe
 from project.materials import BUILTIN, CUSTOM, MATERIAL_PARAMS
 from project import presets
 from project.object_types import OBJECT_TYPES
-from project.project_file import UP_AXES, Z0PATH_PARAMS, Project, ProjectError, project_path
+from project.project_file import LOCAL_MESH_PARAMS, UP_AXES, Z0PATH_PARAMS, Project, ProjectError, project_path
 from project.settings import SECTIONS
 from view.control import ControlServer
 from view.farfield_panel import FarFieldPanel
@@ -836,6 +836,7 @@ class MainWindow(QMainWindow):
         if gone:
             for name in gone:
                 self.project.remove_type(name)
+                self.project.remove_local_mesh(name)
             self._save()
             self._show_summary()
             lines.append("gone, removed from the project file: " + ", ".join(gone))
@@ -2065,6 +2066,13 @@ class MainWindow(QMainWindow):
                     self._note_row(group, "mesh", f"{AXES[axis]}: {text} → {kept / MM:.4g} mm", "#888")
             group.setExpanded(False)
 
+        for name in sorted(self.project.local_mesh if self.project else ()):
+            step = mesh.local_steps.get(name)
+            text = (f"local mesh {name}: step ≤ {step / MM:.3g} mm over its extent" if step is not None
+                    else f"local mesh {name}: no such body in the model")
+            row = self._note_row(item, "mesh", text, "#888" if step is not None else "#c80")
+            row.setToolTip(0, "A body's own mesh (Model > Bodies > the body > Local mesh)")
+
         if mesh.slanted_faces:
             finest = min(h for regions in mesh.slanted for _, _, h in regions)
             row = self._note_row(item, "mesh", f"slanted metal: {mesh.slanted_faces} faces, narrowest "
@@ -2165,7 +2173,31 @@ class MainWindow(QMainWindow):
             body_item.setExpanded(True)
             type_item.setExpanded(True)
 
+        local = self.project.local_mesh.get(name) if self.project else None
+        if local is not None:
+            group = QTreeWidgetItem(body_item, ["Local mesh", self._local_mesh_text(name), ""])
+            group.setData(0, Qt.UserRole, ("local_mesh", name, None))
+            group.setToolTip(0, "This body's own, finer mesh over its extent (right click the body: "
+                                "Remove local mesh). Only where it is finer than the main mesh does it "
+                                "change the grid")
+            for param in LOCAL_MESH_PARAMS:
+                row = QTreeWidgetItem(group, [param.label, _fmt_value(local[param.name]), param.unit])
+                row.setData(0, Qt.UserRole, ("local_mesh_param", name, param.name))
+                row.setFlags(row.flags() | Qt.ItemIsEditable)
+                row.setToolTip(0, param.tooltip)
+                row.setToolTip(1, "Double click to edit")
+            body_item.setExpanded(True)
+            group.setExpanded(True)
+
         self.tree.blockSignals(False)
+
+    def _local_mesh_text(self, name):
+        """A local mesh row's value: its finest step on the current mesh."""
+        step = getattr(self.mesh, "local_steps", {}).get(name) if self.mesh is not None else None
+        if step is None:
+            known = self.geometry is not None and any(b.name == name for b in self.geometry.bodies)
+            return "" if known else "no such body"
+        return f"step ≤ {step / MM:.3g} mm" if np.isfinite(step) else ""
 
     def _resize_columns(self):
         for column in range(3):
@@ -2962,7 +2994,23 @@ class MainWindow(QMainWindow):
         remove.setEnabled(current is not None)
         remove.triggered.connect(lambda: self._set_type(name, None))
 
+        menu.addSeparator()
+        if name in self.project.local_mesh:
+            menu.addAction("Remove local mesh").triggered.connect(lambda: self._local_mesh(name, False))
+        else:
+            action = menu.addAction("Create local mesh")
+            action.setToolTip("A finer mesh over this body's extent, starting from the main mesh's values")
+            action.triggered.connect(lambda: self._local_mesh(name, True))
+
         menu.exec(self.tree.viewport().mapToGlobal(pos))
+
+    def _local_mesh(self, name, create):
+        """Create a body's local mesh (from the main mesh's values) or remove it."""
+        if create:
+            self.project.create_local_mesh(name)
+        else:
+            self.project.remove_local_mesh(name)
+        self._after_edit()
 
     def _set_type(self, name, type_name):
         try:
@@ -2983,6 +3031,9 @@ class MainWindow(QMainWindow):
             return
         if role == "run":
             self.tree.editItem(item, 0)             # rename in place
+            return
+        if role == "local_mesh_param" and self.project is not None:
+            self.tree.editItem(item, 1)
             return
         if role not in ("param", "setting", "z0path_param") or self.project is None:
             return
@@ -3079,6 +3130,20 @@ class MainWindow(QMainWindow):
                 self.tree.blockSignals(True)
                 item.setText(1, _fmt_value(self.project.z0path[param]))
                 self.tree.blockSignals(False)
+            return
+
+        if role == "local_mesh_param" and column == 1:
+            old = self.project.local_mesh[owner][param]
+            try:
+                self.project.set_local_mesh_value(owner, param, item.text(1).strip().replace(",", "."))
+            except ValueError as error:
+                self.statusBar().showMessage(str(error), 5000)
+            stored = self.project.local_mesh[owner][param]
+            self.tree.blockSignals(True)
+            item.setText(1, _fmt_value(stored))
+            self.tree.blockSignals(False)
+            if stored != old:
+                QTimer.singleShot(0, self._after_edit)      # rebuilds the rows: not under the editor's commit
             return
 
         if role not in ("param", "setting") or column != 1:
