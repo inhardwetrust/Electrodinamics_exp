@@ -115,9 +115,10 @@ its text): `"1.6"`, `"patch_w / 2 + gap"`, `"sqrt(a^2 + b^2)"`.
     ...
     [[feature.point]]              # a sketch's entities: sub-tables of its [[feature]]
 
-    [[body]]                       # per body: its color
+    [[body]]                       # per body: its color, its visibility
     name = "Substrate"
     color = "#2e7d32"
+    visible = false                # optional: hidden (not drawn, not in STEP)
 
     [[group]]                      # flat sets of bodies (a body in one group at most)
     name = "SMA"
@@ -347,7 +348,13 @@ construction line on the axis:
 ## 9. Bodies, groups, placement
 
 - **Bodies** come from features. `[[body]]` holds a body's own properties
-  (`color = "#rrggbb"`); a join or cut keeps them. customcst assigns
+  (`color = "#rrggbb"`, `visible = false`); a join or cut keeps them.
+- **Hidden bodies** (`visible = false`, the eye in the browser): not drawn
+  and **not written to STEP** (every export: Export, STEP on Save, the
+  CLI's `--export-step`, `export_step` of the control channel; the note
+  says "without the hidden X"; all hidden: an error). Still built, still
+  joined / cut by later features, still in the report (`"visible": false`).
+  A helper body (a cutting tool kept for reference) is hidden, not deleted. customcst assigns
   materials by body name: name by meaning (`Substrate`, `Ground`, `Trace`,
   `Patch`), separate bodies per material. Renaming in a file: every
   feature's `body` and the `[[body]]` row (the window's Rename does it).
@@ -392,7 +399,7 @@ the answers of `set` / `undo` / `redo`):
                    extrude: "sketch", "profiles", "distance", "operation", "body",
                    revolve: ... "axis", "angle", import: "file", "bodies",
                    workplane: "base", "offset", "axis", "angle", "points"}],
-     "bodies": [{"name", "volume" (mm³, exact), "solids", "bounds" [[lo], [hi]], "size", "color"}],
+     "bodies": [{"name", "volume" (mm³, exact), "solids", "bounds" [[lo], [hi]], "size", "color", "visible"}],
      "groups": [{"name", "bodies"}],
      "transforms": [{"name", "type", "targets", ..., "what", "error"?}],
      "ok": true | false}
@@ -406,8 +413,8 @@ without `--json`) has one fact per line and ends with `ok` or `NOT OK`.
     ../.venv/Scripts/python.exe main.py PART --report [--json] [--export-step out.step] [--set NAME=FORMULA ...]
 
 - `--report`: the report (text, or `--json`).
-- `--export-step X`: the bodies built (a failed feature's are left out;
-  the output says which).
+- `--export-step X`: the visible bodies built (a failed feature's and the
+  hidden ones are left out; the output says which).
 - `--set NAME=FORMULA` (repeatable): a parameter's formula for this run
   only, the file untouched: sweep variants. A field: `--set mycenter.x=5`.
 - Exit code 0 all built, 1 something failed (the report says what; the
@@ -477,7 +484,11 @@ What the user can do by hand (to talk about it, and to know what they see):
   Circle, Arc, Polyline, Spline, Curve, Project Geometry, Construction,
   Copy / Cut / Paste, Look At, Finish Sketch).
 - **Browser** (left): the origin, the features (a sketch under the
-  feature using it), the bodies (groups, colors, eyes), the placement.
+  feature using it), the bodies (groups, colors, eyes: a body's or a
+  group's eye hides it, saved, one undo step, and out of STEP), the
+  placement. A feature about hidden bodies only is grey (all the bodies
+  it makes or changes hidden; a sketch: all its users grey); it still
+  builds (only the tree shows it).
   While a sketch is edited, its selected entity's values are formula
   fields below left (a point's x / y, a line's ends, a circle's center
   and radius, an arc's): a parameter's name works there (typed names are
@@ -510,7 +521,8 @@ What the user can do by hand (to talk about it, and to know what they see):
 
 ## 14. STEP out
 
-`geometry/step_io.py export_part`: each body a compound with its name and
+`geometry/step_io.py export_part`: the visible bodies only (hidden ones
+left out, said in its note); each body a compound with its name and
 color; names written into `MANIFOLD_SOLID_BREP('...')` too; characters
 beyond ASCII escaped as ISO 10303-21 wants (`\X\F6`, `\X2\041F\X0\`), so
 `Volumenkörper16` reads back intact; the file read back and compared

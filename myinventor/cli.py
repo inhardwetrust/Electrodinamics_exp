@@ -96,7 +96,7 @@ def report(part, result):
                            "solids": kernel.solid_count(shape),
                            "bounds": [[round(float(v), 6) for v in lo], [round(float(v), 6) for v in hi]],
                            "size": [round(float(v), 6) for v in hi - lo],
-                           "color": part.body_color(name)})
+                           "color": part.body_color(name), "visible": part.body_visible(name)})
     groups = [{"name": g.name, "bodies": list(g.bodies)} for g in part.groups]
     transforms = []
     for t in part.transforms:
@@ -173,7 +173,8 @@ def text(data):
         lines.append(f"  {b['name']}: volume {b['volume']:g} mm3, {b['solids']} solid(s), "
                      f"size {' x '.join(f'{v:g}' for v in b['size'])} mm, "
                      f"from ({', '.join(f'{v:g}' for v in lo)}) to ({', '.join(f'{v:g}' for v in hi)})"
-                     + (f", color {b['color']}" if b["color"] else ""))
+                     + (f", color {b['color']}" if b["color"] else "")
+                     + ("" if b["visible"] else ", hidden (not in STEP)"))
     for g in data["groups"]:
         lines.append(f"group {g['name']}: {', '.join(g['bodies'])}")
     for t in data["transforms"]:

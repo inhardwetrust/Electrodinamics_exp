@@ -127,8 +127,8 @@ def check_window():
     row = window._rows[("body", "Copper")]
     actions = window.context_actions(row)
     check("the body's right-click menu: Rename... first", [t for t, _ in actions][:1] == ["Rename..."], f"{actions}")
-    window.view.set_visible("Copper", False)
-    row.setCheckState(0, Qt.Unchecked)
+    row.setCheckState(0, Qt.Unchecked)      # hidden: saved with the part (applied after the signal)
+    settle()
     window.view.select(("body", "Copper"))
     window._on_view_select(("body", "Copper"))
     steps = len(window.doc._undo)
@@ -141,7 +141,7 @@ def check_window():
           and len(window.doc._undo) == steps + 1 and ("body", "Patch") in window._rows
           and ("body", "Copper") not in window._rows, f"{asked} {features}")
     check("  the selection and the hiding follow the name", window.view.selected == ("body", "Patch")
-          and window.view._visible.get("Patch") is False
+          and window.view._visible.get("Patch") is False and not window.part.body_visible("Patch")
           and window._rows[("body", "Patch")].checkState(0) == Qt.Unchecked)
     answers.append("Substrate")
     window._row_double_clicked(window._rows[("body", "Patch")])

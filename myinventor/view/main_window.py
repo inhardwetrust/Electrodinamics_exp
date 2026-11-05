@@ -28,7 +28,9 @@
 #     Solid Bodies    (only when the rebuild made bodies); open a body for
 #                     its properties: Color (a swatch; click: Qt's color dialog,
 #                     right click: Default color), saved with the part
-# - a row's checkbox shows or hides its datum (saved with the part) or body;
+# - a row's checkbox shows or hides its datum or body (a group's: all its
+#   bodies), saved with the part, one undo step; a hidden body is not in STEP;
+#   the features about hidden bodies only are grey (Part.faded_features);
 # - hovering a row pre-highlights its datum or sketch in 3D (green, a hidden
 #   datum or a sketch an extrusion used too, as long as the mouse is there;
 #   selected: blue, as long as it is selected), and hovering one in 3D marks
@@ -195,6 +197,7 @@ PICK_PLANE_HINT = "Start 2D Sketch: select a plane or a flat face of a body (in 
 FACE_TOLERANCE = 1e-6           # m and normal components: a body face lies on a feature's face plane
 ERROR_COLOR = QColor(200, 30, 30)
 EDITING_ROW = QColor(0, 120, 215, 45)        # the sketch being edited
+FADED_COLOR = QColor(140, 140, 140)          # a suppressed transform, a feature about hidden bodies only
 FILE_FILTER = f"myCad part (*{EXTENSION});;All files (*)"
 STEP_FILTER = "STEP (*.step *.stp)"
 TREE_INDENT_PX = 12             # the browser's indent per level (Qt's default ~20)
@@ -686,7 +689,7 @@ class MainWindow(QMainWindow):
             return
         self._modeling_shown = on
         bodies = self._modeling_result().bodies if on else self.result.bodies
-        self.view.set_geometry(Geometry(bodies), reset=False)
+        self._set_geometry(Geometry(bodies), reset=False)
         if on:
             self.statusBar().showMessage("Placement off while modeling (the bodies as built)", 5000)
 
@@ -699,6 +702,26 @@ class MainWindow(QMainWindow):
         """The Result of the whole part (rebuilt if a sketch being edited holds 3D back): for STEP."""
         return self.result if self.result.upto is None else rebuild(self.part, folder=self._folder())
 
+    def _set_geometry(self, geometry, reset):
+        """Bodies into the view, each shown or hidden as the part says (saved with it)."""
+        self.view.set_geometry(geometry, reset=reset)
+        self.view.set_shown(self.part.body_visible)
+
+    def set_bodies_visible(self, names, on):
+        """
+        Bodies shown or hidden (the eye of a body's or a group's row): saved
+        with the part, one undo step; hidden: not drawn, not in STEP.
+        """
+        names = [n for n in names if self.part.body_visible(n) != on]
+        if not names:
+            return
+        for name in names:
+            self.part.set_body_visible(name, on)
+        self.doc.commit()                       # no rebuild: the bodies are the same
+        self.view.set_shown(self.part.body_visible)
+        self._fill_tree()
+        self._update_title()
+
     def show_result(self, result, reset_view=False):
         self.result = result
         if result.upto is None:
@@ -709,7 +732,8 @@ class MainWindow(QMainWindow):
             self.view.set_sketch(self._shown_output(self.editing).frame, self.editing)
         if result.upto is None or reset_view:   # while a sketch is edited, the bodies stay as they were
             self._modeling_shown = False
-            self.view.set_geometry(Geometry(result.bodies), reset=reset_view)
+            self._set_geometry(Geometry(result.bodies), reset=reset_view)
+        self.view.set_shown(self.part.body_visible)     # (undo while a sketch is edited: still the part's)
         self._fill_tree()
         self.parameters.show_parameters(self.part.parameters, result.values, result.errors)
         self.trace_width.set_values(result.values)
@@ -1011,9 +1035,10 @@ class MainWindow(QMainWindow):
 
     def export_step(self, path):
         """
-        The bodies as the rebuild left them, with their names and colors, to
-        a STEP file (overwritten). Returns a note on what was left out (failed
-        features), or "". ValueError if there is no body.
+        The visible bodies as the rebuild left them, with their names and
+        colors, to a STEP file (overwritten). Returns a note on what was left
+        out (failed features, hidden bodies), or "". ValueError if there is
+        no body, or none visible.
         """
         return export_part(path, self.part, self.full_result())
 
@@ -1331,7 +1356,7 @@ class MainWindow(QMainWindow):
             self._show_placed_bodies()
         else:
             self._modeling_shown = False
-            self.view.set_geometry(Geometry(self._frozen.bodies), reset=False)
+            self._set_geometry(Geometry(self._frozen.bodies), reset=False)
             self._modeling_shown = bool(self.part.transforms)
         self._show_sketches(force=True)
         self.view.set_sketch(self._shown_output(self.editing).frame, self.editing)
@@ -1342,7 +1367,7 @@ class MainWindow(QMainWindow):
     def _show_placed_bodies(self):
         if self._frozen_placed is None:
             self._frozen_placed = rebuild(self.part, folder=self._folder())
-        self.view.set_geometry(Geometry(self._frozen_placed.bodies), reset=False)
+        self._set_geometry(Geometry(self._frozen_placed.bodies), reset=False)
         self._modeling_shown = False
 
     def _sketch_body(self, name):
@@ -2390,7 +2415,7 @@ class MainWindow(QMainWindow):
             rolled = Part.from_dict(self.part.to_dict())
             rolled.features = rolled.features[:[f.name for f in rolled.features].index(edit)]
             before = rebuild(rolled, folder=self._folder(), placement=False).bodies
-            self.view.set_geometry(Geometry(before), reset=False)
+            self._set_geometry(Geometry(before), reset=False)
             self._rolled_back = True
             amount = feature["distance"] if self._sweep == "extrude" else feature["angle"]
             axis_key = self._axis_key(feature) if self._sweep == "revolve" else None
@@ -2575,7 +2600,7 @@ class MainWindow(QMainWindow):
         if self._rolled_back:                   # the whole model again
             self._rolled_back = False
             self._modeling_shown = False
-            self.view.set_geometry(Geometry(self.result.bodies), reset=False)
+            self._set_geometry(Geometry(self.result.bodies), reset=False)
         self._show_modeling(False)
         self._extruding = None
         self.extrude_action.setEnabled(True)
@@ -2809,12 +2834,8 @@ class MainWindow(QMainWindow):
         new = new.strip()
         if new == old:
             return True
-        hidden = not self.view._visible.get(old, True)
         selected = self.view.selected == ("body", old)
-        self._commit()
-        if hidden:                              # it stays hidden under its new name
-            self.view.set_visible(new, False)
-            self._fill_tree()
+        self._commit()                          # (hidden, it stays so: its visibility goes with its name)
         if selected:
             self.view.select(("body", new))
             self._on_view_select(("body", new))
@@ -3033,6 +3054,7 @@ class MainWindow(QMainWindow):
                                          datum.visible)
         errors = self.result.feature_errors if self.result is not None else {}
         used = self._consumed_sketches()
+        faded = self.part.faded_features()      # about hidden bodies only: grey (the tree only)
         for feature in self.part.features:
             key = ("feature", feature.name)
             # A row may exist already: made for the sketch it took, which comes earlier in the history.
@@ -3064,6 +3086,11 @@ class MainWindow(QMainWindow):
             if feature.name in errors:
                 item.setForeground(0, QBrush(ERROR_COLOR))
                 tip = f"{tip}\nerror: {errors[feature.name]}"
+            elif feature.name in faded:
+                item.setForeground(0, QBrush(FADED_COLOR))
+                tip += ("\nfaded: what uses it is about hidden bodies only" if feature.TYPE == "sketch"
+                        else f"\nfaded: its {'body is' if len(self.part.feature_bodies(feature)) == 1 else 'bodies are'}"
+                             " hidden (still built)")
             if feature.name == self.editing:
                 item.setBackground(0, EDITING_ROW)
                 font = item.font(0)
@@ -3093,7 +3120,7 @@ class MainWindow(QMainWindow):
                        "were not there (the view, the report, STEP)")
                 row = _checkable(placement, t.name, key, tip, not t["suppressed"])
                 if t["suppressed"]:
-                    row.setForeground(0, QBrush(QColor(140, 140, 140)))
+                    row.setForeground(0, QBrush(FADED_COLOR))
                 if t.name in errors:
                     row.setForeground(0, QBrush(ERROR_COLOR))
                     row.setToolTip(0, f"{tip}\nerror: {errors[t.name]}")
@@ -3109,7 +3136,7 @@ class MainWindow(QMainWindow):
                 if not members:
                     continue
                 key = ("group", g.name)
-                shown = any(self.view._visible.get(b, True) for b in members)
+                shown = any(self.part.body_visible(b) for b in members)
                 row = _checkable(folder, g.name, key, f"group of {len(members)} bodies. Tick: all shown. "
                                  "Select: all selected. Double click: rename. Right click: Rename, Ungroup",
                                  shown)
@@ -3121,8 +3148,9 @@ class MainWindow(QMainWindow):
             for body in bodies:
                 key = ("body", body.name)
                 parent = parents.get(body.name, folder)
-                row = _checkable(parent, body.name, key, "Tick: shown in 3D. Select: selected. "
-                                 "Open it for its properties.", self.view._visible.get(body.name, True))
+                row = _checkable(parent, body.name, key, "Eye: shown in 3D and written to STEP (hidden: neither; "
+                                 "saved with the part). Select: selected. Open it for its properties.",
+                                 self.part.body_visible(body.name))
                 self._rows[key] = row
                 # Its properties, one row each (the color now; a material later).
                 color = self.part.body_color(body.name)
@@ -3165,13 +3193,9 @@ class MainWindow(QMainWindow):
         if key is None:
             return
         on = item.checkState(0) == Qt.Checked
-        if key[0] == "group":                   # all its bodies (as a body's tick: the view only)
-            self.tree.blockSignals(True)
-            for b in self._group_members(key[1]):
-                self.view.set_visible(b, on)
-                if ("body", b) in self._rows:
-                    self._rows[("body", b)].setCheckState(0, Qt.Checked if on else Qt.Unchecked)
-            self.tree.blockSignals(False)
+        if key[0] in ("group", "body"):         # saved with the part; the tree is rebuilt: after this signal
+            names = self._group_members(key[1]) if key[0] == "group" else [key[1]]
+            _later(lambda: self.set_bodies_visible(names, on))
             return
         if key[0] == "entity":                  # a curve's row: after this signal (the tree is rebuilt)
             QTimer.singleShot(0, lambda: self.set_curve_visible(key[1], key[2], on))
@@ -3185,8 +3209,6 @@ class MainWindow(QMainWindow):
             self.part.datum(key[1]).visible = on          # saved with the part, one undo step
             self.view.set_datum_visible(key[1], on)
             self._commit(refresh=False)
-        else:
-            self.view.set_visible(key[1], on)
 
     def _selected_bodies(self):
         """The bodies whose rows are selected in the browser (Shift / Ctrl: several)."""

@@ -1782,6 +1782,11 @@ class GeometryView:
         self._visible[name] = bool(visible)
         self._restyle()
 
+    def set_shown(self, shown):
+        """Every body's visibility at once: shown(name) -> bool (the part's, saved with it)."""
+        self._visible = {name: bool(shown(name)) for name in self._bodies}
+        self._restyle()
+
     def select(self, key):
         """Highlight ("datum" | "body", name) as selected; None: nothing."""
         self.selected = key

@@ -137,5 +137,8 @@ causes:
 - a transform of a body after its group's.
 
 A failed feature's body is left out of the STEP; the export says which.
+So is a hidden body (`[[body]] visible = false`, the user's eye in the
+browser): a body missing from the STEP may simply be hidden (the report's
+`"visible": false`). Do not show it without asking: the user hid it.
 A file that does not read leaves the window as it was: fix it and
 `reload` again.

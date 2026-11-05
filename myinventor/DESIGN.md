@@ -86,8 +86,9 @@ Principles that sidestep them:
   tool, picked in the browser); a failed feature leaves them as they were. Editing a feature
   rolls the view back to the bodies just before it (as Inventor does).
 - **Body properties** live with the body's name, not in the features that
-  make it (`Part.bodies`, `[[body]]` in the file): the color now, the
-  customcst material later. A Cut or Join keeps them.
+  make it (`Part.bodies`, `[[body]]` in the file): the color, the
+  visibility (hidden: not drawn, not in STEP, still built), the customcst
+  material later. A Cut or Join keeps them.
 - **Sketches on faces** (done for extrusions): `plane = "Extrusion1:end"`
   (or `start`, `side.L3`). The plane is computed from the feature's own
   values (its sketch frame, distance, profile line), not looked up among

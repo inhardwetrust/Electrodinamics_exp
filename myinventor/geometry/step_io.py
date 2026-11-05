@@ -84,20 +84,28 @@ def _solids(shape):
 
 def export_part(path, part, result):
     """
-    The bodies as the rebuild left them (model/rebuild.py), with their names
-    and colors, to a STEP file (overwritten). Returns a note on what was left
-    out (failed features), or "". ValueError if there is no body.
+    The visible bodies as the rebuild left them (model/rebuild.py), with their
+    names and colors, to a STEP file (overwritten); hidden ones
+    (Part.body_visible) are left out. Returns a note on what was left out
+    (failed features, hidden bodies), or "". ValueError if there is no
+    body, or none visible.
     """
     from model.part import color_rgb
 
     if not result.shapes:
         raise ValueError("the part has no body yet")
+    shown = {name: shape for name, shape in result.shapes.items() if part.body_visible(name)}
+    hidden = [name for name in result.shapes if name not in shown]
+    if not shown:
+        raise ValueError(f"every body is hidden ({', '.join(hidden)}): show one to export")
     colors = getattr(result, "colors", {})
     write_step(path, [(name, shape, colors.get(name) or (color_rgb(part.body_color(name))
                                                           if part.body_color(name) else None))
-                      for name, shape in result.shapes.items()])
+                      for name, shape in shown.items()])
     failed = list(result.feature_errors)
-    return f"without the failed {', '.join(failed)}" if failed else ""
+    notes = ([f"without the failed {', '.join(failed)}"] if failed else []) + \
+        ([f"without the hidden {', '.join(hidden)}"] if hidden else [])
+    return "; ".join(notes)
 
 
 def write_step(path, bodies):

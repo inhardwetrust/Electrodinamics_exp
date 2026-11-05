@@ -133,14 +133,19 @@ def check_window():
     check("Solid Bodies: a folder G with A and B, C beside", group is not None
           and rows[("body", "A")].parent() is group and rows[("body", "B")].parent() is group
           and rows[("body", "C")].parent() is group.parent())
+    steps = len(window.doc._undo)
     group.setCheckState(0, Qt.Unchecked)
     settle()
-    check("  G's tick off: A and B hidden, C shown",
+    rows = window._rows                     # the tree is rebuilt
+    check("  G's tick off: A and B hidden, C shown, saved with the part, one undo step",
           window.view._visible.get("A") is False and window.view._visible.get("B") is False
-          and window.view._visible.get("C", True) and rows[("body", "A")].checkState(0) == Qt.Unchecked)
+          and window.view._visible.get("C", True) and rows[("body", "A")].checkState(0) == Qt.Unchecked
+          and not window.part.body_visible("A") and not window.part.body_visible("B")
+          and window.part.body_visible("C") and len(window.doc._undo) == steps + 1)
     window._rows[("group", "G")].setCheckState(0, Qt.Checked)
     settle()
-    check("  on again: shown", window.view._visible.get("A") and window.view._visible.get("B"))
+    check("  on again: shown", window.view._visible.get("A") and window.view._visible.get("B")
+          and window.part.body_visible("A") and window.part.bodies.get("A") is None)
     window.tree.setCurrentItem(window._rows[("group", "G")])
     settle()
     check("  selecting G selects A and B, the info tells their volume (16)",

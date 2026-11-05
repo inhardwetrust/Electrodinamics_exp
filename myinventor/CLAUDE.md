@@ -67,7 +67,8 @@ Compatibility with Inventor or any other CAD is not a goal.
   `checks/check_arc.py`, `checks/check_control.py`, `checks/check_probe.py`,
   `checks/check_project.py`, `checks/check_placed_view.py`, `checks/check_suppress.py`,
   `checks/check_extrude_bodies.py`, `checks/check_sketch_props.py`,
-  `checks/check_param_fields.py`, `checks/check_panel_formulas.py`.
+  `checks/check_param_fields.py`, `checks/check_panel_formulas.py`,
+  `checks/check_hidden_export.py`.
 - `tools/probe.py FILE bodies | slice y=-2 | contacts` measures a part or a
   STEP file without the window (`geometry/probe.py`; REFERENCE.md 16).
 - Without the window: `main.py name.part.toml --report [--json]

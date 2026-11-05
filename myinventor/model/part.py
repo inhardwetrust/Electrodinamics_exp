@@ -8,11 +8,13 @@
 #   features     [Feature] in history order (model/features.py); a feature
 #                refers to datums and to features above it by name
 #   bodies       {body name: {property: value}}: what belongs to a body itself,
-#                not to the features making it (its color now; later its
-#                material for customcst). [[body]] in the file:
+#                not to the features making it (its color, its visibility;
+#                later its material for customcst). [[body]] in the file:
 #                    [[body]]
 #                    name = "Solid1"
 #                    color = "#c87533"
+#                    visible = false     # hidden (written only so): not drawn,
+#                                        # not in STEP; still built and used
 #   groups       [Group]: named sets of bodies, flat (a body in one group at
 #                most): moved, hidden... together. [[group]] in the file:
 #                    [[group]]
@@ -44,7 +46,7 @@ from model.transforms import GROUP, TRANSFORM_TYPES, order_error
 
 DATUM_KINDS = ("plane", "axis", "point")
 COLOR = re.compile(r"#[0-9a-fA-F]{6}\Z")
-BODY_PROPERTIES = ("color",)
+BODY_PROPERTIES = ("color", "visible")
 
 
 def color_rgb(text):
@@ -197,6 +199,30 @@ class Part:
             names += f.made_bodies() if hasattr(f, "made_bodies") else (body_list(f["body"]) if "body" in f.values
                                                                          else [])
         return list(dict.fromkeys(names))
+
+    def feature_bodies(self, feature):
+        """The bodies a feature makes or changes (an import: all it makes; a sketch: none)."""
+        if hasattr(feature, "made_bodies"):
+            return feature.made_bodies()
+        return body_list(feature["body"]) if "body" in feature.values else []
+
+    def faded_features(self):
+        """
+        The features about hidden bodies only (the browser fades them): one
+        making or changing bodies, all of them hidden; a sketch whose users
+        are all such. A sketch nothing uses is not.
+        """
+        faded = set()
+        for feature in reversed(self.features):         # users come later: known first
+            bodies = self.feature_bodies(feature)
+            if bodies:
+                if not any(self.body_visible(b) for b in bodies):
+                    faded.add(feature.name)
+            elif feature.TYPE == "sketch":
+                users = self.feature_users(feature.name)
+                if users and all(u in faded for u in users):
+                    faded.add(feature.name)
+        return faded
 
     def rename_body(self, old, new):
         """
@@ -545,6 +571,24 @@ class Part:
             if not isinstance(color, str) or not COLOR.match(color):
                 raise PartError(f"{color!r} is not a color (#rrggbb)")
             props["color"] = color.lower()
+        self._set_props(name, props)
+
+    def body_visible(self, name):
+        """Shown in 3D and written to STEP (the default), or hidden."""
+        return self.bodies.get(name, {}).get("visible", True)
+
+    def set_body_visible(self, name, visible):
+        """A body shown or hidden (hidden: not drawn, not in STEP; still built, still joined / cut)."""
+        if not isinstance(visible, bool):
+            raise PartError(f"visible must be true or false, not {visible!r}")
+        props = dict(self.bodies.get(name, {}))
+        if visible:
+            props.pop("visible", None)
+        else:
+            props["visible"] = False
+        self._set_props(name, props)
+
+    def _set_props(self, name, props):
         if props:
             self.bodies[name] = props
         else:
@@ -633,6 +677,7 @@ class Part:
                 raise PartError(f"{where}: {name!r} is listed twice")
             try:
                 part.set_body_color(name, row.get("color"))
+                part.set_body_visible(name, row.get("visible", True))
             except PartError as error:
                 raise PartError(f"{where} ({name}): {error}") from None
 
