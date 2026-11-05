@@ -13,6 +13,9 @@
 #   (Point 2D: x, y; Point 3D: x, y, z; none); Add Field a field to the
 #   selected one; Delete removes the selected rows (one in use is refused
 #   by the window with its users named).
+# - right click: Color... (a picker) tints the selected parameters' rows
+#   (with their fields), Clear Color takes it off: the user marks the
+#   inputs, the intermediate ones stay white.
 # Rows are known by name: a field's is "mycenter.x". The panel only shows
 # and reports: the window applies the edits to the document (undo, rebuild)
 # and calls show_parameters() again.
@@ -39,6 +42,8 @@ class ParametersPanel(QWidget):
     add_fields_requested = Signal(list)     # a new parameter with these fields
     add_field_requested = Signal(str)       # a new field in this parameter
     delete_requested = Signal(list)         # row names
+    color_requested = Signal(list)          # row names: pick a color for their parameters
+    color_cleared = Signal(list)            # row names: their parameters back to no color
 
     def __init__(self):
         super().__init__()
@@ -57,6 +62,8 @@ class ParametersPanel(QWidget):
         header.setSectionResizeMode(COMMENT, QHeaderView.Stretch)
         self.tree.itemChanged.connect(self._item_changed)
         self.tree.itemSelectionChanged.connect(self._selection_changed)
+        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._context_menu)
         self.tree.itemCollapsed.connect(lambda item: self._collapsed.add(item.data(NAME, KEY)))
         self.tree.itemExpanded.connect(lambda item: self._collapsed.discard(item.data(NAME, KEY)))
 
@@ -105,9 +112,13 @@ class ParametersPanel(QWidget):
                     self._row(item, row, field_, text, _value(row, values, errors), "", errors.get(row),
                               editable=(NAME, FORMULA))
                 item.setExpanded(p.name not in self._collapsed)
+                _tint(item, p.color)
+                for i in range(item.childCount()):
+                    _tint(item.child(i), p.color)
             else:
-                self._row(None, p.name, p.name, p.formula, _value(p.name, values, errors), p.comment,
-                          errors.get(p.name), editable=(NAME, FORMULA, COMMENT))
+                item = self._row(None, p.name, p.name, p.formula, _value(p.name, values, errors), p.comment,
+                                 errors.get(p.name), editable=(NAME, FORMULA, COMMENT))
+                _tint(item, p.color)
         for name in selected & set(self._items):
             self._items[name].setSelected(True)
         self._filling = False
@@ -151,6 +162,27 @@ class ParametersPanel(QWidget):
                 return top.data(NAME, KEY)
         return None
 
+    def context_actions(self, item):
+        """[(text, callable)] of the right-click menu on a row (its selection: the row itself if outside it)."""
+        if item is None:
+            return []
+        if not item.isSelected():
+            self.tree.clearSelection()
+            item.setSelected(True)
+        names = self.selected_names()
+        actions = [("Color...", lambda: self.color_requested.emit(names))]
+        if any(self._items[n].background(NAME).style() != Qt.NoBrush for n in names):
+            actions.append(("Clear Color", lambda: self.color_cleared.emit(names)))
+        return actions
+
+    def _context_menu(self, pos):
+        actions = self.context_actions(self.tree.itemAt(pos))
+        if actions:
+            menu = QMenu(self.tree)
+            for text, call in actions:
+                menu.addAction(text, call)
+            menu.exec(self.tree.viewport().mapToGlobal(pos))
+
     def _selection_changed(self):
         self.add_field.setEnabled(self._owner() is not None)
 
@@ -173,6 +205,18 @@ class _Delegate(QStyledItemDelegate):
     def createEditor(self, parent, option, index):
         editable = index.siblingAtColumn(NAME).data(EDITABLE) or ()
         return super().createEditor(parent, option, index) if index.column() in editable else None
+
+
+def _tint(item, color):
+    """The row's background in the parameter's color (text dark or light to read on it)."""
+    if not color:
+        return
+    background = QColor(color)
+    text = QColor(0, 0, 0) if background.lightnessF() > 0.5 else QColor(255, 255, 255)
+    for column in range(len(COLUMNS)):
+        item.setBackground(column, QBrush(background))
+        if item.foreground(column).color() != ERROR_COLOR:
+            item.setForeground(column, QBrush(text))
 
 
 def _value(name, values, errors):

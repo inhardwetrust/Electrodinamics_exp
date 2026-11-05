@@ -12,6 +12,7 @@
 #   name = "w"
 #   formula = "1.6"
 #   comment = "line width"        # optional
+#   color = "#ffe082"             # optional: its rows tinted in the table (marks the inputs)
 #
 #   [[parameter]]                 # with fields instead of a formula (read as c.x)
 #   name = "c"

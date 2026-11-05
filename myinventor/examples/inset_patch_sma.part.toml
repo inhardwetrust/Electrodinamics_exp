@@ -1,0 +1,489 @@
+format = "mycad-part"
+version = 1
+
+[[parameter]]
+name = "patch"
+comment = "the patch: x its width W, y its resonant length L (along the feed); centered on the board"
+color = "#ffcc80"
+[parameter.fields]
+x = "15.594"
+y = "12.213"
+
+[[parameter]]
+name = "inset"
+comment = "the inset feed: depth into the patch from its feed edge, gap on each side of the line"
+color = "#fff59d"
+[parameter.fields]
+depth = "4.311"
+gap = "0.73"
+
+[[parameter]]
+name = "feed_w"
+formula = "2"
+comment = "the feed line's width (2 mm: ~57 Ohm on 1.34 mm FR4)"
+color = "#fff59d"
+
+[[parameter]]
+name = "board"
+comment = "the board: x, y its size (centered on the origin), h its total thickness, cu the copper on each side"
+color = "#fff59d"
+[parameter.fields]
+x = "50"
+y = "50"
+h = "1.41"
+cu = "0.035"
+
+[[parameter]]
+name = "fr4"
+formula = "board.h - 2 * board.cu"
+comment = "FR4 between the copper layers"
+
+[[parameter]]
+name = "notch"
+comment = "the notch for the connector in the board's -y edge: depth from the edge, width (centered)"
+color = "#fff59d"
+[parameter.fields]
+depth = "3.866"
+w = "8.1"
+
+[[parameter]]
+name = "sma"
+comment = "the SMA end launch as measured (realconnector.stp): axis its coax axis' x in the file, reach its legs over the board, lift its pin axis above its legs' underside, gap between its upper and lower legs (the board it is made for), leg_in / leg_out its upper legs' x from the axis"
+color = "#b3e5fc"
+[parameter.fields]
+axis = "0.5"
+reach = "4"
+lift = "0.46"
+gap = "1.56"
+leg_in = "2.11"
+leg_out = "3"
+
+[[parameter]]
+name = "pad"
+comment = "the pads under the connector's upper legs: dy from the notch's bottom, l along y, w along x from the leg's inner edge outward"
+color = "#fff59d"
+[parameter.fields]
+dy = "1"
+l = "2"
+w = "3.05"
+
+[[feature]]
+name = "BoardSketch"
+type = "sketch"
+plane = "XY Plane"
+
+[[feature.point]]
+name = "P1"
+x = "-board.x/2"
+y = "-board.y/2"
+
+[[feature.point]]
+name = "P2"
+x = "board.x/2"
+y = "-board.y/2"
+
+[[feature.point]]
+name = "P3"
+x = "board.x/2"
+y = "board.y/2"
+
+[[feature.point]]
+name = "P4"
+x = "-board.x/2"
+y = "board.y/2"
+
+[[feature.line]]
+name = "L1"
+start = "P1"
+end = "P2"
+
+[[feature.line]]
+name = "L2"
+start = "P2"
+end = "P3"
+
+[[feature.line]]
+name = "L3"
+start = "P3"
+end = "P4"
+
+[[feature.line]]
+name = "L4"
+start = "P4"
+end = "P1"
+
+[[feature]]
+name = "SubstrateExt"
+type = "extrude"
+sketch = "BoardSketch"
+distance = "fr4"
+operation = "new"
+body = "Substrate"
+profiles = [["L1", "L2", "L3", "L4"]]
+
+[[feature]]
+name = "GroundExt"
+type = "extrude"
+sketch = "BoardSketch"
+distance = "-board.cu"
+operation = "new"
+body = "Ground"
+profiles = [["L1", "L2", "L3", "L4"]]
+
+[[feature]]
+name = "NotchSketch"
+type = "sketch"
+plane = "SubstrateExt:end"
+
+[[feature.point]]
+name = "P1"
+x = "-notch.w/2"
+y = "-board.y/2"
+
+[[feature.point]]
+name = "P2"
+x = "notch.w/2"
+y = "-board.y/2"
+
+[[feature.point]]
+name = "P3"
+x = "notch.w/2"
+y = "-board.y/2 + notch.depth"
+
+[[feature.point]]
+name = "P4"
+x = "-notch.w/2"
+y = "-board.y/2 + notch.depth"
+
+[[feature.line]]
+name = "L1"
+start = "P1"
+end = "P2"
+
+[[feature.line]]
+name = "L2"
+start = "P2"
+end = "P3"
+
+[[feature.line]]
+name = "L3"
+start = "P3"
+end = "P4"
+
+[[feature.line]]
+name = "L4"
+start = "P4"
+end = "P1"
+
+[[feature]]
+name = "NotchCut"
+type = "extrude"
+sketch = "NotchSketch"
+extent = "plane"
+to = "GroundExt:end"
+operation = "cut"
+body = ["Substrate", "Ground"]
+profiles = [["L1", "L2", "L3", "L4"]]
+
+[[feature]]
+name = "TopCopper"
+type = "sketch"
+plane = "SubstrateExt:end"
+
+[[feature.point]]
+name = "K1"
+x = "-patch.x/2"
+y = "-patch.y/2"
+
+[[feature.point]]
+name = "K2"
+x = "-(feed_w/2 + inset.gap)"
+y = "-patch.y/2"
+
+[[feature.point]]
+name = "K3"
+x = "-(feed_w/2 + inset.gap)"
+y = "-patch.y/2 + inset.depth"
+
+[[feature.point]]
+name = "K4"
+x = "feed_w/2 + inset.gap"
+y = "-patch.y/2 + inset.depth"
+
+[[feature.point]]
+name = "K5"
+x = "feed_w/2 + inset.gap"
+y = "-patch.y/2"
+
+[[feature.point]]
+name = "K6"
+x = "patch.x/2"
+y = "-patch.y/2"
+
+[[feature.point]]
+name = "K7"
+x = "patch.x/2"
+y = "patch.y/2"
+
+[[feature.point]]
+name = "K8"
+x = "-patch.x/2"
+y = "patch.y/2"
+
+[[feature.line]]
+name = "K11"
+start = "K1"
+end = "K2"
+
+[[feature.line]]
+name = "K12"
+start = "K2"
+end = "K3"
+
+[[feature.line]]
+name = "K13"
+start = "K3"
+end = "K4"
+
+[[feature.line]]
+name = "K14"
+start = "K4"
+end = "K5"
+
+[[feature.line]]
+name = "K15"
+start = "K5"
+end = "K6"
+
+[[feature.line]]
+name = "K16"
+start = "K6"
+end = "K7"
+
+[[feature.line]]
+name = "K17"
+start = "K7"
+end = "K8"
+
+[[feature.line]]
+name = "K18"
+start = "K8"
+end = "K1"
+
+[[feature.point]]
+name = "F1"
+x = "0"
+y = "-board.y/2 + notch.depth"
+
+[[feature.point]]
+name = "F2"
+x = "0"
+y = "-patch.y/2 + inset.depth"
+
+[[feature.polyline]]
+name = "Feed"
+points = ["F1", "F2"]
+widths = ["feed_w", "feed_w"]
+width = "feed_w"
+start = "flat"
+end = "flat"
+
+[[feature.point]]
+name = "A1"
+x = "sma.leg_in"
+y = "-board.y/2 + notch.depth + pad.dy + pad.l/2"
+
+[[feature.point]]
+name = "A2"
+x = "pad.w"
+y = "0"
+
+[[feature.point]]
+name = "B1"
+x = "-sma.leg_in"
+y = "-board.y/2 + notch.depth + pad.dy + pad.l/2"
+
+[[feature.point]]
+name = "B2"
+x = "-pad.w"
+y = "0"
+
+[[feature.polyline]]
+name = "PadR"
+points = ["A1", "A2"]
+widths = ["pad.l", "pad.l"]
+width = "pad.l"
+start = "flat"
+end = "flat"
+reference = "A1"
+relative = true
+
+[[feature.polyline]]
+name = "PadL"
+points = ["B1", "B2"]
+widths = ["pad.l", "pad.l"]
+width = "pad.l"
+start = "flat"
+end = "flat"
+reference = "B1"
+relative = true
+
+[[feature]]
+name = "PatchExt"
+type = "extrude"
+sketch = "TopCopper"
+distance = "board.cu"
+operation = "new"
+body = "Patch"
+profiles = [["K11", "K12", "K13", "K14", "K15", "K16", "K17", "K18"]]
+
+[[feature]]
+name = "FeedExt"
+type = "extrude"
+sketch = "TopCopper"
+distance = "board.cu"
+operation = "new"
+body = "Trace"
+profiles = [["Feed"]]
+
+[[feature]]
+name = "SMA"
+type = "import"
+file = "inset_patch_sma.files/realconnector.stp"
+sha256 = "b3ca3a28cd2ffd839aac35b41e640c4d4876db66c2ab465d82391ee13584e0fd"
+bodies = ["SMA:connector_outer", "SMA:connector_outer_2", "SMA:connector_dielectric", "SMA:connector_wire", "Port"]
+
+[[feature]]
+name = "LegSketch"
+type = "sketch"
+plane = "SMA:face.2.0"
+
+[[feature.point]]
+name = "P1"
+x = "0.45"
+y = "2"
+
+[[feature.point]]
+name = "P2"
+x = "-0.45"
+y = "2"
+
+[[feature.point]]
+name = "P3"
+x = "-0.45"
+y = "-2"
+
+[[feature.point]]
+name = "P4"
+x = "0.45"
+y = "-2"
+
+[[feature.point]]
+name = "P5"
+x = "-4.65"
+y = "2"
+
+[[feature.point]]
+name = "P6"
+x = "-5.55"
+y = "2"
+
+[[feature.point]]
+name = "P7"
+x = "-5.55"
+y = "-2"
+
+[[feature.point]]
+name = "P8"
+x = "-4.65"
+y = "-2"
+
+[[feature.line]]
+name = "L1"
+start = "P1"
+end = "P2"
+
+[[feature.line]]
+name = "L2"
+start = "P2"
+end = "P3"
+
+[[feature.line]]
+name = "L3"
+start = "P4"
+end = "P3"
+
+[[feature.line]]
+name = "L4"
+start = "P4"
+end = "P1"
+
+[[feature.line]]
+name = "L5"
+start = "P5"
+end = "P6"
+
+[[feature.line]]
+name = "L6"
+start = "P6"
+end = "P7"
+
+[[feature.line]]
+name = "L7"
+start = "P8"
+end = "P7"
+
+[[feature.line]]
+name = "L8"
+start = "P8"
+end = "P5"
+
+[[feature]]
+name = "LegExt"
+type = "extrude"
+sketch = "LegSketch"
+distance = "sma.gap - board.h"
+operation = "join"
+body = "SMA:connector_outer_2"
+profiles = [["L1", "L2", "L3", "L4"], ["L5", "L6", "L7", "L8"]]
+
+[[feature]]
+name = "PadExt"
+type = "extrude"
+sketch = "TopCopper"
+distance = "board.cu"
+operation = "new"
+body = "Conn_Pads"
+profiles = [["PadL"], ["PadR"]]
+
+[[body]]
+name = "Substrate"
+color = "#2e7d32"
+
+[[body]]
+name = "Ground"
+color = "#d4a017"
+
+[[body]]
+name = "Patch"
+color = "#d4a017"
+
+[[body]]
+name = "Trace"
+color = "#d4a017"
+
+[[body]]
+name = "Conn_Pads"
+color = "#bd9a1d"
+
+[[group]]
+name = "SMA"
+bodies = ["SMA:connector_outer", "SMA:connector_outer_2", "SMA:connector_dielectric", "SMA:connector_wire", "Port"]
+
+[[transform]]
+name = "PlaceSMA"
+type = "move"
+offset = ["sma.axis", "-board.y/2 + notch.depth + sma.reach", "fr4 + board.cu + sma.lift"]
+axis = "Y Axis"
+angle = "90"
+targets = ["group:SMA"]

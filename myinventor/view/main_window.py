@@ -584,6 +584,8 @@ class MainWindow(QMainWindow):
         self.parameters.add_fields_requested.connect(self._add_parameter)
         self.parameters.add_field_requested.connect(self._add_parameter_field)
         self.parameters.delete_requested.connect(self._delete_parameters)
+        self.parameters.color_requested.connect(self.pick_parameter_color)
+        self.parameters.color_cleared.connect(lambda names: self.set_parameter_color(names, None))
 
         self.side_tabs = QTabWidget()
         self.side_tabs.setDocumentMode(True)
@@ -3208,6 +3210,19 @@ class MainWindow(QMainWindow):
         field_ = self.part.add_field(name)
         self._commit()
         self.parameters.edit(f"{name}.{field_}")
+
+    def pick_parameter_color(self, names):
+        """Color... on parameter rows: one color for their parameters (the picker starts at the first's)."""
+        current = next((c for c in map(self.part.parameter_color, names) if c), "#ffe082")
+        color = self.ask_color(QColor(current), "Color of " + ", ".join(dict.fromkeys(n.split(".")[0] for n in names)))
+        if color is not None:
+            self.set_parameter_color(names, color.name())
+
+    def set_parameter_color(self, names, color):
+        """'#rrggbb' or None for these parameters (a field's name: its parameter); one undo step."""
+        for name in names:
+            self.part.set_parameter_color(name, color)
+        self._commit()
 
     def _delete_parameters(self, names):
         try:

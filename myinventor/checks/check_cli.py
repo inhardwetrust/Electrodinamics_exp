@@ -15,7 +15,13 @@
 #   - --set NAME=FORMULA (as a process): the variant built and exported
 #     (the substrate 50 wide, the feed to its edge), the file unchanged; an
 #     unknown name or no '=': exit 2, nothing written;
-#   - main.py runs it as a process, without Qt.
+#   - main.py runs it as a process, without Qt;
+#   - the skill's hierarchical example (examples/inset_patch_sma, regenerated
+#     by its builder in a temp folder): it builds, the copper and the
+#     connector where the inputs put them; with other inputs (patch, board,
+#     feed, inset) everything follows: the line from the notch to the inset,
+#     the pads, the connector on the notch and on the copper, its legs
+#     lengthened to the board's thickness.
 #
 #   python checks/check_cli.py
 
@@ -115,7 +121,43 @@ def check_planes():
           "x x (here +Z), out of the body (+X)", got == [[20, -19, 0.2], [22, -17, 0.6]], f"{got}")
 
 
+def check_hierarchical():
+    folder = os.path.join(TMP, "hier")
+    os.makedirs(folder)
+    shutil.copytree(os.path.join(ROOT, "examples", "inset_patch_sma.files"),
+                    os.path.join(folder, "inset_patch_sma.files"))
+    path = os.path.join(folder, "inset_patch_sma.part.toml")
+    subprocess.run([sys.executable, os.path.join(ROOT, "examples", "build_inset_patch_sma.py"), "5", path],
+                   check=True, capture_output=True)
+    check("the hierarchical example: regenerated the same as in examples/",
+          open(path, encoding="utf-8").read() == open(
+              os.path.join(ROOT, "examples", "inset_patch_sma.part.toml"), encoding="utf-8").read())
+
+    def bounds(*sets):
+        proc = subprocess.run([sys.executable, os.path.join(ROOT, "main.py"), path, *sum((["--set", s] for s in sets), []),
+                               "--report", "--json"], capture_output=True, text=True, encoding="utf-8")
+        out = proc.stdout
+        data = json.loads(out[:out.rindex("}") + 1]) if proc.returncode == 0 else {"bodies": []}
+        return proc.returncode, {b["name"]: b["bounds"] for b in data["bodies"]}, {
+            b["name"]: b["volume"] for b in data["bodies"]}
+
+    def near(a, b, tol=1e-4):
+        return all(abs(x - y) < tol for x, y in zip(sum(a, []), sum(b, [])))
+
+    code, b, v = bounds()
+    ok = code == 0 and near(b["Patch"], [[-7.797, -6.1065, 1.34], [7.797, 6.1065, 1.375]])         and near(b["Trace"], [[-1, -21.134, 1.34], [1, -1.7955, 1.375]])         and near(b["Conn_Pads"], [[-5.16, -20.134, 1.34], [5.16, -18.134, 1.375]])         and near(b["SMA:connector_outer_2"], [[-3.25, -30.634, -1.415], [3.25, -17.134, 5.085]])         and abs(v["Substrate"] - (2500 - 8.1 * 3.866) * 1.34) < 1e-3         and abs(v["SMA:connector_outer_2"] - (124.233 + 2 * 0.9 * 4 * 0.15)) < 2e-3
+    check("  builds: the patch centered, the line notch to inset, pads, the connector clamping the board", ok,
+          f"{code} {b.get('Trace')} {b.get('SMA:connector_outer_2')}")
+    code, b, v = bounds("patch.x=17", "patch.y=13", "board.x=60", "board.y=70", "feed_w=2.5", "inset.depth=3.5",
+                        "board.h=1.5")
+    edge = -35 + 3.866                                  # the notch's bottom
+    ok = code == 0 and near(b["Patch"], [[-8.5, -6.5, 1.43], [8.5, 6.5, 1.465]])         and near(b["Trace"], [[-1.25, edge, 1.43], [1.25, -6.5 + 3.5, 1.465]])         and near(b["Conn_Pads"], [[-5.16, edge + 1, 1.43], [5.16, edge + 3, 1.465]])         and near(b["SMA:connector_outer_2"], [[-3.25, edge - 9.5, -1.325], [3.25, edge + 4, 5.175]])         and abs(v["SMA:connector_outer_2"] - (124.233 + 2 * 0.9 * 4 * 0.06)) < 2e-3
+    check("  other inputs: everything follows (line, pads, connector, its legs to a 1.5 board)", ok,
+          f"{code} {b.get('Trace')} {b.get('SMA:connector_outer_2')}")
+
+
 def main():
+    check_hierarchical()
     path = copy()
     code, text = run(path)
     check("the example builds: exit 0, 'ok' last", code == 0 and text.strip().endswith("ok"), text[-200:])

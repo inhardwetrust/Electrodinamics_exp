@@ -127,6 +127,7 @@ class Parameter:
     formula: str = ""
     comment: str = ""
     fields: dict = None
+    color: str = ""         # '#rrggbb' or "": its rows tinted in the table (the user's mark: an input...)
 
     @property
     def has_fields(self):
@@ -491,6 +492,17 @@ class Part:
         self.parameters.append(Parameter(name, "" if fields is not None else formula, comment, fields))
         return name
 
+    def parameter_color(self, name):
+        """'#rrggbb' of a parameter (a field's: its parameter's), or None."""
+        return self.parameter(name.split(".")[0]).color or None
+
+    def set_parameter_color(self, name, color):
+        """color: '#rrggbb', or None for none; a field's name colors its parameter."""
+        p = self.parameter(name.split(".")[0])
+        if color is not None and (not isinstance(color, str) or not COLOR.match(color)):
+            raise PartError(f"{p.name}: {color!r} is not a color (#rrggbb)")
+        p.color = color.lower() if color else ""
+
     def formula_rows(self):
         """[(name, formula)] of every value the parameters make, a field as "name.field", in table order."""
         return [row for p in self.parameters for row in p.rows()]
@@ -624,7 +636,8 @@ class Part:
         if self.parameters:
             data["parameter"] = [{"name": p.name,
                                   **({"fields": dict(p.fields)} if p.has_fields else {"formula": p.formula}),
-                                  **({"comment": p.comment} if p.comment else {})}
+                                  **({"comment": p.comment} if p.comment else {}),
+                                  **({"color": p.color} if p.color else {})}
                                  for p in self.parameters]
         if self.features:
             data["feature"] = [f.to_dict() for f in self.features]
@@ -701,7 +714,7 @@ class Part:
             where = f"parameter {i}"
             if not isinstance(row, dict):
                 raise PartError(f"{where} must be a table")
-            _keys(row, where, allowed={"name", "formula", "fields", "comment"}, required={"name"})
+            _keys(row, where, allowed={"name", "formula", "fields", "comment", "color"}, required={"name"})
             name, comment = row["name"], row.get("comment", "")
             if not isinstance(name, str):
                 raise PartError(f"{where}: name must be a string")
@@ -719,6 +732,8 @@ class Part:
                 raise PartError(f"{where} ({name}): comment must be a string")
             try:
                 part.add_parameter(name, formula if isinstance(formula, str) else repr(formula), comment, fields)
+                if "color" in row:
+                    part.set_parameter_color(name, row["color"])
             except PartError as error:
                 raise PartError(f"{where}: {error}") from None
 

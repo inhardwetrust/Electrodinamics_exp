@@ -70,7 +70,7 @@ Compatibility with Inventor or any other CAD is not a goal.
   `checks/check_param_fields.py`, `checks/check_panel_formulas.py`,
   `checks/check_hidden_export.py`, `checks/check_sketch_history_view.py`,
   `checks/check_sketch_redefine.py`, `checks/check_extrude_to.py`,
-  `checks/check_polyline_reference.py`.
+  `checks/check_polyline_reference.py`, `checks/check_param_colors.py`.
 - `tools/probe.py FILE bodies | slice y=-2 | contacts` measures a part or a
   STEP file without the window (`geometry/probe.py`; REFERENCE.md 16).
 - Without the window: `main.py name.part.toml --report [--json]
@@ -78,7 +78,11 @@ Compatibility with Inventor or any other CAD is not a goal.
   The skill `.claude/skills/mycad/SKILL.md` teaches an AI to draw by
   writing part files and checking them this way (the facts in
   REFERENCE.md); its example is `examples/patch_antenna.part.toml`
-  (check_cli.py checks it and REFERENCE.md's table of sketch-plane axes). The window reloads its open file
+  (check_cli.py checks it and REFERENCE.md's table of sketch-plane axes);
+  its PCB "hierarchical mode" (a few colored inputs drive everything, the
+  user is asked for the board's logic first) has
+  `examples/inset_patch_sma.part.toml`, written by
+  `examples/build_inset_patch_sma.py`. The window reloads its open file
   when another program changes it (`MainWindow.poll_disk`). `--set
   NAME=FORMULA` changes a parameter for that run only (sweep variants).
 - Claude drives the open window through its control channel

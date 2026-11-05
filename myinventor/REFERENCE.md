@@ -101,6 +101,7 @@ its text): `"1.6"`, `"patch_w / 2 + gap"`, `"sqrt(a^2 + b^2)"`.
     name = "h"
     formula = "1.6"
     comment = "substrate"          # optional
+    color = "#fff59d"              # optional: its rows tinted in the table (the inputs)
 
     [[parameter]]                  # a parameter with fields: no formula of its own
     name = "mycenter"
@@ -568,6 +569,9 @@ What the user can do by hand (to talk about it, and to know what they see):
   fields is a row (its values together, "(10, 5)") with a row per field
   under it. Add, With Fields (Point 2D: x, y; Point 3D: x, y, z; none),
   Add Field (to the selected one), Delete (refused while used).
+  Right click: Color... (a picker) tints the selected parameters' rows (with
+  their fields), Clear Color: mark the inputs, leave the intermediate ones
+  white (`color` in the file).
 - **3D**: middle drag rotates, Ctrl + middle (or Space + left) pans, the
   wheel or a right drag zooms, a right click opens a menu (New Sketch on
   a face), left click selects. View buttons (Iso, Top, Front...) top

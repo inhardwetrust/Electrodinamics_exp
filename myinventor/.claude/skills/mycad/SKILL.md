@@ -36,6 +36,70 @@ All paths below are relative to `myinventor/`; the Python is
   part by turning it").
 - Ask only what changes the result and has no sensible default.
 
+## 1a. A PCB: offer the hierarchical mode
+
+Before drawing any PCB (an antenna, a line, a launch), **ask the user
+whether they want the hierarchical mode**. In it, a few input sizes drive
+everything. The user later retunes one input (the patch to a frequency, a
+bigger board, another line width) and nothing else needs touching: the
+lines, the pads and the placed connector follow. The parameters table
+stays flat, so "hierarchical" describes the logic, not the layout.
+
+If they say yes:
+1. **Explain the idea with the worked example**,
+   `examples/inset_patch_sma.part.toml` (written by
+   `examples/build_inset_patch_sma.py`; `checks/check_cli.py` checks that
+   it follows its inputs). Show this description in the user's language:
+
+   > - Base level: the patch, `patch` (x = W, y = L), exactly at the
+   >   board's center. Its inset feed: `inset.depth` into the patch and
+   >   `inset.gap` on each side of the line.
+   > - The board: `board` (x, y, h total, cu copper). The patch is in its
+   >   middle. FR4 between the copper layers is derived:
+   >   `fr4 = board.h - 2 * board.cu`, so it stays white.
+   > - The feed line: `feed_w`. It runs from the connector's notch to the
+   >   inset's bottom, and the inset slot is `feed_w + 2 * inset.gap`.
+   > - The notch for the connector in the board's edge: `notch.depth`,
+   >   `notch.w`. It is cut through the board up to the ground's bottom
+   >   (`extent = "plane"`), so it follows the thickness.
+   > - The pads under the connector's legs: `pad.dy` from the notch,
+   >   `pad.l`, `pad.w` from the leg's inner edge.
+   > - The connector, `sma`, holds measured facts, not design choices: its
+   >   axis offset in the file, the legs' reach, the pin's lift above the
+   >   legs, the gap between its legs, the legs' x. A Move places it by
+   >   meaning: the flange on the notch's bottom, the upper legs on the
+   >   top copper. Its lower legs are lengthened by
+   >   `sma.gap - board.h`, so it clamps any board up to its gap.
+
+2. **Ask the user for their board's logic in that form.** Ask what the
+   base level is, what hangs on what, what stays centered, what touches
+   what, and which sizes they expect to change later. Then **ask for every
+   number they did not give.** Never invent a design size. A connector's
+   sizes are measured (probe) and shown to the user, not asked.
+3. **Build it** by the method below. Every position is a formula of the
+   inputs. Things end where they must by meaning (`extent = "plane"` /
+   `"body"`, a line from the notch to the inset), never by a number worked
+   out by hand. Parameters with fields group what belongs together
+   (`board.x`, `board.y`, `board.h`, `board.cu`). A pad that hangs on a
+   point is a relative polyline (`reference`, `relative = true`), its
+   other points offsets from that point. A placed part follows by formulas
+   in its Move offset: there are no constraints, only formulas.
+4. **Color the parameters** (`color` in `[[parameter]]`, or Color... from
+   the right click in the table):
+   - `#ffcc80` (orange): what gets tuned (the patch);
+   - `#fff59d` (yellow): the other design inputs;
+   - `#b3e5fc` (blue): the measured facts (the connector);
+   - white: intermediate parameters (`fr4`).
+5. **Prove it follows.** Rebuild with other inputs (`--set patch.x=17
+   --set board.y=70 --set feed_w=2.5 ...`) and check the bounds: the line
+   still ends on the inset and starts at the notch, the pads and the
+   connector moved with the notch, the connector is still on the copper.
+   Say what breaks the logic (a board thicker than the connector's gap).
+6. Keep the body names the simulation uses (customcst assigns materials
+   by them). When remodeling an existing design, compare each body with
+   the old STEP (`tools/probe.py OLD.step bodies`) and list every
+   difference in mm.
+
 ## 2. Plan
 
 - Every size that matters is a `[[parameter]]` with a `comment`;
