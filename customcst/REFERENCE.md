@@ -43,7 +43,8 @@ a dielectric, a port or a lumped element, meshes it on a rectilinear
 - the S-matrix and Z_in over a band (VNA-like views, Smith, TDR,
   Touchstone export);
 - the far field at chosen frequencies (D, G, realized G, efficiency,
-  polar cuts, a 3D pattern);
+  polar cuts, a 3D pattern), and against frequency over the band (a
+  sweep);
 - Z0 of a line at a plane, Z0 profiles.
 
 The model is defined by the STEP (geometry, body names) plus a project
@@ -114,6 +115,7 @@ slanted = true                 # refine the step around slanted metal
 [farfield]
 enabled = true         # false: no far field computed, the frequencies kept (quick S11 runs)
 frequencies = "5.6, 5.757, 5.9"   # GHz, within f_min..f_max; "" = off
+sweep_points = 21      # and this many evenly over f_min..f_max, both ends in (0 = none)
 f0 = 5.757             # GHz, what a monitors preset's offsets refer to; 0 = the band's center
 
 [bodies.Substrate]
@@ -184,6 +186,7 @@ p.set_type(bodies["feed"], "port"); p.set_value("feed", "impedance", 50.0)
 p.set_setting("simulation", "f_min", 4.5)    # checked against the others (f_max > f_min, far field in band)
 p.set_setting("mesh", "cells_per_wavelength", 30)
 p.set_setting("farfield", "frequencies", "5.757")
+p.set_setting("farfield", "sweep_points", 21)    # the far field over the band too (0 = none)
 p.add_material("Rogers4003", {"eps_r": 3.55, "tan_d": 0.0027, "f_ref": 10.0})
 p.orphans(read_step(step))                   # sections without a body
 p.save()
@@ -294,6 +297,17 @@ hexahedral mesh:
   field on, padding still 0. Then the fingerprint takes the auto padding
   in (another domain), so runs made without the far field show outdated.
   Check once that λ/4 and λ/2 give the same S11 minimum (< ~0.5 %).
+- **Far field against frequency** (`[farfield] sweep_points` = N,
+  ARCHITECTURE "Far field against frequency"): the far field also at N
+  frequencies evenly over f_min..f_max (both ends; a point within 1 MHz of
+  a listed one left out). One run gives all frequencies (FDTD): each costs
+  ~nothing while stepping (a DFT on the box every few hundred steps), a few
+  seconds after it (oldpatch, 7 M cells, a laptop: ~7 s), ~12 MB of
+  memory, ~0.5 MB of run file per excited port. 20-40 points are fine.
+  The padding follows the listed frequencies (a sweep alone: λ/2 at
+  f_min). At the band's edges the pulse is 20 dB down: the far field
+  there needs accuracy -60 (at -40 / -50 a lossless dipole's efficiency
+  read 0.90-1.08 at the end points, within 2 % inside the band).
 - **Far field** (`[farfield] frequencies`, `enabled`, ARCHITECTURE "Far field"): a
   Huygens box 2 cells inside the meshed domain collects E and H on its
   faces at those frequencies during the run. **It must lie in air**: keep
@@ -327,7 +341,7 @@ prepared   in 2.5 s
 grid       209 × 225 × 75 = 3 526 875 cells, step 0.0275–1.07 mm
 port       feed 50 Ω
 run        4.5-7 GHz, ports feed, stops at -50 dB; numba, 16 threads
-far field  at 5.6, 5.7, 5.757, 5.8, 5.9 GHz
+far field  at 5.6, 5.7, 5.757, 5.8, 5.9 GHz + sweep of 21 frequencies 4.5-7 GHz
 memory     0.57 GB of arrays (4,934,475 cells with PML), time step 56.4 fs, pulse 3.09 ns
 dry run: nothing simulated
 ```
@@ -344,7 +358,8 @@ model = prepare(step)                    # read, ports, mesh, discretize
 why = problem(model.project, model.mesh, model.materials)   # None = can run
 model.materials.shorts                    # [] = none
 sim = model.project.settings["simulation"]
-result = simulate(model.materials, sim["f_min"], sim["f_max"], end_db=-50.0, farfield=[5.757])
+result = simulate(model.materials, sim["f_min"], sim["f_max"], end_db=-50.0, farfield=[5.757],
+                  farfield_sweep=farfield_sweep(model.project.settings))   # project.settings
 ```
 (`simulate` does not save; `run.py` saves with `result_file.save_result`.)
 
@@ -403,7 +418,7 @@ in the conversation; never stop or delete their runs.
 ```python
 import numpy as np
 from solver.result_file import list_results, fingerprint
-from solver.farfield import figures, cut, beamwidth, summary
+from solver.farfield import figures, cut, beamwidth, summary, sweep, realized_from_s, named_mask
 runs, errors = list_results(step)        # oldest first
 run = runs[-1]
 run.name, run.saved, run.ports, run.info  # info: text lines (grid, time, far-field summary)
@@ -418,6 +433,13 @@ angles, db = cut(ff, k, "phi", 0.0)      # plane φ = 0 (E-plane of an x-polariz
 cut(ff, k, "phi", 90.0)                  # H-plane;  cut(ff, k, "theta", 90.0): the horizon
 cut(ff, k, "phi", 0.0, quantity="gain", component="ludwig3_x")   # co / cross polarization
 beamwidth(angles, db)                    # (peak angle, -3 dB width or None)
+named_mask(ff)                           # which frequencies were listed (the rest: the sweep)
+sw = sweep(ff)                           # against frequency, at the maximum: arrays frequency, named,
+                                         # directivity, gain, realized, efficiency, mismatch (dB),
+                                         # theta, phi, beamwidth_phi0, beamwidth_phi90
+sweep(ff, (0.0, 0.0), "ludwig3_x")       # in a fixed direction (theta, phi deg), one polarization
+f_s, rg = realized_from_s(sw, run.frequencies, run.s[(0, 0)])   # realized G between the points:
+                                         # G interpolated + 10 log10(1 - |S11|^2) at every frequency
 ```
 Components: total, theta, phi, ludwig3_x, ludwig3_y; quantities:
 directivity, gain, realized. dB of an exact zero is floored (−100 dBi);
@@ -449,7 +471,7 @@ positionally; `show` takes the run names. From Python:
 | `unlock` | yes | `message` | control back; the message in the status bar |
 | `open` | yes | `path` | read a model (no dialog: a file that does not read is the error) |
 | `reload` | yes | | the open model again (STEP + .toml), the camera kept; meshing follows (`wait`) |
-| `tab` | yes | `name` | `3d`, `results`, `farfield` |
+| `tab` | yes | `name` | `3d`, `results`, `farfield`, `farfield_f` |
 | `show` | yes | run names | tick these runs (the others off) |
 | `run_server` | yes | | Run on server (refused: no model, cannot run, shorts, a run going, a transfer, Remote not set) |
 | `fetch` | yes | `take_server` | Fetch; take_server: take the server's model files where they differ (default: keep ours; also for the fetch after a followed run) |
@@ -457,6 +479,7 @@ positionally; `show` takes the run names. From Python:
 | `farfield` | yes | `frequency` (GHz), `plane` (phi / theta), `at` (deg), `quantity`, `component`, `span`, `show3d`, `cut3d`, `port` | sets the Far field tab (any subset); answer: its choices and the info text (cut maximum, beamwidth, D, G, efficiency) |
 | `view` | yes | `name` (iso, top, bottom, front, back, left, right), `ortho` | a standard view in the 3D View tab |
 | `section` | yes | `axis` (x / y / z), `at` (mm), `on` | the section plane there, shown or not |
+| `farfield_f` | yes | `frequency` (GHz, the marker; the Far field tab follows), `show` (gain / beam), `direction` (max / fixed), `theta`, `phi` (deg), `component`, `curves` (directivity, gain, realized, realized_s, efficiency, mismatch), `port` | sets the Far field vs f tab; answer: its choices, the figures at the marker (`at_marker`), the info text (the realized gain's maximum and its 3 dB band) |
 | `stop_server` | yes | | stop the model's run on the server (no question) |
 | `clean_server` | yes | `list=true`, or `names=[...]` | list the server's models (then `status.server_models`), or delete these (never one running) |
 | `clear_notices` | no | | empty `status.notices` |
@@ -502,7 +525,11 @@ positionally; `show` takes the run names. From Python:
   curve when "Cut in 3D" is), Results (S in dB,
   phase, group delay, SWR, Smith, Z in; a marker; reference plane shift;
   normalize; .sNp), Far field (polar cuts per frequency, port, quantity,
-  component, plane; beamwidth, front/back). Cuts: around x = plane φ at
+  component, plane; beamwidth, front/back; a slider over the run's
+  far-field frequencies), Far field vs f (D, G, realized G, efficiency
+  and mismatch in dB against frequency, at the beam's maximum or a fixed
+  θ, φ; or the beam's direction and widths; the marker moves with the
+  wheel or a click, the Far field tab follows). Cuts: around x = plane φ at
   90° (yz), around y = φ at 0° (xz), around z = θ at 90° (xy).
 - TDR and Z0 profile windows from the Results / Z0 tools.
 

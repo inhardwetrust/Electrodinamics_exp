@@ -58,9 +58,9 @@ Only level 0 knows about OpenCASCADE.
      on the thinner layer's face (`check_mesh`, the 4-layer stack).
 3. **Field monitors** (level 5): DFT fields at chosen frequencies on the
    display grid. Done: the far field (see "Far field").
-4. **Far field, more views** (the polar cuts and the 3D surface are done):
-   a rectangular plot of a cut, the pattern over frequency, a table / CSV
-   export.
+4. **Far field, more views** (the polar cuts, the 3D surface and the
+   figures against frequency are done): a rectangular plot of a cut, a
+   table / CSV export.
 
 ## Key decisions
 
@@ -1197,6 +1197,60 @@ Checks: `checks/check_result_file.py` covers:
   0.996 at 3 GHz): the shortfall is the shield's outside current through
   the face (the cable inside the box). `exclude_ports=False` gives the
   old box.
+
+## Far field against frequency
+
+Realized gain falls off the resonance much faster than the SWR suggests
+(SWR 2 costs only 0.5 dB of mismatch): to see what eats it, the far field
+over the band, not at a few frequencies.
+- `[farfield] sweep_points = N` (0 = none, 2..201): the far field also at N
+  frequencies evenly over f_min..f_max, both ends in, rounded to 0.1 MHz; a
+  point within 1 MHz of a listed one is left out
+  (`settings.farfield_sweep`, `merge_frequencies`). The run's far field
+  holds both, sorted, with `named` (which were listed; older files: all).
+  Not in the fingerprint, like the rest of [farfield]. The auto padding
+  follows the listed frequencies (a sweep added keeps the padding and the
+  fingerprint); a sweep alone: λ/2 at f_min.
+- Cost: one FDTD run carries all frequencies; a far-field frequency is a
+  DFT on the box's faces every `stride` steps (8 samples per period of the
+  pulse's top). oldpatch (7 M cells with the PML, a laptop): a step
+  157 ms, a DFT sample every 321 steps, ~4 ms per frequency: nothing. After
+  the run the radiation integral, ~7 s per frequency; the accumulators
+  ~12 MB per frequency (complex128, 180 k box cells); the run file
+  ~0.5 MB per frequency and excited port.
+- `farfield.sweep(ff, direction, component)`: per frequency D, G, realized
+  G at the maximum or at a fixed (theta, phi) (the nearest grid point),
+  the efficiency, the mismatch p_acc / p_inc in dB (= 1 - |S_kk|^2),
+  the maximum's direction, the -3 dB widths in the cuts phi 0 and 90.
+  realized = G + mismatch exactly; G = D + 10 log10(p_sphere / p_acc),
+  ~ D + efficiency (the efficiency is the box's flux: with a coax through
+  the box the sphere gets 87-95 % of it). `realized_from_s`: between the
+  far-field points, G interpolated (linear in dB) plus the mismatch of S,
+  which the run has at every frequency.
+- The summary in a run's info lists the listed frequencies and one line
+  for the sweep (its range, the realized gain's span).
+- The Far field tab has a slider over the run's frequencies (the sweep's
+  marked "· sweep" in the list). The "Far field vs f" tab
+  (`view/farfield_sweep_panel.py`): Show gain (D, G, realized, efficiency
+  and mismatch in dB on one axis; realized from S11 dashed, the mismatch
+  from S a line, far-field values as points) or beam (degrees); at the
+  beam's maximum or a fixed θ, φ; a polarization; older shown runs dimmed.
+  A marker at a far-field frequency (wheel, click) tied to the Far field
+  tab both ways; the readout: the figures there, the realized gain's
+  maximum and its 3 dB band. `LinePlot` curves take a style (line, points,
+  dash). Control command `farfield_f`, tab `farfield_f`.
+- The band's edges: the pulse is 20 dB down at f_min and f_max, and the
+  far field there is only as good as the stop level. A lossless 47 mm
+  dipole, 2-4 GHz, 9 points: efficiency (should be 1) at -40 dB 0.90 at
+  2 GHz and 1.05 at 4 GHz, at -50 dB 1.08 / 0.97, at -60 dB 1.02 / 1.005;
+  inside the band within 1.5 % at -50. The readout warns at the band's
+  outer tenths when the run stopped above -60 dB.
+- `check_farfield_sweep`: the settings (points, the left-out duplicate,
+  padding, fingerprint, refused values, the key's round trip), a dipole
+  run with a sweep (the listed frequency's pattern bit-identical to a run
+  without it), sweep() against figures(), realized = G + mismatch, the
+  mismatch against S11, a fixed direction, the beamwidth, the tabs and
+  farfield_f.
 
 ## Waveguide ports
 

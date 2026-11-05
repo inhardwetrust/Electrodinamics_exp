@@ -24,7 +24,7 @@ from geometry.holes import find_holes, via_body
 from geometry.step_io import read_step
 from mesh.rectilinear import build_grid
 from project.project_file import Project
-from project.settings import EXCITE_ALL
+from project.settings import EXCITE_ALL, merge_frequencies
 from solver.farfield import FarFieldBox, far_field, summary
 from solver.fdtd import FdtdSolver
 from solver.result_file import SimulationResult
@@ -121,13 +121,16 @@ def parameters(project, mesh, materials, via_bodies):
 
 
 def simulate(materials, f_min, f_max, trim_pulse=False, end_db=-40.0, excite=None, progress=None,
-             started=None, farfield=()):
+             started=None, farfield=(), farfield_sweep=()):
     """
     One run per excited port (excite: names, None = all), the others
     terminated: the S columns and Z_in. progress(port, t, level_db,
     pulse_duration) at each energy check; returning False stops: None is
     returned. started(port, solver) when a port's solver is built.
-    farfield: GHz, the far-field monitor's frequencies (empty: off).
+    farfield: GHz, the far-field monitor's listed frequencies; farfield_sweep:
+    GHz, its sweep's (project.settings farfield_named / farfield_sweep; both
+    empty: off). The run's far field holds both, sorted, `named` telling
+    which were listed.
     """
     begin = time.perf_counter()
     ports = list(materials.ports) + list(materials.waveports)
@@ -144,8 +147,9 @@ def simulate(materials, f_min, f_max, trim_pulse=False, end_db=-40.0, excite=Non
             continue                    # not excited: its column of S stays empty
         solver = FdtdSolver(materials, f_min, f_max, active_port=active, trim_pulse=trim_pulse)
         box = None
-        if len(farfield):
-            box = FarFieldBox(solver, np.asarray(farfield, dtype=np.float64) * 1e9)
+        if len(farfield) or len(farfield_sweep):
+            frequencies, named = merge_frequencies(farfield, farfield_sweep)
+            box = FarFieldBox(solver, np.asarray(frequencies, dtype=np.float64) * 1e9, named=named)
             solver.monitors.append(box)
         if started is not None:
             started(active, solver)

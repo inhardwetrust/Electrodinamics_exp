@@ -26,7 +26,7 @@
 #   unlock [message]             give it back; message in the status bar
 #   open path / reload           read a model / the open one again (no dialog:
 #                                a file that does not read is an error answer)
-#   tab name                     3d | results | farfield
+#   tab name                     3d | results | farfield | farfield_f
 #   show runs=[names]            tick these runs in Results (all others off)
 #   screenshot path              window.grab() into a PNG
 #   run_server / fetch           the Remote tab's ▶ Run on server / Fetch;
@@ -35,6 +35,9 @@
 #   preset kind name             apply a mesh / monitors preset (project/presets.py)
 #   farfield ...                 the Far field tab: frequency (GHz), plane phi|theta,
 #                                at (deg), quantity, component, span, show3d, cut3d
+#   farfield_f ...               the Far field vs f tab: frequency (GHz, the marker),
+#                                show gain|beam, direction max|fixed, theta, phi (deg),
+#                                component, curves [names], port; answers the figures
 #   view name [ortho]            iso, top, bottom, front, back, left, right
 #   section axis at [on]         the section plane: x|y|z at mm, shown or not
 #   stop_server                  the server's run stopped (no question)
@@ -237,11 +240,11 @@ def reload(window):
     return status(window)
 
 
-TAB_NAMES = ("3d", "results", "farfield")
+TAB_NAMES = ("3d", "results", "farfield", "farfield_f")
 
 
 def tab(window, name):
-    """Show a tab: 3d | results | farfield."""
+    """Show a tab: 3d | results | farfield | farfield_f."""
     if name not in TAB_NAMES:
         raise CommandError(f"tab must be one of {TAB_NAMES}")
     window.tabs.setCurrentIndex(TAB_NAMES.index(name))
@@ -399,13 +402,83 @@ def farfield(window, frequency=None, plane=None, at=None, quantity=None, compone
     finally:
         for widget in widgets:
             widget.blockSignals(False)
+    panel._sync_slider()
     panel._redraw()
+    if frequency is not None:
+        panel.frequency_changed.emit(float(panel.frequency.currentData()))
     window.tabs.setCurrentWidget(panel)
     text = re.sub(r"<[^>]+>", "", panel.info.text().replace("<br>", "\n"))
     return {"frequency_ghz": panel.frequency.currentData() / 1e9, "plane": panel.plane.currentData(),
             "at": panel.angle.value(), "quantity": panel.quantity.currentData(),
             "component": panel.component.currentData(), "show3d": panel.show_3d.isChecked(),
             "cut3d": panel.cut_3d.isChecked(), "info": text}
+
+
+def farfield_f(window, frequency=None, show=None, direction=None, theta=None, phi=None, component=None,
+               curves=None, port=None):
+    """
+    The Far field vs f tab: frequency GHz (the marker, the Far field tab follows), show gain|beam,
+    direction max|fixed, theta / phi deg, component, curves [names of the gain view], port.
+    """
+    panel = window.farfield_sweep_panel
+    if panel.primary is None:
+        raise CommandError("no shown run with a far field (tick one: show)")
+
+    def choose(combo, value, what):
+        for i in range(combo.count()):
+            if combo.itemData(i) == value:
+                combo.setCurrentIndex(i)
+                return
+        raise CommandError(f"{what} must be one of {[combo.itemData(i) for i in range(combo.count())]}")
+
+    if curves is not None:
+        curves = [curves] if isinstance(curves, str) else list(curves)
+        unknown = [c for c in curves if c not in panel.curves]
+        if unknown:
+            raise CommandError(f"unknown curves {unknown}: one of {list(panel.curves)}")
+    if theta is not None and not 0 <= float(theta) <= 180:
+        raise CommandError("theta must be within 0..180 degrees")
+    widgets = [panel.port, panel.view, panel.direction, panel.theta, panel.phi, panel.component,
+               *panel.curves.values()]
+    for widget in widgets:
+        widget.blockSignals(True)
+    try:
+        if port is not None:
+            choose(panel.port, port, "port")
+        if show is not None:
+            choose(panel.view, show, "show")
+        if direction is not None:
+            choose(panel.direction, direction, "direction")
+        if theta is not None:
+            panel.theta.setValue(int(round(float(theta))))
+        if phi is not None:
+            panel.phi.setValue(int(round(float(phi) / 2.0)) * 2 % 360)
+        if component is not None:
+            choose(panel.component, component, "component")
+        if curves is not None:
+            for key, box in panel.curves.items():
+                box.setChecked(key in curves)
+    finally:
+        for widget in widgets:
+            widget.blockSignals(False)
+    if frequency is not None:
+        panel._move_marker(float(frequency) * 1e9)
+    panel._redraw()
+    window.tabs.setCurrentWidget(panel)
+    sw = panel.figures(panel.primary)
+    k = int(abs(sw["frequency"] - panel.marker).argmin())
+
+    def number(x):
+        return None if x != x else round(float(x), 4)
+
+    return {"frequency_ghz": panel.marker / 1e9, "show": panel.view.currentData(),
+            "direction": panel.direction.currentData(), "theta": panel.theta.value(), "phi": panel.phi.value(),
+            "component": panel.component.currentData(),
+            "curves": [key for key, box in panel.curves.items() if box.isChecked()],
+            "at_marker": {key: number(sw[key][k]) for key in
+                          ("directivity", "gain", "realized", "efficiency", "mismatch", "theta", "phi",
+                           "beamwidth_phi0", "beamwidth_phi90")} | {"listed": bool(sw["named"][k])},
+            "info": re.sub(r"<[^>]+>", "", panel.info.text().replace("<br>", chr(10)))}
 
 
 def stop_server(window):
@@ -451,6 +524,7 @@ COMMANDS = {
     "fetch": (fetch, True),
     "preset": (preset, True),
     "farfield": (farfield, True),
+    "farfield_f": (farfield_f, True),
     "view": (view, True),
     "section": (section, True),
     "stop_server": (stop_server, True),

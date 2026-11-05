@@ -7,7 +7,8 @@
 #       run.lock, our processes, free disk
 #   ... sync-code
 #       backs the server's code up (~/customcst-code-<time>.tgz, no models,
-#       no .venv; the 3 newest backups are kept) and uploads every git-tracked code file (not models/,
+#       no .venv; the 3 newest backups are kept) and uploads every git-tracked code file present
+#       here, and new untracked .py files (not models/
 #       docs/, stepmodel/, images): the server must run the same code
 #   ... sweep NAME -- <sweep.py arguments without FOLDER>
 #       uploads sweep.py and tools/make_test_models.py, starts sweep.py in
@@ -58,7 +59,13 @@ def status():
 
 def sync_code():
     files = subprocess.run(["git", "ls-files", "."], capture_output=True, text=True, check=True).stdout.splitlines()
-    files = [f for f in files if not f.startswith(CODE_EXCLUDE) and not f.endswith(".png")]
+    # new modules not committed yet go too (the code being uploaded is the working tree's)
+    files += [f for f in subprocess.run(["git", "ls-files", "--others", "--exclude-standard", "."],
+                                        capture_output=True, text=True, check=True).stdout.splitlines()
+              if f.endswith(".py")]
+    # tracked files deleted in the working tree are skipped (they are gone here, not code)
+    files = sorted(f for f in set(files) if not f.startswith(CODE_EXCLUDE) and not f.endswith(".png")
+                   and os.path.isfile(f))
     stamp = time.strftime("%Y%m%d-%H%M%S")
     with sync.session(_config()) as r:
         if r.read_json(r.path("run.lock")) is not None:

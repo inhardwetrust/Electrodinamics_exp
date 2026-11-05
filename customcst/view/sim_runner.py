@@ -16,12 +16,14 @@ class _Worker(QObject):
     finished = Signal(object)                # SimulationResult or None
     failed = Signal(str)
 
-    def __init__(self, materials, f_min, f_max, trim_pulse=False, end_db=-40.0, excite=None, farfield=()):
+    def __init__(self, materials, f_min, f_max, trim_pulse=False, end_db=-40.0, excite=None, farfield=(),
+                 farfield_sweep=()):
         super().__init__()
         self.materials, self.f_min, self.f_max = materials, f_min, f_max
         self.trim_pulse, self.end_db = trim_pulse, end_db
         self.excite = excite            # port names to excite, None = all
-        self.farfield = farfield        # GHz, the far-field monitor's frequencies
+        self.farfield = farfield        # GHz, the far-field monitor's listed frequencies
+        self.farfield_sweep = farfield_sweep    # GHz, its sweep's
         self._stop = False
 
     def stop(self):
@@ -30,7 +32,8 @@ class _Worker(QObject):
     def run(self):
         try:
             result = simulate(self.materials, self.f_min, self.f_max, self.trim_pulse, self.end_db, self.excite,
-                              progress=self._report, farfield=self.farfield)
+                              progress=self._report, farfield=self.farfield,
+                              farfield_sweep=self.farfield_sweep)
             self.finished.emit(result)
         except Exception as error:          # report anything to the UI
             self.failed.emit(f"{type(error).__name__}: {error}")
@@ -54,11 +57,12 @@ class SimulationRunner(QObject):
     def running(self):
         return self._thread is not None
 
-    def start(self, materials, f_min, f_max, trim_pulse=False, end_db=-40.0, excite=None, farfield=()):
+    def start(self, materials, f_min, f_max, trim_pulse=False, end_db=-40.0, excite=None, farfield=(),
+              farfield_sweep=()):
         if self.running:
             return
         self._thread = QThread()
-        self._worker = _Worker(materials, f_min, f_max, trim_pulse, end_db, excite, farfield)
+        self._worker = _Worker(materials, f_min, f_max, trim_pulse, end_db, excite, farfield, farfield_sweep)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.progress.connect(self.progress)

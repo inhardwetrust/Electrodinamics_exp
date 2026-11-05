@@ -37,6 +37,7 @@ from project.project_file import UP_AXES, Z0PATH_PARAMS, Project, ProjectError, 
 from project.settings import SECTIONS
 from view.control import ControlServer
 from view.farfield_panel import FarFieldPanel
+from view.farfield_sweep_panel import FarFieldSweepPanel
 from view.presets_panel import PresetsPanel
 from view.geometry_view import GeometryView
 from view.profile_window import ProfileWindow
@@ -44,7 +45,8 @@ from view.remote_panel import RemotePanel, RemoteRunner
 from view.results_panel import ResultsPanel
 from view.tdr_window import TdrWindow
 from view.view_buttons import ViewButtons
-from project.settings import (EXCITE_ALL, NOT_IN_FINGERPRINT, accuracy_db, auto_padding, farfield_frequencies,
+from project.settings import (EXCITE_ALL, NOT_IN_FINGERPRINT, accuracy_db, auto_padding,
+                              farfield_named, farfield_sweep,
                               padding_m)
 from solver.result_file import (delete_result, fingerprint, format_duration, list_results,
                                 rename_result, results_dir, save_result)
@@ -633,6 +635,11 @@ class MainWindow(QMainWindow):
         self.farfield_panel.pattern_changed.connect(self._show_pattern)
         self.farfield_panel.cut_changed.connect(self._show_cut)
         self.tabs.addTab(self.farfield_panel, "Far field")
+        self.farfield_sweep_panel = FarFieldSweepPanel()
+        self.tabs.addTab(self.farfield_sweep_panel, "Far field vs f")
+        # one frequency in both tabs: the pattern follows the marker and back
+        self.farfield_panel.frequency_changed.connect(self.farfield_sweep_panel.set_frequency)
+        self.farfield_sweep_panel.frequency_changed.connect(self.farfield_panel.set_frequency)
 
     def _show_pattern(self, pattern):
         """Far field > Show in 3D: the pattern around the model's center, 0.8 of its size across."""
@@ -729,7 +736,8 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(True)
         self.runner.start(self.materials, sim["f_min"], sim["f_max"], sim["trim_pulse"], self._end_db,
                           None if excite == EXCITE_ALL else [excite],
-                          farfield=farfield_frequencies(self.project.settings))
+                          farfield=farfield_named(self.project.settings),
+                          farfield_sweep=farfield_sweep(self.project.settings))
 
     def _sim_progress(self, port, t, level, pulse_duration):
         self.statusBar().showMessage(
@@ -1992,8 +2000,8 @@ class MainWindow(QMainWindow):
         far = _group_item(item, "Far field", "farfield", SECTIONS["farfield"].params[0].tooltip)
         for param in SECTIONS["farfield"].params:
             self._setting_row(far, "farfield", param)
-        self._note_row(far, "farfield", "off, or no frequencies: none computed; D, G and efficiency "
-                                        "under Results > the run", "gray")
+        self._note_row(far, "farfield", "off, or no frequencies and no sweep: none computed; the pattern in "
+                                        "the Far field tab, against frequency in Far field vs f", "gray")
         self._preset_row(far, "monitors")
         far.setExpanded(True)
         item.setExpanded(True)
@@ -2682,6 +2690,9 @@ class MainWindow(QMainWindow):
         shown = [r for r in self.runs if (r.path or id(r)) in self.shown]
         self.results.set_results(shown)
         self.farfield_panel.set_results(shown)
+        self.farfield_sweep_panel.set_results(shown)
+        if self.farfield_panel.frequency.currentData() is not None:
+            self.farfield_sweep_panel.set_frequency(self.farfield_panel.frequency.currentData())
         if not self.runs:
             self.results.set_message("no results yet: ▶ Simulate")
         elif not shown:

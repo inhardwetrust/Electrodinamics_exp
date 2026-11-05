@@ -85,8 +85,10 @@ def _take(array, index):
 class FarFieldBox:
     """Collects the tangential fields on the Huygens box during a run (see the header)."""
 
-    def __init__(self, solver, frequencies, gap=FAR_FIELD_GAP, exclude_ports=True):
+    def __init__(self, solver, frequencies, gap=FAR_FIELD_GAP, exclude_ports=True, named=None):
         self.frequencies = np.asarray(frequencies, dtype=np.float64)
+        # which frequencies were listed (looked at in the pattern); the others are a sweep's
+        self.named = np.ones(len(self.frequencies), bool) if named is None else np.asarray(named, bool)
         self.omega = 2.0 * math.pi * self.frequencies
         pulse = solver.pulse
         half_band = math.sqrt(math.log(10.0)) / (math.pi * pulse.tau)
@@ -513,15 +515,113 @@ def figures(ff):
     return out
 
 
+def named_mask(ff):
+    """Which of the run's far-field frequencies were listed (older runs: all)."""
+    n = len(ff["frequencies"])
+    return np.asarray(ff["named"], bool) if "named" in ff and len(ff["named"]) == n else np.ones(n, bool)
+
+
 def summary(ff):
-    """Text lines of figures(), one per frequency, plus a warning if a body crosses the box."""
+    """
+    Text lines of figures(), one per listed frequency, one for the sweep's
+    frequencies, plus a warning if a body crosses the box.
+    """
+    named = named_mask(ff)
+    rows = figures(ff)
     lines = [f"{x['frequency'] / 1e9:g} GHz: D {x['directivity']:.2f} dBi, G {x['gain']:.2f} dBi, "
              f"realized {x['realized']:.2f} dBi, efficiency {100 * x['efficiency']:.1f} %, "
-             f"max at theta {x['theta']:g}, phi {x['phi']:g}" for x in figures(ff)]
+             f"max at theta {x['theta']:g}, phi {x['phi']:g}" for x, n in zip(rows, named) if n]
+    swept = [x for x, n in zip(rows, named) if not n]
+    if swept:
+        best = max(swept, key=lambda x: x["realized"])
+        lines.append(f"sweep: {len(swept)} frequencies {swept[0]['frequency'] / 1e9:g}-"
+                     f"{swept[-1]['frequency'] / 1e9:g} GHz, realized gain "
+                     f"{min(x['realized'] for x in swept):.2f} .. {best['realized']:.2f} dBi "
+                     f"(the most at {best['frequency'] / 1e9:g} GHz)")
     if int(ff["cut_edges"]):
         lines.append(f"⚠ a body crosses the far-field box ({int(ff['cut_edges'])} edges in material): "
                      "more padding (Simulation > padding) for a reliable pattern")
     return lines
+
+
+# Against frequency (the Far field vs f tab). Per far-field frequency of a
+# run, in a direction:
+#   - the maximum (direction None): where the component's U is largest;
+#   - a fixed direction (theta, phi in degrees): the nearest point of the
+#     stored grid (THETA_STEP x PHI_STEP), reported as used.
+# D, G and realized G there (dBi), the radiation efficiency and the
+# mismatch p_acc / p_inc (= 1 - |S_kk|^2 at the excited port), so (dB)
+#   realized = G + mismatch                       (exact)
+#   G = D + 10 log10(p_sphere / p_acc) ~ D + efficiency
+# (equal when the sphere gets the box's whole flux; with a connector's
+# coax through the box it gets 87-95 %, G then reads that much lower),
+# which shows what eats the gain away from the resonance. The -3 dB beamwidths
+# are those of the component's directivity in the cuts phi = 0 and 90
+# around each cut's own maximum.
+# realized_from_s() fills in between the far-field frequencies: G (dB)
+# interpolated linearly, plus the mismatch from S, which the run has at
+# every frequency: G and D change slowly over a band, the match does not.
+
+
+def sweep(ff, direction=None, component="total"):
+    """
+    Arrays over the run's far-field frequencies: frequency (Hz), named
+    (listed, not the sweep's), directivity, gain, realized (dBi),
+    efficiency (fraction), mismatch (dB), theta, phi (degrees: the
+    maximum's direction, or the grid point used for `direction`),
+    beamwidth_phi0, beamwidth_phi90 (degrees, NaN: no -3 dB point).
+    """
+    theta, phi = np.asarray(ff["theta"], float), np.asarray(ff["phi"], float)
+    n = len(ff["frequencies"])
+    out = {key: np.full(n, np.nan) for key in ("directivity", "gain", "realized", "efficiency", "mismatch",
+                                               "theta", "phi", "beamwidth_phi0", "beamwidth_phi90")}
+    if direction is not None:
+        t0, p0 = float(direction[0]), float(direction[1])
+        if not 0.0 <= t0 <= 180.0:
+            raise ValueError(f"theta must be within 0..180 degrees, got {t0:g}")
+        fixed = (int(np.argmin(np.abs(theta - t0))),
+                 int(np.argmin(np.abs(((phi - p0 + 180.0) % 360.0) - 180.0))))
+    for k in range(n):
+        u = component_intensity(ff, k, component)
+        where = fixed if direction is not None else np.unravel_index(int(np.argmax(u)), u.shape)
+        u0 = float(u[where])
+        for quantity in QUANTITIES:
+            out[quantity][k] = float(in_dbi(ff, k, u0, quantity))
+        p_acc, p_inc = float(ff["p_acc"][k]), float(ff["p_inc"][k])
+        if p_acc <= 0:
+            out["gain"][k] = np.nan
+        else:
+            out["efficiency"][k] = float(ff["p_box"][k]) / p_acc
+        out["mismatch"][k] = 10.0 * math.log10(p_acc / p_inc) if p_acc > 0 and p_inc > 0 else np.nan
+        out["theta"][k], out["phi"][k] = theta[where[0]], phi[where[1]]
+        for at, key in ((0.0, "beamwidth_phi0"), (90.0, "beamwidth_phi90")):
+            width = beamwidth(*cut(ff, k, "phi", at, "directivity", component))[1]
+            out[key][k] = np.nan if width is None else width
+    out["frequency"] = np.asarray(ff["frequencies"], float)
+    out["named"] = named_mask(ff)
+    return out
+
+
+def mismatch_db(s_kk):
+    """10 log10(1 - |S_kk|^2): the share of the incident power the port accepts, dB (NaN at >= 1)."""
+    accepted = 1.0 - np.abs(np.asarray(s_kk, dtype=np.complex128)) ** 2
+    return np.where(accepted > 0, 10.0 * np.log10(np.maximum(accepted, 1e-300)), np.nan)
+
+
+def realized_from_s(swept, frequencies, s_kk):
+    """
+    (frequencies, dBi): the realized gain between the far-field
+    frequencies, from sweep()'s gain interpolated (linear in dB) plus the
+    mismatch of S_kk at every frequency of the run (Hz) within their range.
+    """
+    f_ff, gain = swept["frequency"], swept["gain"]
+    good = np.isfinite(gain)
+    frequencies = np.asarray(frequencies, float)
+    if good.sum() < 2:
+        return frequencies[:0], frequencies[:0]
+    inside = (frequencies >= f_ff[good].min()) & (frequencies <= f_ff[good].max())
+    f = frequencies[inside]
+    return f, np.interp(f, f_ff[good], gain[good]) + mismatch_db(np.asarray(s_kk)[inside])
 
 
 def far_field(box, solver):
@@ -548,4 +648,5 @@ def far_field(box, solver):
         "cut_edges": np.array(box.cut),
         "excluded_cells": np.array(sum(box.excluded.values())),
         "stride": np.array(box.stride),
+        "named": box.named.copy(),
     }

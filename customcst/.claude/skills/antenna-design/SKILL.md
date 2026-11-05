@@ -139,7 +139,15 @@ REFERENCE 12 (`list_results`, `figures`, `cut`, `beamwidth`, `summary`):
 - S11: the minimum (GHz, dB, Z), the -10 dB band;
 - per far-field frequency: D, G, realized G, efficiency, the beam's
   direction (theta, phi), the beamwidths in the E and H planes,
-  front/back, the front asymmetry (`scripts/sweep.py front_asymmetry`).
+  front/back, the front asymmetry (`scripts/sweep.py front_asymmetry`);
+- **over the band** (`[farfield] sweep_points` 21-31 in the final run,
+  accuracy -60 if the band's edges matter): `sweep(ff)` / the Far field vs
+  f tab: the realized gain's maximum and its 3 dB band, at the maximum and
+  along the normal (`direction` fixed, theta 0). What eats it off the
+  resonance: realized = G + mismatch, G - D ~ the efficiency; a mismatch
+  of SWR 2-3 is only 0.5-1.25 dB, a larger drop is the efficiency or the
+  beam moving away. Show it: `ui.py farfield_f frequency=5.42
+  direction=fixed theta=0 phi=0`.
 - **E and H planes follow the feed**: the E plane holds the resonant
   length (the feed's direction). Fed along y (oldpatch, patch_antenna_sma):
   E = cut phi 90 (around x, the yz plane), H = phi 0. Fed along x: the

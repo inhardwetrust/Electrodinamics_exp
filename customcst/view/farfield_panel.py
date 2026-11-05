@@ -3,8 +3,11 @@
 # The "Far field" tab: the radiation pattern of the shown runs (ticked in
 # Project > Results) that carry a far field (Simulation > Monitors > Far
 # field), as a polar cut (solver/farfield.py cut()):
-#   - frequency: one of the primary run's far-field frequencies; an older
-#     shown run is drawn (dimmed) when it has the same one;
+#   - frequency: one of the primary run's far-field frequencies (the listed
+#     ones, and a sweep's marked "sweep"), from the list or the slider under
+#     it (the wheel steps through them); an older shown run is drawn
+#     (dimmed) when it has the same one. frequency_changed tells the Far
+#     field vs f tab, whose marker moves it back (set_frequency);
 #   - quantity: directivity, gain or realized gain, dBi;
 #   - polarization: total, E_theta, E_phi, Ludwig-3 x / y (co / cross for
 #     a patch with its E along x);
@@ -26,10 +29,10 @@
 import numpy as np
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QHBoxLayout, QLabel, QSpinBox, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QHBoxLayout, QLabel, QSlider, QSpinBox, QVBoxLayout, QWidget,
 )
 
-from solver.farfield import FLOOR_DBI, beamwidth, cut, cut_curve, cut_sheet, figures, surface
+from solver.farfield import FLOOR_DBI, beamwidth, cut, cut_curve, cut_sheet, figures, named_mask, surface
 from view.polar_plot import PolarPlot
 
 QUANTITY_LABELS = {"directivity": "Directivity", "gain": "Gain", "realized": "Realized gain"}
@@ -55,6 +58,7 @@ class FarFieldPanel(QWidget):
     # (points (N, 3) on the unit scale, faces, RGBA colors) or None
     pattern_changed = Signal(object)
     cut_changed = Signal(object)        # (curve (N, 3), sheet vertices, sheet faces) at radius 0..1, or None
+    frequency_changed = Signal(float)   # Hz: the frequency shown (the user's choice)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -90,7 +94,12 @@ class FarFieldPanel(QWidget):
                                "(the curve in the scale of the 3D pattern: it lies on it)")
         self.cut_3d.toggled.connect(self._redraw)
 
-        for widget in (self.frequency, self.port, self.quantity, self.component, self.span):
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setToolTip("The far-field frequencies of the run (the wheel steps through them)")
+        self.slider.setTickPosition(QSlider.TicksBelow)
+        self.slider.valueChanged.connect(self.frequency.setCurrentIndex)
+        self.frequency.currentIndexChanged.connect(self._frequency_picked)
+        for widget in (self.port, self.quantity, self.component, self.span):
             widget.currentIndexChanged.connect(self._redraw)
         self.plane.currentIndexChanged.connect(self._plane_changed)
         self.angle.valueChanged.connect(self._redraw)
@@ -112,8 +121,14 @@ class FarFieldPanel(QWidget):
         self.info.setWordWrap(True)
         self.info.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
+        self.slider_label = QLabel()
+        sweep_row = QHBoxLayout()
+        sweep_row.addWidget(self.slider, 1)
+        sweep_row.addWidget(self.slider_label)
+
         layout = QVBoxLayout(self)
         layout.addLayout(controls)
+        layout.addLayout(sweep_row)
         layout.addWidget(self.plot, 1)
         layout.addWidget(self.info)
         self._refresh_choices()
@@ -141,17 +156,48 @@ class FarFieldPanel(QWidget):
             if old_port in run.farfield:
                 self.port.setCurrentIndex(list(run.farfield).index(old_port))
             ff = run.farfield[self.port.currentData()]
-            for f in ff["frequencies"]:
-                self.frequency.addItem(f"{f / 1e9:g} GHz", float(f))
+            for f, named in zip(ff["frequencies"], named_mask(ff)):
+                self.frequency.addItem(f"{f / 1e9:g} GHz" + ("" if named else " · sweep"), float(f))
             if old_f is not None:
                 near = [abs(float(f) - old_f) for f in ff["frequencies"]]
                 if min(near) < SAME_FREQUENCY:
                     self.frequency.setCurrentIndex(near.index(min(near)))
         for combo in (self.frequency, self.port):
             combo.blockSignals(False)
+        self._sync_slider()
         several = self.port.count() > 1
         self.port.setVisible(several)
         self.port_label.setVisible(several)
+
+    def _sync_slider(self):
+        """The slider over the frequency list, at its choice (shown when there are several)."""
+        self.slider.blockSignals(True)
+        self.slider.setRange(0, max(self.frequency.count() - 1, 0))
+        self.slider.setValue(max(self.frequency.currentIndex(), 0))
+        self.slider.blockSignals(False)
+        self.slider.setVisible(self.frequency.count() > 1)
+        self.slider_label.setVisible(self.frequency.count() > 1)
+        self.slider_label.setText(f"{self.frequency.currentIndex() + 1} / {self.frequency.count()}")
+
+    def _frequency_picked(self):
+        self._sync_slider()
+        self._redraw()
+        if self.frequency.currentData() is not None:
+            self.frequency_changed.emit(float(self.frequency.currentData()))
+
+    def set_frequency(self, frequency):
+        """Show the run's far-field frequency nearest `frequency` (Hz), without frequency_changed."""
+        values = [self.frequency.itemData(i) for i in range(self.frequency.count())]
+        if not values:
+            return
+        near = [abs(v - frequency) for v in values]
+        index = near.index(min(near))
+        if index != self.frequency.currentIndex():
+            self.frequency.blockSignals(True)
+            self.frequency.setCurrentIndex(index)
+            self.frequency.blockSignals(False)
+            self._sync_slider()
+            self._redraw()
 
     def _plane_changed(self):
         self.angle.blockSignals(True)
