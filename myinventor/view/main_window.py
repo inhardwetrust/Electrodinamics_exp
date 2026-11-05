@@ -80,6 +80,8 @@
 #   "As placed" (under the browser, set_placed_view) shows the bodies placed
 #   meanwhile, the sketch moved with the body it lies on: faces then project
 #   as placed;
+# - while a sketch is edited, 3D draws only the sketches up to it in the
+#   history; As placed draws them all (the later ones static, as opened);
 # - Delete deletes the selection: a sketch line (with its end points no
 #   other line uses) or point (with its lines), or a feature nothing uses.
 #
@@ -1389,8 +1391,12 @@ class MainWindow(QMainWindow):
         with its frame moved by the placement of the body it lies on.
         """
         out = self.result.outputs.get(name)
-        if out is None or self.editing is None or not self.placed_view or self._frozen_placed is None:
+        if self.editing is None or not self.placed_view or self._frozen_placed is None:
             return out
+        if out is None:                         # a later sketch (As placed shows them): as it was when opened
+            out = self._frozen_placed.outputs.get(name)
+            if out is None:
+                return None
         cached = self._shown_cache.get(name)
         if cached is not None and cached[0] is out:
             return cached[1]
@@ -1864,9 +1870,11 @@ class MainWindow(QMainWindow):
         does), the edited one, a used one whose browser row is hovered or
         selected (it shows green / blue meanwhile), and a used one whose user
         failed (its body may be gone: the sketch is what is left to see).
+        While a sketch is edited, only the sketches up to it in the history
+        (_sketch_outputs); As placed: all of them.
         """
         used = self._consumed_sketches()
-        outputs = self.result.outputs
+        outputs = self._sketch_outputs()
         wanted = {self.editing} | {k[1] for k in (self.view.hovered, self.view.selected)
                                    if k is not None and k[0] in ("feature", "entity")}
         wanted |= {name for name in used if self._failed_users(name)}
@@ -1877,6 +1885,25 @@ class MainWindow(QMainWindow):
         # force: after a rebuild (their geometry changed); else only when the set of names changes
         if force or [name for name, _ in shown] != list(self.view._sketch_geometry):
             self.view.set_sketches(shown)
+
+    def _sketch_outputs(self):
+        """
+        {feature: output} the sketches drawn come from. Out of sketch mode:
+        the result's. While a sketch is edited: only what is up to it in the
+        history (what came later does not exist yet, as Inventor shows it);
+        As placed (the retrospective view): every sketch, the later ones as
+        they were when the sketch was opened (static, like the bodies).
+        """
+        outputs = self.result.outputs
+        if self.editing is None:
+            return outputs
+        if self.placed_view and self._frozen_placed is not None:
+            return {**self._frozen_placed.outputs, **outputs}
+        order = [f.name for f in self.part.features]
+        if self.editing not in order:           # undone or deleted: show_result leaves sketch mode next
+            return outputs
+        upto = set(order[:order.index(self.editing) + 1])
+        return {name: out for name, out in outputs.items() if name in upto}
 
     def _failed_users(self, name):
         """The features using feature `name` that failed (an extrusion whose profile is gone)."""

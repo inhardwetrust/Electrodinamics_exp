@@ -245,7 +245,9 @@ face's edges into the edited sketch as plain lines, exact circles and arcs
 no link to the face. Done since: "As placed" in sketch mode (the bodies
 placed, the sketch moved with the body it lies on: its body's placement
 applied to its frame; faces project as placed: the retrospective
-projection, static). Maybe later: a Move in the history (Inventor's Move
+projection, static). A sketch being edited sees only the sketches above
+it in the history; As placed shows the later ones too (static, as when it
+was opened). Maybe later: a Move in the history (Inventor's Move
 Bodies), so what follows sees the placed body and a projection can follow
 it. A transform can be suppressed (`suppressed = true`, the eye on its
 row): skipped everywhere, as if it were not there.

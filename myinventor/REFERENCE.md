@@ -225,6 +225,11 @@ the pad under a placed connector's leg lands where the leg will be
 relative to the board. Still static: moving the connector later does not
 move the projection.
 
+**Other sketches while one is edited**: only those up to it in the history
+are drawn (what comes later does not exist yet). As placed, the
+retrospective view, draws them all, the later ones as they were when the
+sketch was opened, each moved with the body it lies on.
+
 ## 6. Sketch planes and their axes
 
 `plane =`:
