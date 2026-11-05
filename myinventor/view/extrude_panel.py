@@ -12,8 +12,12 @@
 #              the last); Cut and Intersect take several, each by the same tool
 #   Extents    (Extrude) Distance, To Plane, To Body; To: the plane (origin
 #              planes, work planes above it) or the body from a list
-#              (Distance hidden then)
-#   Distance   a formula of the parameters (mm): a formula field (view/
+#              (Distance hidden then); none taken at first ("pick a
+#              plane..."); planes the extrusion runs along are greyed out
+#              (set_blocked_planes, the reason as their tooltip); To Body:
+#              "Where it misses the body: go the distance" (fallback_on):
+#              Distance shows again, for the parts that miss it
+#   Distance  a formula of the parameters (mm): a formula field (view/
 #              formula_field.py: names completed, the value grey at its
 #              right, a red frame on an error); the error also below it
 #   Apply      makes the extrusion (off until there is a profile and the
@@ -29,7 +33,7 @@
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
+    QCheckBox, QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
 )
 
 from model.expressions import ExpressionError, evaluate
@@ -50,14 +54,15 @@ class ExtrudePanel(QDialog):
     selecting = Signal(str)         # "profiles" | "axis": what a click in the view takes (Revolve)
 
     def __init__(self, parent, values, bodies=(), distance="10", operation=None, body=None, title="Extrude",
-                 kind="extrude", axis=None, extent="distance", to="", planes=()):
+                 kind="extrude", axis=None, extent="distance", to="", planes=(), fallback=False):
         """
         values: the parameters' values, for evaluating the distance formula;
         bodies: the names of the bodies there are (to join, cut...);
         operation, body: the start (body: a name or a list; default: Join the
         last body if there is one, else New solid); title: "Edit Extrusion1"...
         extent, to: how far (Extrude): "distance", or up to a plane / a body
-        named `to`; planes: the planes it may go up to (above it).
+        named `to`; planes: the planes it may go up to (above it); fallback:
+        up to a body, where it misses go the distance.
         """
         super().__init__(parent, Qt.Tool)
         self.setWindowTitle(title)
@@ -133,16 +138,24 @@ class ExtrudePanel(QDialog):
                                "the profiles meet a body")
         self.extent.setCurrentIndex([k for k, _ in EXTENTS].index(extent))
         self.target = QComboBox()
-        self.target.setToolTip("The plane or the body it goes up to")
+        self.target.setToolTip("The plane or the body it goes up to (a plane the extrusion runs along: greyed out)")
         self._to = to
+        self._blocked = {}                      # plane -> why it is never reached (set_blocked_planes)
+        self.fallback = QCheckBox("Where it misses the body: go the distance")
+        self.fallback.setToolTip("Off: a profile partly missing the body fails (it would go on forever). On: the "
+                                 "parts that miss go the distance below (toward the body: a plane at that distance); "
+                                 "the rest still stops on the body")
+        self.fallback.setChecked(bool(fallback))
         if kind == "extrude":
             form.addRow("Extents:", self.extent)
             form.addRow("To:", self.target)
+            form.addRow("", self.fallback)
         form.addRow("Distance:" if kind == "extrude" else "Angle:", self.distance)
         form.addRow("", self.value)
         self.form = form
         self.extent.currentIndexChanged.connect(self._extent_changed)
         self.target.currentIndexChanged.connect(lambda _: self._update())
+        self.fallback.toggled.connect(self._extent_changed)
         self.apply_button = QPushButton("Apply")
         self.apply_button.setDefault(True)
         self.apply_button.clicked.connect(self._apply)
@@ -225,6 +238,13 @@ class ExtrudePanel(QDialog):
         """The plane or body it goes up to ("" for a distance, or none to pick)."""
         return (self.target.currentData() or "") if self.extent_key() != "distance" else ""
 
+    def set_blocked_planes(self, blocked):
+        """{plane: why it cannot be reached from the profiles' sketch}: greyed out in the To list."""
+        if blocked != self._blocked:
+            self._blocked = dict(blocked)
+            self._fill_targets()
+            self._update()
+
     def _extent_changed(self):
         self._fill_targets()
         self._update()
@@ -236,20 +256,39 @@ class ExtrudePanel(QDialog):
         self.target.blockSignals(True)
         self.target.clear()
         names = self.planes if extent == "plane" else self.available if extent == "body" else []
+        # Nothing taken by default: the first in the list is no better a guess than the others.
+        self.target.addItem(f"pick a {extent}...", None)
         for name in names:
             self.target.addItem(name, name)
-        if keep in names:
-            self.target.setCurrentIndex(names.index(keep))
+            why = self._blocked.get(name) if extent == "plane" else None
+            if why:                             # never reached from this sketch: shown, not offered
+                item = self.target.model().item(self.target.count() - 1)
+                item.setEnabled(False)
+                item.setToolTip(why)
+        if keep in names and not (extent == "plane" and self._blocked.get(keep)):
+            self.target.setCurrentIndex(names.index(keep) + 1)
         self.target.blockSignals(False)
         if self.kind == "extrude":
+            wants_distance = extent == "distance" or self.fallback_on()
             self.form.setRowVisible(self.target, extent != "distance")
-            self.form.setRowVisible(self.distance, extent == "distance")
-            self.form.setRowVisible(self.value, extent == "distance")
+            self.form.setRowVisible(self.fallback, extent == "body")
+            self.form.setRowVisible(self.distance, wants_distance)
+            self.form.setRowVisible(self.value, wants_distance)
+
+    def fallback_on(self):
+        """Up to a body, the parts missing it go the distance (the box ticked)."""
+        return self.kind == "extrude" and self.extent_key() == "body" and self.fallback.isChecked()
 
     def distance_value(self):
         """The distance (mm) or the angle (degrees), or the error text."""
-        if self.extent_key() != "distance":
+        if self.extent_key() != "distance" and not self.fallback_on():
             return "up to a plane or a body: no distance"
+        if self.fallback_on():
+            try:
+                value = evaluate(self.distance.text(), self.values)
+            except ExpressionError as error:
+                return str(error)
+            return value if value > 0 else "the distance where it misses must be more than 0 (toward the body)"
         try:
             value = evaluate(self.distance.text(), self.values)
         except ExpressionError as error:
@@ -260,11 +299,13 @@ class ExtrudePanel(QDialog):
 
     def _update(self):
         value = self.distance_value()
-        ok = not isinstance(value, str) if self.extent_key() == "distance" else bool(self.target_name())
-        if self.extent_key() == "distance":
-            self.value.setText("" if ok else value)         # the value itself: grey in the field
-            self.value.setStyleSheet("" if ok else ERROR_STYLE)
-            self.value.setVisible(not ok)
+        number = not isinstance(value, str)
+        ok = number if self.extent_key() == "distance" else \
+            bool(self.target_name()) and (number or not self.fallback_on())
+        if self.extent_key() == "distance" or self.fallback_on():
+            self.value.setText("" if number else value)     # the value itself: grey in the field
+            self.value.setStyleSheet("" if number else ERROR_STYLE)
+            self.value.setVisible(not number)
         new = self.operation_key() == "new"
         count = len(self._bodies)
         if new:

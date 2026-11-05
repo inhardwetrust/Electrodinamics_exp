@@ -2536,7 +2536,8 @@ class MainWindow(QMainWindow):
             self._rolled_back = True
             amount = (feature["distance"] or "10") if self._sweep == "extrude" else feature["angle"]
             axis_key = self._axis_key(feature) if self._sweep == "revolve" else None
-            extents = dict(extent=feature["extent"], to=feature["to"]) if self._sweep == "extrude" else {}
+            extents = dict(extent=feature["extent"], to=feature["to"], fallback=feature["fallback"]) \
+                if self._sweep == "extrude" else {}
             panel = ExtrudePanel(self, self.result.values, bodies=[b.name for b in before],
                                  distance=amount, operation=feature["operation"], body=feature["body"],
                                  title=f"Edit {edit}", kind=self._sweep,
@@ -2633,9 +2634,35 @@ class MainWindow(QMainWindow):
                 self.view.set_profile_selection([keys[-1]])
         if self.extrude_panel is not None:
             self.extrude_panel.set_profile_count(len(self.view.profile_selection))
+            if self._sweep == "extrude":
+                self.extrude_panel.set_blocked_planes(self._unreachable_planes())
             if self._sweep == "revolve" and self.view.profile_selection and self.view.axis_key is None:
                 self.extrude_panel.select("axis")       # profiles taken: now the axis
         self._update_preview()
+
+    def _unreachable_planes(self):
+        """
+        {plane: why} of the Extrude panel's planes an extrusion of the
+        profiles taken never reaches: one it runs along, or the sketch's own.
+        """
+        keys = self.view.profile_selection
+        built = self.result.outputs.get(keys[0][1]) if keys else None
+        if built is None:
+            return {}
+        n, start = np.asarray(built.frame.normal, float), np.asarray(built.frame.origin, float)
+        ctx = SimpleNamespace(outputs=self.result.outputs, part=self.part)
+        blocked = {}
+        for name in self.extrude_panel.planes:
+            try:
+                target = plane_frame(ctx, name)
+            except ValueError:
+                continue
+            m = np.asarray(target.normal, float)
+            if abs(float(n @ m)) < 1e-9:
+                blocked[name] = f"the extrusion runs along {name}: it never reaches it"
+            elif abs(abs(float(n @ m)) - 1) < 1e-9 and abs(float((np.asarray(target.origin) - start) @ m)) < 1e-9:
+                blocked[name] = f"{name} is the sketch's own plane"
+        return blocked
 
     def _update_preview(self):
         """
@@ -2666,8 +2693,8 @@ class MainWindow(QMainWindow):
                 shape = extrude_shape(built.frame, used, distance)
             else:                               # up to a plane / a body: as the rebuild does it
                 ctx = BuildContext(self.part, self.result.values, self.result.outputs, shapes=self._sweep_shapes)
-                shape = sweep_tool(ctx, built.frame, used, extent, "", panel.target_name(), panel.operation_key(),
-                                   panel.body_names() or [])[0]
+                shape = sweep_tool(ctx, built.frame, used, extent, panel.distance.text(), panel.target_name(),
+                                   panel.operation_key(), panel.body_names() or [], panel.fallback_on())[0]
         except ValueError as error:             # the axis crosses a profile, is not in the plane...
             self.view.set_preview(None)
             self.statusBar().showMessage(f"{self._sweep.capitalize()}: {error}", 8000)
@@ -2681,7 +2708,7 @@ class MainWindow(QMainWindow):
         keys = list(self.view.profile_selection)
         panel, edit, sweep, axis_key = self.extrude_panel, self._extruding, self._sweep, self.view.axis_key
         operation, target = panel.operation_key(), panel.body_names()
-        extent, to = panel.extent_key(), panel.target_name()
+        extent, to, fallback = panel.extent_key(), panel.target_name(), panel.fallback_on()
         target = target[0] if target and len(target) == 1 else target
         self._end_extrude()
         if sweep == "revolve" and axis_key is None:
@@ -2690,8 +2717,10 @@ class MainWindow(QMainWindow):
             return
         profiles = [k[2] for k in keys]
         sketch = keys[0][1]
-        amount = {"distance": distance, "extent": extent, "to": to} if sweep == "extrude" else \
-            {"angle": distance, "axis": self._axis_text(axis_key, sketch)}
+        if sweep == "extrude":
+            amount = {"distance": distance, "extent": extent, "to": to, "fallback": fallback}
+        else:
+            amount = {"angle": distance, "axis": self._axis_text(axis_key, sketch)}
         if edit:
             feature = self.part.feature(edit)
             if operation == "new":              # keeps its own name if it made a body already

@@ -17,7 +17,9 @@
 #   to = "WorkPlane1"         # plane: up to a plane (an origin plane, a work plane, "Feature:face"), on
 #                             #   whichever side; parallel: exact (its "end" face a sketch can sit on),
 #                             #   inclined: cut by it; body: until the profiles meet that body (on its
-#                             #   side; a part missing it fails). distance is then unused.
+#                             #   side; a part missing it fails). distance is then unused...
+#   fallback = true           # ... except up to a body with this: where the profiles miss the body they
+#                             #   go `distance` (> 0, toward it: a plane at that distance) instead
 #
 # A profile is named by the curves of its outer loop (Region.key), so
 # moving points and changing sizes keep it; a broken loop fails the feature
@@ -124,6 +126,8 @@ class Extrude(Feature):
                                     "a list of several)"),
         Field("extent", "choice", "distance", EXTENTS, doc="how far: by the distance, up to a plane, up to a body"),
         Field("to", "text", "", doc="plane: a plane ('WorkPlane1', 'XY Plane', 'Feature:face'); body: a body"),
+        Field("fallback", "bool", False, doc="body: where the profiles miss it, go `distance` (toward it) instead "
+                                             "of failing"),
     )
 
     def __init__(self, name, profiles=(), **values):
@@ -137,6 +141,10 @@ class Extrude(Feature):
             raise FeatureError(f"{name}: up to a {self['extent']} needs `to` (its name)")
         if self["extent"] == "distance" and not self["distance"].strip():
             raise FeatureError(f"{name}: 'distance' is required")
+        if self["fallback"] and self["extent"] != "body":
+            raise FeatureError(f"{name}: fallback is for an extrusion up to a body")
+        if self["fallback"] and not self["distance"].strip():
+            raise FeatureError(f"{name}: fallback needs `distance` (how far where the profiles miss the body)")
 
     def references(self):
         """Its sketch, and the plane it goes up to (its feature, for a face "Feature:face")."""
@@ -172,21 +180,24 @@ class Extrude(Feature):
             del data["extent"], data["to"]
         elif not self["distance"].strip():      # unused up to a plane / body: written only if kept
             del data["distance"]
+        if not self["fallback"]:
+            del data["fallback"]
         return data
 
     def build(self, ctx):
         sketch, used = chosen_regions(ctx, self["sketch"], self.profiles)
         tool, distance, flat = sweep(ctx, sketch.frame, used, self["extent"], self["distance"], self["to"],
-                                     self["operation"], self["body"])
+                                     self["operation"], self["body"], self["fallback"])
         bodies = apply_to_body(ctx, self["operation"], self["body"], tool)
         return ExtrudeResult(tool, bodies[0], used, sketch.frame, distance, self["operation"], bodies, flat)
 
 
-def sweep(ctx, frame, used, extent, distance, to, operation="new", body=()):
+def sweep(ctx, frame, used, extent, distance, to, operation="new", body=(), fallback=False):
     """
     The swept profiles of an extrusion: (shape, signed distance or reach mm,
-    flat end?). distance: its formula (extent "distance"); to: the plane or
-    the body it goes up to. ValueError saying what is wrong.
+    flat end?). distance: its formula (extent "distance"; up to a body with
+    fallback: how far where the profiles miss it); to: the plane or the body
+    it goes up to. ValueError saying what is wrong.
     """
     if extent == "distance":
         d = ctx.evaluate(distance, "distance")
@@ -204,7 +215,8 @@ def sweep(ctx, frame, used, extent, distance, to, operation="new", body=()):
         raise ValueError(f"no body {to!r} above it to extrude up to")
     if operation != "new" and to in body_list(body):
         raise ValueError(f"it cannot go up to {to!r}, the body it {operation}s")
-    shape, reach = ctx.kernel.extrude_to_body(frame, used, ctx.shapes[to])
+    miss = ctx.evaluate(distance, "distance where it misses") if fallback else None
+    shape, reach = ctx.kernel.extrude_to_body(frame, used, ctx.shapes[to], miss)
     return shape, reach, False
 
 

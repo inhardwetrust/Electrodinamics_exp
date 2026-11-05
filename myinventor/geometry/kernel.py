@@ -28,23 +28,30 @@ import io
 
 import numpy as np
 
+from OCP.BOPAlgo import BOPAlgo_Splitter
 from OCP.BRep import BRep_Builder, BRep_Tool
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
 from OCP.BRepBndLib import BRepBndLib
 from OCP.Bnd import Bnd_Box
 from OCP.BRepCheck import BRepCheck_Analyzer
-from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
+from OCP.BRepBuilderAPI import (
+    BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire, BRepBuilderAPI_Transform,
+)
+from OCP.BRepLib import BRepLib
 from OCP.BRepGProp import BRepGProp
 from OCP.BRepPrimAPI import BRepPrimAPI_MakeHalfSpace, BRepPrimAPI_MakePrism, BRepPrimAPI_MakeRevol
 from OCP.BRepTools import BRepTools
 from OCP.GC import GC_MakeArcOfCircle, GC_MakeArcOfParabola
 from OCP.GProp import GProp_GProps
 from OCP.GeomAbs import GeomAbs_C3
+from OCP.HLRAlgo import HLRAlgo_Projector
+from OCP.HLRBRep import HLRBRep_Algo, HLRBRep_HLRToShape
+from OCP.IntCurvesFace import IntCurvesFace_ShapeIntersector
 from OCP.ShapeUpgrade import ShapeUpgrade_ShapeDivideContinuity, ShapeUpgrade_UnifySameDomain
-from OCP.TopAbs import TopAbs_SOLID, TopAbs_VERTEX
+from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SOLID, TopAbs_VERTEX
 from OCP.TopExp import TopExp_Explorer
 from OCP.TopoDS import TopoDS, TopoDS_Shape
-from OCP.gp import gp_Ax1, gp_Ax2, gp_Circ, gp_Dir, gp_Parab, gp_Pln, gp_Pnt, gp_Vec
+from OCP.gp import gp_Ax1, gp_Ax2, gp_Ax3, gp_Circ, gp_Dir, gp_Lin, gp_Parab, gp_Pln, gp_Pnt, gp_Trsf, gp_Vec
 
 from geometry.tessellate import body_from_shape
 
@@ -190,13 +197,17 @@ def extrude_to_plane(frame, regions, origin, normal):
     return solid, None
 
 
-def extrude_to_body(frame, regions, body):
+def extrude_to_body(frame, regions, body, fallback=None):
     """
     The regions swept along the frame's normal until they meet `body` (an
-    OCP shape, mm), on the side the body is: a long sweep minus the body,
-    the pieces that start on the sketch. Returns (shape mm, reach: the
-    longest it went, signed). ValueError if no profile meets the body, a
-    part of one misses it (it would go on forever) or starts inside it.
+    OCP shape, mm), on the side the body is. Exactly, ray by ray: the
+    body's outline seen along the sweep splits the profiles (_shadow_split);
+    a piece whose rays meet the body goes up to it (a long sweep minus the
+    body, the part that starts on the sketch); a piece whose rays miss it
+    goes `fallback` mm (> 0, toward the body: the plane at that distance),
+    or, with no fallback, fails the extrusion, saying how much misses and
+    where. Returns (shape mm, reach: the longest it went, signed).
+    ValueError if no profile meets the body or one starts inside it.
     """
     n = np.asarray(frame.normal, float)
     start = np.asarray(frame.origin, float) * 1e3
@@ -207,30 +218,119 @@ def extrude_to_body(frame, regions, body):
     far = float(max(side * depth.max(), side * depth.min(), 0.0))
     if side * depth.max() <= REACH_TOL and side * depth.min() <= REACH_TOL:
         raise ValueError("the body is not on either side of the sketch")
+    if fallback is not None and fallback <= 0:
+        raise ValueError("the distance where it misses the body must be more than 0 (toward the body)")
     length = far + 1.0 + 0.1 * far
-    long = extrude(frame, regions, side * length)
-    rest = BRepAlgoAPI_Cut(long, body).Shape()
-    if abs(volume(rest) - volume(long)) <= 1e-9 * max(volume(long), 1.0):
+    sweep = side * n
+    pieces = _shadow_split(frame, [region_face(frame, r) for r in regions], body, sweep, length)
+    if not any(hit for _, hit in pieces):
         raise ValueError("the profile never meets the body")
-    pieces, reach = [], 0.0
-    for solid in _each_solid(rest):
-        heights = (_vertices(solid) - start) @ (side * n)
-        if heights.min() > REACH_TOL:
-            continue                            # beyond the body (the sweep went through it)
-        if heights.max() > length - REACH_TOL:
-            raise ValueError("a part of the profile misses the body (it would go on forever)")
-        pieces.append(solid)
-        reach = max(reach, float(heights.max()))
-    if not pieces:
-        raise ValueError("the profile starts inside the body")
-    solid = pieces[0]
-    for piece in pieces[1:]:
-        solid = BRepAlgoAPI_Fuse(solid, piece).Shape()
+    missed = [face for face, hit in pieces if not hit]
+    if missed and fallback is None:
+        raise ValueError(_missed_text(frame, missed, [face for face, _ in pieces]))
+    parts, reach = [], 0.0
+    for face, hit in pieces:
+        if not hit:
+            parts.append(BRepPrimAPI_MakePrism(face, gp_Vec(*map(float, sweep * fallback))).Shape())
+            reach = max(reach, float(fallback))
+            continue
+        rest = BRepAlgoAPI_Cut(BRepPrimAPI_MakePrism(face, gp_Vec(*map(float, sweep * length))).Shape(), body).Shape()
+        kept = False
+        for solid in _each_solid(rest):
+            heights = (_vertices(solid) - start) @ sweep
+            if heights.min() > REACH_TOL:
+                continue                        # beyond the body (the sweep went through it)
+            if heights.max() > length - REACH_TOL:      # a sliver along a tangent edge: nothing stops it
+                if fallback is None:
+                    raise ValueError("a sliver of the profile only grazes the body's edge (it would go on forever "
+                                     "there): give a distance where it misses")
+                solid = BRepAlgoAPI_Common(solid, BRepPrimAPI_MakePrism(
+                    face, gp_Vec(*map(float, sweep * fallback))).Shape()).Shape()
+                heights = np.minimum(heights, fallback)
+            parts.append(solid)
+            reach = max(reach, float(heights.max()))
+            kept = True
+        if not kept:
+            raise ValueError("the profile starts inside the body")
+    solid = parts[0]
+    for part in parts[1:]:
+        solid = BRepAlgoAPI_Fuse(solid, part).Shape()
     unify = ShapeUpgrade_UnifySameDomain(solid, True, True, False)
     unify.Build()
     solid = unify.Shape()
     _check_valid(solid)
     return solid, side * reach
+
+
+def _shadow_split(frame, faces, body, sweep, length):
+    """
+    [(face, its rays meet the body?)]: the profile faces split by the body's
+    outline seen along `sweep` (OCC's hidden-line removal: every edge and
+    silhouette, visible and hidden, laid on the sketch's plane), each piece
+    tested by one ray from a point inside it.
+    """
+    axes = gp_Ax2(gp_Pnt(*map(float, np.asarray(frame.origin) * 1e3)), gp_Dir(*map(float, sweep)),
+                  gp_Dir(*map(float, frame.u)))
+    algo = HLRBRep_Algo()
+    algo.Add(body)
+    algo.Projector(HLRAlgo_Projector(axes))
+    algo.Update()
+    algo.Hide()
+    outline = HLRBRep_HLRToShape(algo)
+    onto_plane = gp_Trsf()
+    onto_plane.SetTransformation(gp_Ax3(axes), gp_Ax3())         # the projector's plane -> the sketch's
+    edges = []
+    for compound in (outline.VCompound(), outline.HCompound(), outline.OutLineVCompound(),
+                     outline.OutLineHCompound()):
+        if compound is None or compound.IsNull():
+            continue
+        BRepLib.BuildCurves3d_s(compound)       # HLR edges come as 2D curves only
+        explorer = TopExp_Explorer(compound, TopAbs_EDGE)
+        while explorer.More():
+            edges.append(BRepBuilderAPI_Transform(explorer.Current(), onto_plane, True).Shape())
+            explorer.Next()
+    rays = IntCurvesFace_ShapeIntersector()
+    rays.Load(body, 1e-7)
+    direction = gp_Dir(*map(float, sweep))
+    out = []
+    for face in faces:
+        splitter = BOPAlgo_Splitter()
+        splitter.AddArgument(face)
+        for edge in edges:
+            splitter.AddTool(edge)
+        splitter.Perform()
+        explorer = TopExp_Explorer(splitter.Shape(), TopAbs_FACE)
+        split = []
+        while explorer.More():
+            split.append(TopoDS.Face(explorer.Current()))
+            explorer.Next()
+        for piece in split or [face]:
+            mesh = body_from_shape("piece", piece)
+            inside = mesh.vertices[mesh.triangles[np.argmax(_triangle_areas(mesh))]].mean(axis=0) * 1e3   # m -> mm
+            rays.Perform(gp_Lin(gp_Pnt(*map(float, inside)), direction), 0.0, length)
+            out.append((piece, rays.NbPnt() > 0))
+    return out
+
+
+def _triangle_areas(mesh):
+    t = mesh.vertices[mesh.triangles]
+    return np.linalg.norm(np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0]), axis=1)
+
+
+def _mesh_area(face):
+    """A face's area from its triangles (OCC's own integral is off on the pieces the HLR edges cut)."""
+    return float(_triangle_areas(body_from_shape("piece", face)).sum() / 2)
+
+
+def _missed_text(frame, missed, faces):
+    """The error for profiles partly missing the body: how much (areas) and where (the sketch's x, y)."""
+    share = 100 * sum(_mesh_area(f) for f in missed) / sum(_mesh_area(f) for f in faces)
+    points = np.concatenate([body_from_shape("piece", f).vertices for f in missed])
+    xy = frame.to_sketch(points) * 1e3
+    return (f"a part of the profile misses the body ({share:.0f} % of its area: sketch x "
+            f"{xy[:, 0].min():.4g}..{xy[:, 0].max():.4g}, y {xy[:, 1].min():.4g}..{xy[:, 1].max():.4g} mm) would go "
+            "on forever: give a distance where it misses (the body's outline cuts it there), make the body reach "
+            "over the whole profile, or the profile smaller")
 
 
 def _each_solid(shape):

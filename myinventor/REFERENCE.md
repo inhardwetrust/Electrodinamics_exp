@@ -313,11 +313,15 @@ is no region fails the extrusion, naming it.
     plane itself). The plane crossing a profile, or running along the
     extrusion: it fails.
   - `extent = "body"`, `to = "Lid"`: until the profiles meet that body, on
-    the side it is (a long sweep minus the body, the pieces that start on
-    the sketch): a post stops on a cylinder's curved underside. No flat end.
-    A part of a profile missing the body (it would go on forever), a
-    profile beside it, one starting inside it, or `to` being a body it cuts
-    / joins: it fails, saying which.
+    the side it is: a post stops on a cylinder's curved underside. No flat
+    end. Ray by ray, exactly: the body's outline seen along the sweep (OCC
+    hidden-line removal) splits the profiles, each piece is tested by one
+    ray. A part missing the body fails it (it would go on forever: the
+    error says how much, N % of its area, and where, in the sketch's x, y),
+    unless `fallback = true`: the parts that miss go `distance` (> 0,
+    toward the body: a plane at that distance), the rest still stops on
+    the body. A profile beside it, one starting inside it, or `to` being a
+    body it cuts / joins: it fails, saying which.
   - `distance` is then not needed (written only if kept). `to` follows
     renames (the plane's feature, the body); a work plane used so cannot be
     deleted. The report has `extent` and `to` ("up to plane WorkPlane1").
@@ -420,7 +424,7 @@ the answers of `set` / `undo` / `redo`):
                            "curves" [{name, kind, args, visible, start, end}],
                            "splines" [{name, points, construction, spans}],
                            "offsets", "profiles" [{key, area, holes}], "pieces" [{key, area, holes}],
-                   extrude: "sketch", "profiles", "distance", "operation", "body", "extent", "to",
+                   extrude: "sketch", "profiles", "distance", "operation", "body", "extent", "to", "fallback",
                    revolve: ... "axis", "angle", import: "file", "bodies",
                    workplane: "base", "offset", "axis", "angle", "points"}],
      "bodies": [{"name", "volume" (mm³, exact), "solids", "bounds" [[lo], [hi]], "size", "color", "visible"}],
@@ -525,7 +529,11 @@ What the user can do by hand (to talk about it, and to know what they see):
   at the right, a red frame and Apply off while it does not evaluate; the
   formula itself goes into the feature. Extrude's Extents: Distance, To
   Plane (the origin planes and the work planes above it, from a list), To
-  Body (the bodies there are); Distance hides for the other two.
+  Body (the bodies there are); Distance hides for the other two. Nothing is
+  taken in To at first ("pick a plane..."); planes the extrusion runs
+  along, and the sketch's own, are greyed out (why: their tooltip). To
+  Body has a box "Where it misses the body: go the distance": ticked,
+  Distance shows again (fallback).
   While Extrude / Revolve runs, a click on a body's row takes or drops
   it as a body to join / cut / intersect (a group's row: all its bodies;
   the panel shows how many, Clear drops them; Join keeps one).

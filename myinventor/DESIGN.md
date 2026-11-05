@@ -263,8 +263,11 @@ sketch is a circle: refused.
 
 Done: Extrude up to a plane or a body (`extent`, `to`): a parallel plane is
 an exact distance; an inclined plane cuts a longer sweep; a body: a long
-sweep minus the body, the pieces that start on the sketch (any surface,
-curved too); a profile partly missing the body fails rather than guess.
+sweep minus the body, per piece of the profile the body's outline splits it
+into (HLR), each piece tested by a ray (a plain "long sweep minus the body"
+glues the hit and the missed parts into one solid); a profile partly
+missing the body fails rather than guess, unless `fallback` sends the
+missing parts a distance.
 
 Next, in this order:
 1. Manual primitives: poly-arc, Bézier (the arc is done: from its center or
