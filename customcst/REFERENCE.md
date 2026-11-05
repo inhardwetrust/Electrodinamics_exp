@@ -432,7 +432,7 @@ in the conversation; never stop or delete their runs.
 ```python
 import numpy as np
 from solver.result_file import list_results, fingerprint
-from solver.farfield import figures, cut, beamwidth, summary, sweep, realized_from_s, named_mask
+from solver.farfield import figures, cut, beamwidth, summary, sweep, realized_from_s, named_mask, sweep_at
 runs, errors = list_results(step)        # oldest first
 run = runs[-1]
 run.name, run.saved, run.ports, run.info  # info: text lines (grid, time, far-field summary)
@@ -448,6 +448,7 @@ cut(ff, k, "phi", 90.0)                  # H-plane;  cut(ff, k, "theta", 90.0): 
 cut(ff, k, "phi", 0.0, quantity="gain", component="ludwig3_x")   # co / cross polarization
 beamwidth(angles, db)                    # (peak angle, -3 dB width or None)
 named_mask(ff)                           # which frequencies were listed (the rest: the sweep)
+sweep_at(sweep(ff), 5.45e9, (run.frequencies, run.s[(0, 0)]))   # any frequency: interpolated between points
 sw = sweep(ff)                           # against frequency, at the maximum: arrays frequency, named,
                                          # directivity, gain, realized, efficiency, mismatch (dB),
                                          # theta, phi, beamwidth_phi0, beamwidth_phi90
@@ -494,7 +495,7 @@ positionally; `show` takes the run names. From Python:
 | `farfield` | yes | `frequency` (GHz), `plane` (phi / theta), `at` (deg), `quantity`, `component`, `span`, `show3d`, `cut3d`, `port` | sets the Far field tab (any subset); answer: its choices and the info text (cut maximum, beamwidth, D, G, efficiency) |
 | `view` | yes | `name` (iso, top, bottom, front, back, left, right), `ortho` | a standard view in the 3D View tab |
 | `section` | yes | `axis` (x / y / z), `at` (mm), `on` | the section plane there, shown or not |
-| `farfield_f` | yes | `frequency` (GHz, the marker; the Far field tab follows), `show` (gain / beam), `direction` (max / fixed), `theta`, `phi` (deg), `component`, `curves` (directivity, gain, realized, realized_s, efficiency, mismatch), `port` | sets the Far field vs f tab; answer: its choices, the figures at the marker (`at_marker`), the info text (the realized gain's maximum and its 3 dB band) |
+| `farfield_f` | yes | `frequency` (GHz, the marker; the Far field tab follows; `snap=false`: right there, interpolated between far-field points), `show` (gain / beam), `direction` (max / fixed), `theta`, `phi` (deg), `component`, `curves` (directivity, gain, realized, realized_s, efficiency, mismatch), `port` | sets the Far field vs f tab; answer: its choices, the figures at the marker (`at_marker`), the info text (the realized gain's maximum and its 3 dB band) |
 | `stop_server` | yes | | stop the model's run on the server (no question) |
 | `clean_server` | yes | `list=true`, or `names=[...]` | list the server's models (then `status.server_models`), or delete these (never one running) |
 | `clear_notices` | no | | empty `status.notices` |
@@ -544,7 +545,9 @@ positionally; `show` takes the run names. From Python:
   far-field frequencies), Far field vs f (D, G, realized G, efficiency
   and mismatch in dB against frequency, at the beam's maximum or a fixed
   θ, φ; or the beam's direction and widths; the marker moves with the
-  wheel or a click, the Far field tab follows). Cuts: around x = plane φ at
+  wheel or a click over the far-field points, the Far field tab follows;
+  Ctrl + wheel / Ctrl + click between them: the figures interpolated, the
+  mismatch from S11 there). Cuts: around x = plane φ at
   90° (yz), around y = φ at 0° (xz), around z = θ at 90° (xy).
 - TDR and Z0 profile windows from the Results / Z0 tools.
 

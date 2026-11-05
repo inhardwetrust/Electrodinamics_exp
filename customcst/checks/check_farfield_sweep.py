@@ -31,10 +31,16 @@
 #   - a fixed direction: theta 90 (broadside) reads the maximum's D within
 #     0.05 dB, theta 0 (the axis) a null; the beamwidth in the phi 0 cut at
 #     3 GHz is the half-wave dipole's ~78 degrees (within 4).
+#   - sweep_at(): a far-field frequency's own figures; between two, D and
+#     G linear, the mismatch from S11 at that frequency, realized = G +
+#     mismatch (= realized_from_s there);
 # The tabs (offscreen): the Far field tab lists 5 frequencies, the sweep's
 # marked, a slider over them; moving it moves the Far field vs f marker and
 # back; both views draw; the readout and the control command farfield_f
-# answer the figures at the marker.
+# answer the figures at the marker. The wheel (real events) steps the
+# marker over the far-field points; Ctrl + wheel over the run's S
+# frequencies, the readout interpolated between the points; the plain
+# wheel from there snaps to the next point; farfield_f snap=false.
 #
 #   python checks/check_farfield_sweep.py      (~1 min)
 
@@ -58,7 +64,8 @@ from mesh.rectilinear import build_grid                                  # noqa:
 from project.project_file import Project                                 # noqa: E402
 from project.settings import (auto_padding, check_settings, farfield_frequencies, farfield_named,  # noqa: E402
                               farfield_sweep, far_field_padding_mm, merge_frequencies)
-from solver.farfield import figures, in_dbi, component_intensity, mismatch_db, named_mask, realized_from_s, sweep, summary  # noqa: E402
+from solver.farfield import (figures, in_dbi, component_intensity, mismatch_db, named_mask,  # noqa: E402
+                             realized_from_s, sweep, sweep_at, summary)
 from solver.result_file import fingerprint, read_result, write_result    # noqa: E402
 from solver.simulation import simulate                                   # noqa: E402
 
@@ -196,6 +203,22 @@ def sweep_checks(result):
               f"{sw['realized'][k]:6.2f}    {sw['efficiency'][k]:.3f}  {sw['mismatch'][k]:6.2f}    "
               f"{sw['beamwidth_phi0'][k]:.1f}")
 
+    at_point = sweep_at(sw, 3.0e9, (f, s11))
+    check("sweep_at a far-field frequency: its own figures", at_point["between"] is None
+          and at_point["realized"] == sw["realized"][2] and at_point["named"])
+    f_mid = f[int(np.argmin(np.abs(f - 3.2e9)))]               # on the S grid, between 3.0 and 3.5
+    mid = sweep_at(sw, f_mid, (f, s11))
+    t = (f_mid - 3.0e9) / 0.5e9
+    check("sweep_at between: D and G linear", mid["between"] == (3.0e9, 3.5e9)
+          and abs(mid["directivity"] - ((1 - t) * sw["directivity"][2] + t * sw["directivity"][3])) < 1e-12
+          and abs(mid["gain"] - ((1 - t) * sw["gain"][2] + t * sw["gain"][3])) < 1e-12)
+    i_mid = int(np.argmin(np.abs(f - f_mid)))
+    check("sweep_at between: the mismatch from S11 there", abs(mid["mismatch"] - mismatch_db(s11[i_mid])) < 1e-9,
+          f"{mid['mismatch']:.3f} dB")
+    check("sweep_at between: realized = G + mismatch = realized from S11",
+          abs(mid["realized"] - (mid["gain"] + mid["mismatch"])) < 1e-12
+          and abs(mid["realized"] - values[int(np.argmin(np.abs(fs - f_mid)))]) < 1e-9)
+
     side = sweep(ff, (90.0, 0.0))
     off = np.max(np.abs(side["directivity"] - sw["directivity"]))
     check("fixed theta 90 (broadside) = the maximum within 0.05 dB", off < 0.05, f"{off:.3f} dB")
@@ -253,6 +276,32 @@ def tabs_checks(result):
     check("vs f: the readout at the marker", "2.5 GHz (sweep" in text and "realized = G + mismatch" in text
           and "within 3 dB" in text, text.replace("<br>", " | ")[:200])
 
+    from PySide6.QtCore import QPoint, QPointF
+    from PySide6.QtGui import QWheelEvent
+
+    def wheel(up, ctrl=False):
+        event = QWheelEvent(QPointF(100, 100), QPointF(100, 100), QPoint(0, 0), QPoint(0, 120 if up else -120),
+                            Qt.NoButton, Qt.ControlModifier if ctrl else Qt.NoModifier, Qt.NoScrollPhase, False)
+        QApplication.sendEvent(versus.plot, event)
+
+    from PySide6.QtCore import Qt
+    versus._move_marker(3.0e9)
+    wheel(True)
+    check("wheel: the next far-field point", versus.marker == 3.5e9)
+    wheel(False, ctrl=True)
+    s_grid = np.asarray(result.frequencies)
+    below = s_grid[s_grid < 3.5e9 - 1e3][-1]
+    check("Ctrl + wheel: one S frequency down, interpolated", abs(versus.marker - below) < 1
+          and "interpolated" in versus.info.text() and versus.at_marker()["between"] == (3.0e9, 3.5e9),
+          f"{versus.marker / 1e9:.5f} GHz")
+    check("the Far field tab shows the nearest far-field frequency", pattern.frequency.currentData() == 3.5e9)
+    for _ in range(3):
+        wheel(False, ctrl=True)
+    wheel(True)
+    check("the plain wheel from between: the next point up", versus.marker == 3.5e9)
+    wheel(False)
+    check("and down from a point: the one below", versus.marker == 3.0e9)
+
     class Window:                                   # what control.farfield_f uses of MainWindow
         tabs = QTabWidget()
         farfield_sweep_panel = versus
@@ -271,6 +320,10 @@ def tabs_checks(result):
     check("vs f: the readout warns at the edge", "near the band's edge" in versus.info.text())
     result.params["simulation"]["accuracy"] = "-60"
     check("no warning at accuracy -60", weak_edge(result, 2.0e9) is None)
+    answer = control.farfield_f(Window, frequency=3.23, snap=False)
+    check("farfield_f snap=false: right there, interpolated", abs(answer["frequency_ghz"] - 3.23) < 1e-9
+          and answer["at_marker"]["interpolated_between_ghz"] == [3.0, 3.5] and not answer["at_marker"]["listed"],
+          f"{answer['at_marker']}")
     for bad in ({"curves": ["nope"]}, {"show": "nope"}, {"theta": 200}):
         try:
             control.farfield_f(Window, **bad)

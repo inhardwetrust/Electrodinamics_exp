@@ -1288,7 +1288,14 @@ over the band, not at a few frequencies.
   beam's maximum or a fixed θ, φ; a polarization; older shown runs dimmed.
   A marker at a far-field frequency (wheel, click) tied to the Far field
   tab both ways; the readout: the figures there, the realized gain's
-  maximum and its 3 dB band. `LinePlot` curves take a style (line, points,
+  maximum and its 3 dB band. Ctrl + wheel steps it through the run's S
+  frequencies (401 over the band), Ctrl + click puts it where clicked:
+  between two far-field points `farfield.sweep_at` interpolates D, G,
+  the efficiency and the beamwidths linearly, takes the mismatch from S11
+  at that frequency (exact) and realized = G + mismatch (the dashed
+  curve's value); the direction is the nearer point's; the readout says
+  "interpolated between ...". The plain wheel from there snaps to the
+  next far-field point; the Far field tab shows the nearest one. `LinePlot` curves take a style (line, points,
   dash). Control command `farfield_f`, tab `farfield_f`.
 - The band's edges: the pulse is 20 dB down at f_min and f_max, and the
   far field there is only as good as the stop level. A lossless 47 mm

@@ -25,10 +25,15 @@
 # run stopped at -40 or -50 dB leaves the far field off by up to ~10 %
 # (a lossless dipole's efficiency 0.90 / 1.05 at -40, 1.08 / 0.97 at -50,
 # within 2 % at -60): the readout warns at such a marker.
-# A marker at one far-field frequency: the wheel over the plot steps it, a
-# click puts it at the nearest; the readout under the plot lists the
-# figures there. frequency_changed tells the Far field tab (its pattern
-# follows), set_frequency moves the marker from there.
+# A marker: the wheel over the plot steps it from one far-field frequency
+# to the next, a click puts it at the nearest; with Ctrl the wheel steps
+# through the run's S frequencies (401 over the band) and a click puts it
+# where clicked: between two far-field points the readout is interpolated
+# (farfield.sweep_at: D, G, the efficiency, the beamwidths linear; the
+# mismatch from S11 there, exact; realized = G + mismatch). The readout
+# under the plot lists the figures at the marker. frequency_changed tells
+# the Far field tab (its pattern: the nearest far-field frequency),
+# set_frequency moves the marker from there (to a far-field frequency).
 
 import math
 
@@ -38,7 +43,7 @@ from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QHBoxLayout, QLabel, QSpinBox, QVBoxLayout, QWidget,
 )
 
-from solver.farfield import mismatch_db, realized_from_s, sweep
+from solver.farfield import SAME_HZ, mismatch_db, realized_from_s, sweep, sweep_at
 from view.farfield_panel import COMPONENT_LABELS
 from view.plot import LinePlot
 
@@ -178,7 +183,9 @@ class FarFieldSweepPanel(QWidget):
         self.plot = LinePlot()
         self.plot.empty_text = ("no far field in the shown runs: Simulation > Monitors > Far field "
                                 "(sweep points for a curve over the band), then Simulate")
-        self.plot.setToolTip("Wheel: the marker to the next far-field frequency; click: to the nearest")
+        self.plot.setToolTip("Wheel: the marker to the next far-field frequency; click: to the nearest.\n"
+                             "Ctrl + wheel: in fine steps (the run's S frequencies), Ctrl + click: right there; "
+                             "between far-field points the figures are interpolated")
         self.plot.installEventFilter(self)
         self.info = QLabel()
         self.info.setWordWrap(True)
@@ -229,31 +236,57 @@ class FarFieldSweepPanel(QWidget):
             return np.zeros(0)
         return np.asarray(self._ff(run)["frequencies"], float)
 
-    def set_frequency(self, frequency):
-        """The marker at the far-field frequency nearest `frequency` (Hz), without frequency_changed."""
+    def fine_stops(self):
+        """Hz: the Ctrl + wheel stops: the primary run's S frequencies within its far-field range."""
+        stops = self.frequencies()
+        if len(stops) < 2:
+            return stops
+        s = self._s_kk(self.primary)
+        fine = (s[0] if s is not None else
+                np.linspace(stops.min(), stops.max(), 10 * (len(stops) - 1) + 1))
+        fine = fine[(fine >= stops.min() - SAME_HZ) & (fine <= stops.max() + SAME_HZ)]
+        return np.unique(np.concatenate([fine, stops]))
+
+    def set_frequency(self, frequency, snap=True):
+        """
+        The marker at `frequency` (Hz): at the nearest far-field frequency
+        (snap), or right there within their range (interpolated); without
+        frequency_changed.
+        """
         stops = self.frequencies()
         if not len(stops):
             return
-        self.marker = float(stops[int(np.argmin(np.abs(stops - frequency)))])
+        if snap:
+            self.marker = float(stops[int(np.argmin(np.abs(stops - frequency)))])
+        else:
+            self.marker = float(np.clip(frequency, stops.min(), stops.max()))
         self._redraw()
 
-    def _move_marker(self, frequency):
-        self.set_frequency(frequency)
+    def _move_marker(self, frequency, snap=True):
+        self.set_frequency(frequency, snap)
         if self.marker is not None:
             self.frequency_changed.emit(self.marker)
+
+    def _step(self, stops, direction):
+        """The next stop beyond the marker in a direction (+1 / -1), or the last one."""
+        now = self.marker if self.marker is not None else stops[0]
+        ahead = stops[stops > now + SAME_HZ] if direction > 0 else stops[stops < now - SAME_HZ]
+        if not len(ahead):
+            return float(stops[-1] if direction > 0 else stops[0])
+        return float(ahead[0] if direction > 0 else ahead[-1])
 
     def eventFilter(self, watched, event):
         if watched is self.plot and self.primary is not None:
             stops = self.frequencies()
+            fine = bool(event.modifiers() & Qt.ControlModifier) if hasattr(event, "modifiers") else False
             if event.type() == QEvent.Wheel and len(stops):
-                now = int(np.argmin(np.abs(stops - (self.marker if self.marker is not None else stops[0]))))
-                step = 1 if event.angleDelta().y() > 0 else -1
-                self._move_marker(float(stops[min(max(now + step, 0), len(stops) - 1)]))
+                direction = 1 if event.angleDelta().y() > 0 else -1
+                self._move_marker(self._step(self.fine_stops() if fine else stops, direction), snap=not fine)
                 return True
             if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
                 x = self.plot.x_at(event.position().x())
                 if x is not None:
-                    self._move_marker(x * 1e9)
+                    self._move_marker(x * 1e9, snap=not fine)
                     return True
         return super().eventFilter(watched, event)
 
@@ -282,6 +315,11 @@ class FarFieldSweepPanel(QWidget):
             self._cache[key] = sweep(self._ff(run), direction, component)
         return self._cache[key]
 
+    def at_marker(self, run=None):
+        """sweep_at() of a run (the primary) at the marker: interpolated between far-field points."""
+        run = run or self.primary
+        return sweep_at(self.figures(run), self.marker, self._s_kk(run))
+
     def _s_kk(self, run):
         """(Hz, S_kk) of the run's excited port, or None when the run has no column for it."""
         port = self._port_of(run)
@@ -308,7 +346,8 @@ class FarFieldSweepPanel(QWidget):
             self.info.setText("")
             return
         stops = self.frequencies()
-        if self.marker is None or not len(stops) or np.min(np.abs(stops - self.marker)) > 1e3:
+        if (self.marker is None or not len(stops)
+                or not stops.min() - SAME_HZ <= self.marker <= stops.max() + SAME_HZ):
             self.marker = float(stops[0]) if len(stops) else None
 
         curves = []
@@ -348,23 +387,30 @@ class FarFieldSweepPanel(QWidget):
         sw = self.figures(run)
         if self.marker is None:
             return []
-        k = int(np.argmin(np.abs(sw["frequency"] - self.marker)))
-        f = sw["frequency"][k]
+        s = self._s_kk(run)
+        x = self.at_marker(run)
+        k, f = x["index"], x["frequency"]
         component = COMPONENT_LABELS[self.component.currentData()]
-        where = (f"θ {sw['theta'][k]:g}°, φ {sw['phi'][k]:g}°" if self._direction() is not None
-                 else f"the maximum (θ {sw['theta'][k]:g}°, φ {sw['phi'][k]:g}°)")
-        kind = "listed" if sw["named"][k] else "sweep"
-        eff_db = float(_db(sw["efficiency"][k]))
-        mismatch = float(sw["mismatch"][k])
+        where = (f"θ {x['theta']:g}°, φ {x['phi']:g}°" if self._direction() is not None
+                 else f"the maximum (θ {x['theta']:g}°, φ {x['phi']:g}°"
+                      + ("" if x["between"] is None else f" at {sw['frequency'][k] / 1e9:g} GHz") + ")")
+        if x["between"] is None:
+            kind = f"{'listed' if x['named'] else 'sweep'}, {k + 1} of {len(sw['frequency'])}"
+        else:
+            kind = (f"<span style='color:#c80'>interpolated</span> between {x['between'][0] / 1e9:g} and "
+                    f"{x['between'][1] / 1e9:g} GHz")
+        eff_db = float(_db(x["efficiency"]))
+        mismatch = x["mismatch"]
+        source = " from S11 here" if x["between"] is not None and s is not None else ""
         lines = [
-            f"<b>{run.name}</b>, {f / 1e9:g} GHz ({kind}, {k + 1} of {len(sw['frequency'])}), {component} at "
-            f"{where}: D {sw['directivity'][k]:.2f} dBi, G {sw['gain'][k]:.2f} dBi, realized "
-            f"{sw['realized'][k]:.2f} dBi",
-            f"realized = G + mismatch {mismatch:.2f} dB (SWR {swr_of_mismatch(mismatch):.2f}); "
-            f"G − D = {sw['gain'][k] - sw['directivity'][k]:.2f} dB, radiation efficiency "
-            f"{100 * sw['efficiency'][k]:.1f} % ({eff_db:.2f} dB); −3 dB width: cut φ 0 "
-            + (f"{sw['beamwidth_phi0'][k]:.1f}°" if np.isfinite(sw["beamwidth_phi0"][k]) else "—")
-            + ", φ 90 " + (f"{sw['beamwidth_phi90'][k]:.1f}°" if np.isfinite(sw["beamwidth_phi90"][k]) else "—"),
+            f"<b>{run.name}</b>, {f / 1e9:.5g} GHz ({kind}), {component} at "
+            f"{where}: D {x['directivity']:.2f} dBi, G {x['gain']:.2f} dBi, realized "
+            f"{x['realized']:.2f} dBi",
+            f"realized = G + mismatch {mismatch:.2f} dB{source} (SWR {swr_of_mismatch(mismatch):.2f}); "
+            f"G − D = {x['gain'] - x['directivity']:.2f} dB, radiation efficiency "
+            f"{100 * x['efficiency']:.1f} % ({eff_db:.2f} dB); −3 dB width: cut φ 0 "
+            + (f"{x['beamwidth_phi0']:.1f}°" if np.isfinite(x["beamwidth_phi0"]) else "—")
+            + ", φ 90 " + (f"{x['beamwidth_phi90']:.1f}°" if np.isfinite(x["beamwidth_phi90"]) else "—"),
         ]
         accuracy = weak_edge(run, f)
         if accuracy is not None:
@@ -372,7 +418,6 @@ class FarFieldSweepPanel(QWidget):
                          f"far field here is good to ~10 % at the run's {accuracy:g} dB stop level "
                          f"(accuracy {EDGE_ACCURACY:g} for it)</span>")
         if len(sw["frequency"]) >= 2:
-            s = self._s_kk(run)
             fs, values = realized_from_s(sw, s[0], s[1]) if s is not None else (sw["frequency"], sw["realized"])
             band = band_within(fs, values)
             if band is not None:

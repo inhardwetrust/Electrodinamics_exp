@@ -602,6 +602,42 @@ def sweep(ff, direction=None, component="total"):
     return out
 
 
+SAME_HZ = 1e3              # a frequency this close to a far-field one is that one
+
+
+def sweep_at(swept, frequency, s=None):
+    """
+    sweep()'s figures at any frequency (Hz) within its range: a far-field
+    frequency's own (within SAME_HZ); between two, interpolated linearly
+    (D, G in dB, the efficiency, the beamwidths), the direction that of the
+    nearer point, the mismatch from S at that frequency when s = (Hz, S_kk)
+    is given (else interpolated too), realized = G + mismatch. Adds
+    `between` ((f_lo, f_hi) or None) and `index` (the nearest point).
+    """
+    f_ff = swept["frequency"]
+    frequency = float(np.clip(frequency, f_ff.min(), f_ff.max()))
+    k = int(np.argmin(np.abs(f_ff - frequency)))
+    keys = ("directivity", "gain", "realized", "efficiency", "mismatch", "theta", "phi",
+            "beamwidth_phi0", "beamwidth_phi90")
+    if abs(f_ff[k] - frequency) <= SAME_HZ or len(f_ff) < 2:
+        out = {key: float(swept[key][k]) for key in keys}
+        out.update(frequency=float(f_ff[k]), named=bool(swept["named"][k]), between=None, index=k)
+        return out
+    hi = int(np.searchsorted(f_ff, frequency))
+    lo = hi - 1
+    t = (frequency - f_ff[lo]) / (f_ff[hi] - f_ff[lo])
+    out = {key: float((1 - t) * swept[key][lo] + t * swept[key][hi])
+           for key in ("directivity", "gain", "efficiency", "mismatch", "beamwidth_phi0", "beamwidth_phi90")}
+    out["theta"], out["phi"] = float(swept["theta"][k]), float(swept["phi"][k])
+    if s is not None:
+        f_s, s_kk = np.asarray(s[0], float), np.asarray(s[1])
+        value = np.interp(frequency, f_s, s_kk.real) + 1j * np.interp(frequency, f_s, s_kk.imag)
+        out["mismatch"] = float(mismatch_db(value))
+    out["realized"] = out["gain"] + out["mismatch"]
+    out.update(frequency=frequency, named=False, between=(float(f_ff[lo]), float(f_ff[hi])), index=k)
+    return out
+
+
 def mismatch_db(s_kk):
     """10 log10(1 - |S_kk|^2): the share of the incident power the port accepts, dB (NaN at >= 1)."""
     accepted = 1.0 - np.abs(np.asarray(s_kk, dtype=np.complex128)) ** 2

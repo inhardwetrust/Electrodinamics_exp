@@ -448,10 +448,11 @@ def farfield(window, frequency=None, plane=None, at=None, quantity=None, compone
 
 
 def farfield_f(window, frequency=None, show=None, direction=None, theta=None, phi=None, component=None,
-               curves=None, port=None):
+               curves=None, port=None, snap=True):
     """
-    The Far field vs f tab: frequency GHz (the marker, the Far field tab follows), show gain|beam,
-    direction max|fixed, theta / phi deg, component, curves [names of the gain view], port.
+    The Far field vs f tab: frequency GHz (the marker, the Far field tab follows; snap=false: right
+    there, interpolated between far-field points), show gain|beam, direction max|fixed, theta / phi deg,
+    component, curves [names of the gain view], port.
     """
     panel = window.farfield_sweep_panel
     if panel.primary is None:
@@ -495,11 +496,10 @@ def farfield_f(window, frequency=None, show=None, direction=None, theta=None, ph
         for widget in widgets:
             widget.blockSignals(False)
     if frequency is not None:
-        panel._move_marker(float(frequency) * 1e9)
+        panel._move_marker(float(frequency) * 1e9, snap=bool(snap))
     panel._redraw()
     window.tabs.setCurrentWidget(panel)
-    sw = panel.figures(panel.primary)
-    k = int(abs(sw["frequency"] - panel.marker).argmin())
+    x = panel.at_marker()
 
     def number(x):
         return None if x != x else round(float(x), 4)
@@ -508,9 +508,12 @@ def farfield_f(window, frequency=None, show=None, direction=None, theta=None, ph
             "direction": panel.direction.currentData(), "theta": panel.theta.value(), "phi": panel.phi.value(),
             "component": panel.component.currentData(),
             "curves": [key for key, box in panel.curves.items() if box.isChecked()],
-            "at_marker": {key: number(sw[key][k]) for key in
+            "at_marker": {key: number(x[key]) for key in
                           ("directivity", "gain", "realized", "efficiency", "mismatch", "theta", "phi",
-                           "beamwidth_phi0", "beamwidth_phi90")} | {"listed": bool(sw["named"][k])},
+                           "beamwidth_phi0", "beamwidth_phi90")}
+                         | {"listed": x["named"] and x["between"] is None,
+                            "interpolated_between_ghz": None if x["between"] is None
+                            else [b / 1e9 for b in x["between"]]},
             "info": re.sub(r"<[^>]+>", "", panel.info.text().replace("<br>", chr(10)))}
 
 
