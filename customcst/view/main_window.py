@@ -32,6 +32,7 @@ from discretize.materials import discretize
 from mesh.rectilinear import ACCURATE_CELLS_PER_FEATURE, build_grid, z0_error_percent
 from project.materials import BUILTIN, CUSTOM, MATERIAL_PARAMS
 from project import presets
+from project.save_as import SaveAsError, existing as model_files_existing, save_as
 from project.object_types import OBJECT_TYPES
 from project.project_file import LOCAL_MESH_PARAMS, UP_AXES, Z0PATH_PARAMS, Project, ProjectError, project_path
 from project.settings import SECTIONS
@@ -234,6 +235,9 @@ class MainWindow(QMainWindow):
         self.addToolBar(bar)
 
         bar.addAction("Open STEP...", self._open_dialog)
+        save_as_action = bar.addAction("Save As...", self._save_as_dialog)
+        save_as_action.setToolTip("The model under a new name (anywhere): the STEP, its project file, "
+                                  "its runs and presets copied, then the copy opened")
         kicad = bar.addAction("Import KiCad...", self._import_kicad)
         kicad.setToolTip("A KiCad board STEP -> <name>_prep.stp in our form (one body per copper "
                          "layer, pads cut to the copper, vias as one body), then opened")
@@ -791,6 +795,53 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, "Open STEP", start, "STEP (*.step *.stp)")
         if path:
             self.load(path)
+
+    def _save_as_dialog(self):
+        if self.geometry is None:
+            return
+        src = self.geometry.source
+        path, _ = QFileDialog.getSaveFileName(self, "Save model as", os.path.dirname(src),
+                                              "STEP (*.stp *.step)",
+                                              options=QFileDialog.DontConfirmOverwrite)
+        if not path:
+            return
+        if os.path.splitext(path)[1].lower() not in (".stp", ".step"):
+            path += os.path.splitext(src)[1] or ".stp"
+        old = model_files_existing(path)
+        overwrite = False
+        if old:
+            names = "\n".join(os.path.basename(p) for p in old)
+            overwrite = self.ask("Save As", f"These exist and will be REPLACED (their runs too):\n\n{names}"
+                                 "\n\nReplace them?", warning=True)
+            if not overwrite:
+                return
+        error = self.save_model_as(path, overwrite)
+        if error:
+            self.notify("Save As", error)
+
+    def save_model_as(self, path, overwrite=False):
+        """
+        The open model (STEP, project file, runs, presets: project/save_as.py)
+        copied to path, then the copy opened. Returns why not, or None.
+        """
+        if self.geometry is None:
+            return "no model open"
+        if self.runner.running:
+            return "a run is going: its result would go to the original. Save As after it"
+        if self.remote.running:
+            return "a server transfer is going: Save As after it"
+        if self.project is not None:
+            self._save()                    # the copy takes the project as shown now
+        src = self.geometry.source
+        try:
+            lines = save_as(src, path, overwrite)
+        except (SaveAsError, OSError) as error:
+            return f"not saved: {error}"
+        error = self.load_quiet(os.path.abspath(path))
+        if error:
+            return f"copied, but the copy {error}"
+        self.statusBar().showMessage("saved as: " + ", ".join(lines), 10000)
+        return None
 
     def _import_kicad(self):
         """KiCad STEP -> <name>_prep.stp next to it (geometry/kicad_step.py), then opened."""

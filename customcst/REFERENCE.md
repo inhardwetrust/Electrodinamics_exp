@@ -486,6 +486,7 @@ positionally; `show` takes the run names. From Python:
 | `unlock` | yes | `message` | control back; the message in the status bar |
 | `open` | yes | `path` | read a model (no dialog: a file that does not read is the error) |
 | `reload` | yes | | the open model again (STEP + .toml), the camera kept; meshing follows (`wait`) |
+| `save_as` | yes | `path`, `overwrite=true` | the open model copied under a new name (STEP, .toml, runs, presets; not remote.json), the copy opened |
 | `tab` | yes | `name` | `3d`, `results`, `farfield`, `farfield_f` |
 | `show` | yes | run names | tick these runs (the others off) |
 | `run_server` | yes | | Run on server (refused: no model, cannot run, shorts, a run going, a transfer, Remote not set) |
@@ -524,7 +525,16 @@ positionally; `show` takes the run names. From Python:
 
 ## 14. The window from the user's side
 
-- **Toolbar**: Open STEP, Import KiCad, Recent, Reload, Reset view,
+- **Save As** (`project/save_as.py`): the model under a new name, in any
+  folder: `new.stp` (the same bytes), `new.toml` (header renamed),
+  `new.results/` (runs and Z0 profiles; NOT `remote.json`: server launches
+  stay with the original), `new.presets/`; then the copy opens. Nothing
+  names the original, and the runs stay current (the fingerprint is the
+  STEP's bytes + the project's contents, no paths). Refused during a
+  local run or a transfer; an existing model there is replaced only after
+  a yes (`overwrite=true` by command).
+
+- **Toolbar**: Open STEP, Save As, Import KiCad, Recent, Reload, Reset view,
   ▶ Simulate, ■ Stop, Edges, X-ray, Ref. planes, Up; second row: Mesh,
   Materials (the plane as the solver sees it), Section, the plane's axis
   and position, Z0 here, Z0 path.

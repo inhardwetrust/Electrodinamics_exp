@@ -22,6 +22,7 @@
 #   python tools/ui.py unlock ["look at Run 3"]  give it back, a message in the status bar
 #   python tools/ui.py open models/x.step        read a file (no dialog: errors come back)
 #   python tools/ui.py reload                    the open file again
+#   python tools/ui.py save_as d/new.stp [overwrite=true]  the model copied (project, runs), the copy opened
 #   python tools/ui.py screenshot out.png        window.grab() into a PNG
 #   python tools/ui.py wait [--server] [--timeout S]
 #       until status shows nothing busy; --server (customcst): also until
@@ -41,7 +42,8 @@ import sys
 import time
 
 POSITIONAL = {"open": "path", "lock": "message", "unlock": "message", "tab": "name", "screenshot": "path",
-              "local_mesh": "body"}
+              "local_mesh": "body",
+              "save_as": "path"}
 LISTS = {"show": "runs"}                # every word after the command, as one list
 
 

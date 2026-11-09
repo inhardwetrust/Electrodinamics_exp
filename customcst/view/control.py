@@ -26,6 +26,10 @@
 #   unlock [message]             give it back; message in the status bar
 #   open path / reload           read a model / the open one again (no dialog:
 #                                a file that does not read is an error answer)
+#   save_as path [overwrite]     the open model under a new name (STEP, project
+#                                file, runs, presets copied: project/save_as.py),
+#                                then the copy open; overwrite=true replaces a
+#                                model there
 #   tab name                     3d | results | farfield | farfield_f
 #   show runs=[names]            tick these runs in Results (all others off)
 #   screenshot path              window.grab() into a PNG
@@ -238,6 +242,14 @@ def reload(window):
     if window.geometry is None:
         raise CommandError("no model open")
     error = window.load_quiet(window.geometry.source, keep_camera=True)
+    if error:
+        raise CommandError(error)
+    return status(window)
+
+
+def save_as_model(window, path, overwrite=False):
+    """The open model copied to path (with its project, runs, presets), the copy opened."""
+    error = window.save_model_as(os.path.abspath(path), bool(overwrite))
     if error:
         raise CommandError(error)
     return status(window)
@@ -554,6 +566,7 @@ COMMANDS = {
     "unlock": (unlock, True),
     "open": (open_model, True),
     "reload": (reload, True),
+    "save_as": (save_as_model, True),
     "tab": (tab, True),
     "show": (show, True),
     "run_server": (run_server, True),
