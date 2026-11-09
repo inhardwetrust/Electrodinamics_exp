@@ -56,7 +56,8 @@ from solver.simulation import parameters, port_names
 from solver.simulation import problem as simulation_problem
 from solver.line_profile import CONVERGED, impedance_profile, line_impedance, pec_nets, z0_convergence
 from solver.path_profile import Path, path_profile
-from solver.profile_file import load_profile, profile_key, save_profile
+from solver.profile_file import (delete_path_profile, list_path_profiles, load_profile, profile_key,
+                                 rename_path_profile, save_profile)
 
 MM = 1e-3
 AXES = "xyz"
@@ -123,6 +124,7 @@ class MainWindow(QMainWindow):
         self.mesh = None            # MeshResult
         self.materials = None       # MaterialGrid (solver's view)
         self._nets = None           # (materials, pec_nets of it) for the Z0 tools
+        self._path_entries = {}     # file -> PathEntry: the saved profiles along the path (tree rows)
         self._profiles = None       # (materials, {axis or "path": Profile}): Z0 profiles of this mesh
         self._mesh_coordinate = None    # where the mesh plane is (m)
         self.profile_window = None      # Z0 profile (ProfileWindow), made on first use
@@ -1588,10 +1590,14 @@ class MainWindow(QMainWindow):
         self._kept_profiles()[self._profile_key(source)] = profile
         saved = ""
         try:
+            model = fingerprint(self.project)
             save_profile(self.project.step_path, source, profile,
-                         profile_key(self.project, source, self.project.z0path))
+                         profile_key(self.project, source, self.project.z0path, model),
+                         model_fingerprint=model, z0path=self.project.z0path)
         except OSError as error:
             saved = f" (not saved: {error})"
+        if source == "path":
+            self._fill_z0path()                     # the new profile's row
         self.statusBar().showMessage(f"Z0 profile along {where}: {len(profile.sections)} sections{saved}", 5000)
         self._show_profile(profile)
         self._update_tdr()
@@ -1810,8 +1816,118 @@ class MainWindow(QMainWindow):
                            "side cuts counts as ground, but a ground beyond it is left out and Z0 reads "
                            "high (an SMA launch with 2 mm: 54.5 Ω for 49.2). Not wider than needed: a "
                            "neighboring line inside it would be a second conductor.")
+        self._fill_path_profiles(section)
         section.setExpanded(True)
         self.tree.blockSignals(False)
+
+    def _fill_path_profiles(self, section):
+        """Z0 path > Profiles: one row per saved profile along the path (solver/profile_file.py)."""
+        try:
+            entries = list_path_profiles(self.project.step_path)
+            model = fingerprint(self.project)
+        except OSError:
+            entries, model = [], None
+        self._path_entries = {e.path: e for e in entries}
+        if not entries:
+            return
+        key = profile_key(self.project, "path", self.project.z0path, model) if model else None
+        group = QTreeWidgetItem(section, ["Profiles", f"{len(entries)} saved", ""])
+        group.setData(0, Qt.UserRole, ("z0profiles", "z0path", None))
+        group.setToolTip(0, "Z0 profiles computed along the path. Double click one to show it; right click: "
+                            "show, rename, use its path, delete.")
+        for entry in entries:
+            state, why = entry.status(key, model)
+            row = QTreeWidgetItem(group, [entry.name, entry.saved, state])
+            row.setData(0, Qt.UserRole, ("z0profile", entry.path, None))
+            row.setFlags(row.flags() | Qt.ItemIsEditable)
+            row.setForeground(2, QColor("#2a2" if state == "current" else "#c80"))
+            row.setToolTip(0, "Double click: show it in the Z0 profile window. Right click: show, rename, "
+                              "use its path, delete.")
+            z0 = entry.profile.z0
+            finite = z0[np.isfinite(z0)]
+            infos = [("sections", f"{len(entry.profile.sections)}"
+                      + (f", Z0 {finite.min():.1f}…{finite.max():.1f} Ω" if len(finite) else ""))]
+            if entry.z0path is not None:
+                pts = np.asarray(entry.z0path.get("points", []), dtype=float).reshape(-1, 2)
+                length = float(np.linalg.norm(np.diff(pts, axis=0), axis=1).sum()) if len(pts) > 1 else 0.0
+                infos.append(("path", f"{len(pts)} points, length {length:.3f} mm, half width "
+                                      f"{entry.z0path.get('half_width', 0):g} mm"))
+            if why:
+                infos.append(("outdated", why))
+            for label, value in infos:
+                info = QTreeWidgetItem(row, [label, value, ""])
+                info.setData(0, Qt.UserRole, ("z0profile_info", entry.path, None))
+                info.setForeground(1, QColor("#666"))
+        group.setExpanded(True)
+
+    def _path_entry(self, path):
+        return self._path_entries.get(path)
+
+    def _show_path_profile(self, path):
+        """A saved path profile in the profile window (marked outdated when it is)."""
+        entry = self._path_entry(path)
+        if entry is None or self.project is None:
+            return
+        self._z0_profile()
+        if self.profile_window is None:
+            return
+        model = fingerprint(self.project)
+        state, why = entry.status(profile_key(self.project, "path", self.project.z0path, model), model)
+        self._show_profile(entry.profile)
+        self.profile_window._title(entry.name)
+        if state != "current":
+            self.profile_window.mark_outdated(why)
+            self.profile_window._title(f"{entry.name}, outdated")
+
+    def _path_profile_menu(self, item, path):
+        entry = self._path_entry(path)
+        if entry is None:
+            return
+        menu = QMenu(self)
+        menu.addAction("Show", lambda: self._show_path_profile(path))
+        menu.addAction("Rename", lambda: self.tree.editItem(item, 0))
+        use = menu.addAction("Use its path", lambda: self._use_profile_path(entry))
+        use.setEnabled(entry.z0path is not None and entry.z0path != self.project.z0path)
+        use.setToolTip("The Z0 path (plane, half width, points) back to the one this profile was computed for")
+        menu.addSeparator()
+        menu.addAction("Delete…", lambda: self._delete_path_profiles([entry]))
+        model = fingerprint(self.project)
+        key = profile_key(self.project, "path", self.project.z0path, model)
+        outdated = [e for e in self._path_entries.values() if e.status(key, model)[0] != "current"]
+        delete_old = menu.addAction(f"Delete all outdated ({len(outdated)})…",
+                                    lambda: self._delete_path_profiles(outdated))
+        delete_old.setEnabled(bool(outdated))
+        menu.exec(self.tree.viewport().mapToGlobal(self.tree.visualItemRect(item).bottomLeft()))
+
+    def _use_profile_path(self, entry):
+        self.project.z0path = dict(entry.z0path)
+        self._z0path_changed()
+
+    def _delete_path_profiles(self, entries):
+        if not entries:
+            return
+        names = "\n".join(f"{e.name} ({e.saved})" for e in entries)
+        if not self.ask("Delete Z0 profiles", f"Delete {len(entries)} saved profile"
+                        f"{'s' * (len(entries) > 1)} along the path?\n\n{names}\n\nThis cannot be undone."):
+            return
+        for entry in entries:
+            try:
+                delete_path_profile(entry)
+            except OSError as error:
+                self.notify("Delete Z0 profile", str(error), "error")
+        self._profiles = None                       # the kept ones read again from what is left
+        QTimer.singleShot(0, self._fill_z0path)     # never rebuild the tree inside its own signal
+        self._update_tdr()
+
+    def _path_profile_renamed(self, item, path):
+        entry = self._path_entry(path)
+        name = item.text(0).strip()
+        if entry is not None and name and name != entry.name:
+            try:
+                rename_path_profile(entry, name)
+            except OSError as error:
+                self.statusBar().showMessage(f"rename: {error}", 6000)
+        QTimer.singleShot(0, self._fill_z0path)
 
     def _show_section(self):
         """Section view at the plane of the slider (grid lines, or steps over the model without a mesh)."""
@@ -2981,6 +3097,7 @@ class MainWindow(QMainWindow):
         self._fill_materials()
         self._update_result_status()
         self._fill_results()                    # current / outdated marks
+        self._fill_z0path()                     # its profiles' marks too
 
     # =====================================================
     # Editing
@@ -3017,6 +3134,9 @@ class MainWindow(QMainWindow):
             return
         if role == "run":
             self._run_menu(item, name)
+            return
+        if role == "z0profile":
+            self._path_profile_menu(item, name)
             return
         if role == "pending":
             self._pending_menu(item, name)
@@ -3082,6 +3202,9 @@ class MainWindow(QMainWindow):
             return
         if role == "run":
             self.tree.editItem(item, 0)             # rename in place
+            return
+        if role == "z0profile":
+            self._show_path_profile(owner)
             return
         if role == "local_mesh_param" and self.project is not None:
             self.tree.editItem(item, 1)
@@ -3166,6 +3289,9 @@ class MainWindow(QMainWindow):
 
         if role == "run" and column == 0:
             self._run_changed(item, owner)
+            return
+        if role == "z0profile" and column == 0:
+            self._path_profile_renamed(item, owner)
             return
 
         if role == "z0path_param" and column == 1:

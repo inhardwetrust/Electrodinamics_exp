@@ -541,7 +541,12 @@ positionally; `show` takes the run names. From Python:
 - **Left panel**: Project tree (Simulation: settings, Monitors with Ports
   and Far field, Results with one row per run (current / outdated, tick
   to show, rename, delete); Mesh: settings and the grid's figures; Model:
-  Z0 path, Holes, Bodies with their types, right click to set a type,
+  Z0 path (its settings, points, and Profiles: every Z0 profile computed
+  along the path, kept in `model.results/z0profiles/path/` like the runs,
+  current / outdated (the model, types or mesh / band changed, or the
+  path), double click to show it, right click: rename, Use its path,
+  delete, delete all outdated; a Compute with the same key replaces its
+  entry), Holes, Bodies with their types, right click to set a type,
   double click a value to edit; right click Mesh or Far field: presets),
   Materials (the library), Presets (mesh and monitors templates), Remote (the
   server, Push, Fetch, Run on server, Stop).
