@@ -59,6 +59,12 @@
 #   region); it is a result input (in the fingerprint), kept when the type
 #   is removed, an orphan when the body is gone.
 #
+#   [circuit.switch]    # a circuit element on the runs' ports (solver/circuit.py):
+#   kind = "t"          #   applied when the runs are shown, not a result
+#   enabled = true      #   input (never outdates a run)
+#   ports = ["P_pin", "P_rf2"]
+#   l1 = 1.7 ...        # the kind's parameters; port_l (nH) for every kind
+#
 # Bodies without a section have no type yet. Sections whose body is missing
 # from the STEP file are kept (the body may come back after a CAD edit) and
 # reported as orphans. Missing parameters take their defaults; unknown types,
@@ -77,6 +83,7 @@ from project.object_types import CONDUCTOR_TYPES, OBJECT_TYPES, Assignment, Para
 from project.ports import port_geometry
 from project.waveports import waveport_geometry
 from project.settings import SECTIONS, check_settings
+from solver.circuit import ELEMENT_KINDS, Element, port_count
 
 UP_AXES = ("x", "y", "z")
 VIEW_SWITCHES = ("edges", "xray", "ref_planes", "mesh", "materials", "section", "flip")
@@ -117,7 +124,7 @@ def project_path(step_path):
 
 class Project:
     def __init__(self, step_path, assignments=None, up="z", settings=None, materials=None,
-                 holes=None, view=None, z0path=None, local_mesh=None):
+                 holes=None, view=None, z0path=None, local_mesh=None, circuit=None):
         self.step_path = os.fspath(step_path)
         self.assignments = dict(assignments or {})     # {body name: Assignment}
         self.up = up                                   # vertical axis for the view
@@ -133,6 +140,7 @@ class Project:
         for name, values in (settings or {}).items():
             self.settings[name].update(values)
         self.local_mesh = {name: dict(values) for name, values in (local_mesh or {}).items()}   # {body: params}
+        self.circuit = dict(circuit or {})             # {element name: solver.circuit.Element}, file order
 
     @property
     def path(self):
@@ -280,6 +288,67 @@ class Project:
     def remove_local_mesh(self, body_name):
         self.local_mesh.pop(body_name, None)
 
+    # --- circuit elements on the runs' ports (solver/circuit.py) --------------
+    def add_element(self, kind, name=None, ports=None):
+        """A new element of `kind` with its defaults; returns its name ("<kind>N" if none given)."""
+        if kind not in ELEMENT_KINDS:
+            raise ProjectError(f"unknown element kind {kind!r}, expected one of {sorted(ELEMENT_KINDS)}")
+        if name is None:
+            n = 1
+            while f"{kind}{n}" in self.circuit:
+                n += 1
+            name = f"{kind}{n}"
+        name = self._check_element_name(name)
+        k = ELEMENT_KINDS[kind]
+        self.circuit[name] = Element(name, kind, [""] * k.ports, k.defaults())
+        for i, port in enumerate(ports or []):
+            self.set_element_port(name, i, port)
+        return name
+
+    def _check_element_name(self, name):
+        name = str(name).strip()
+        if not name:
+            raise ProjectError("an element needs a name")
+        if name in self.circuit:
+            raise ProjectError(f"an element {name!r} exists")
+        return name
+
+    def element(self, name):
+        if name not in self.circuit:
+            raise ProjectError(f"no circuit element {name!r}")
+        return self.circuit[name]
+
+    def remove_element(self, name):
+        self.circuit.pop(name, None)
+
+    def rename_element(self, old, new):
+        element = self.element(old)
+        if str(new).strip() == old:
+            return
+        new = self._check_element_name(new)
+        self.circuit = {(new if k == old else k): v for k, v in self.circuit.items()}
+        element.name = new
+
+    def set_element_value(self, name, param_name, value):
+        element = self.element(name)
+        try:
+            param = element.element_kind.param(param_name)
+        except KeyError:
+            raise ProjectError(f"{name}: no parameter {param_name!r} for kind {element.kind!r}") from None
+        element.values[param_name] = param.validate(value)
+        if param_name == "file":                    # the port count follows the file
+            n = port_count(element)
+            element.ports = (element.ports + [""] * n)[:n]
+
+    def set_element_port(self, name, index, port):
+        element = self.element(name)
+        if not 0 <= index < len(element.ports):
+            raise ProjectError(f"{name}: has {len(element.ports)} ports, no port {index + 1}")
+        element.ports[index] = str(port).strip()
+
+    def set_element_enabled(self, name, enabled):
+        self.element(name).enabled = bool(enabled)
+
     def set_setting(self, section, param_name, value):
         """Validates the value alone and against the other settings."""
         value = SECTIONS[section].param(param_name).validate(value)
@@ -417,7 +486,8 @@ class Project:
         except tomllib.TOMLDecodeError as error:
             raise ProjectError(f"{path}: {error}") from None
 
-        unknown = set(data) - {"bodies", "view", "materials", "holes", "z0path", "local_mesh"} - set(SECTIONS)
+        unknown = (set(data) - {"bodies", "view", "materials", "holes", "z0path", "local_mesh", "circuit"}
+                   - set(SECTIONS))
         if unknown:
             raise ProjectError(f"{path}: unknown top-level keys {sorted(unknown)}")
 
@@ -455,7 +525,8 @@ class Project:
         z0path = _parse_z0path(path, data["z0path"]) if "z0path" in data else None
         local_mesh = {name: _parse_local_mesh(path, name, section)
                       for name, section in data.get("local_mesh", {}).items()}
-        return cls(step_path, assignments, up, settings, library, holes, view, z0path, local_mesh)
+        circuit = {name: _parse_element(path, name, section) for name, section in data.get("circuit", {}).items()}
+        return cls(step_path, assignments, up, settings, library, holes, view, z0path, local_mesh, circuit)
 
     def save(self):
         """Writes atomically (temp file + replace): a crash never leaves half a file."""
@@ -510,6 +581,16 @@ class Project:
                 lines.append(f"{param.name} = {_toml_value(self.z0path[param.name])}{comment}")
             points = ", ".join(f"[{_fmt_number(u)}, {_fmt_number(v)}]" for u, v in self.z0path["points"])
             lines.append(f"points = [{points}]   # mm")
+            lines.append("")
+
+        for name, element in self.circuit.items():
+            lines.append(f"[circuit.{_key(name)}]")
+            lines.append(f'kind = "{element.kind}"')
+            lines.append(f"enabled = {_toml_value(element.enabled)}")
+            lines.append(f"ports = {json.dumps(element.ports, ensure_ascii=False)}")
+            for param in element.element_kind.all_params():
+                comment = f"   # {param.unit}" if param.unit else ""
+                lines.append(f"{param.name} = {_toml_value(element.values[param.name])}{comment}")
             lines.append("")
 
         if self.hole_diameters:
@@ -681,6 +762,42 @@ def _parse_local_mesh(path, name, section):
         except ValueError as error:
             raise ProjectError(f"{where}: {error}") from None
     return values
+
+
+def _parse_element(path, name, section):
+    """A [circuit.NAME] table: kind, enabled, ports and the kind's parameters (missing: defaults)."""
+    where = f"{path}: circuit element {name!r}"
+    if not isinstance(section, dict):
+        raise ProjectError(f"{where}: expected a table")
+    kind = section.get("kind")
+    if kind not in ELEMENT_KINDS:
+        raise ProjectError(f"{where}: unknown kind {kind!r}, expected one of {sorted(ELEMENT_KINDS)}")
+    k = ELEMENT_KINDS[kind]
+    values = k.defaults()
+    enabled, ports = True, []
+    for key, value in section.items():
+        if key == "kind":
+            continue
+        if key == "enabled":
+            if not isinstance(value, bool):
+                raise ProjectError(f"{where}: enabled must be true or false")
+            enabled = value
+            continue
+        if key == "ports":
+            if not isinstance(value, list) or not all(isinstance(p, str) for p in value):
+                raise ProjectError(f"{where}: ports must be a list of port names")
+            ports = [p.strip() for p in value]
+            continue
+        try:
+            values[key] = k.param(key).validate(value)
+        except KeyError:
+            raise ProjectError(f"{where}: unknown key {key!r} for kind {kind!r}") from None
+        except ValueError as error:
+            raise ProjectError(f"{where}: {error}") from None
+    element = Element(name, kind, [], values, enabled)
+    n = port_count(element)
+    element.ports = (ports + [""] * n)[:n] if n else ports
+    return element
 
 
 def _parse_material(path, name, section, builtin):

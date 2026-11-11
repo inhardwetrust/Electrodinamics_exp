@@ -53,6 +53,7 @@ from solver.result_file import (delete_result, fingerprint, format_duration, lis
                                 rename_result, results_dir, save_result)
 from view.sim_runner import SimulationRunner
 from solver.simulation import parameters, port_names
+from solver.circuit import ELEMENT_KINDS, apply_circuit, check_elements
 from solver.simulation import problem as simulation_problem
 from solver.line_profile import CONVERGED, impedance_profile, line_impedance, pec_nets, z0_convergence
 from solver.path_profile import Path, path_profile
@@ -67,7 +68,8 @@ NOTICES_KEPT = 50               # the notices kept for Claude's status (notify /
 DISK_POLL = 700                 # ms between looks at the model's STEP and project file on disk
 SLIDER_STEPS = 1000             # plane positions over the model when it is not on the grid lines
 TREE_SECTIONS = ("simulation", "mesh")  # the settings sections, in the tree's order (before Model)
-TREE_GROUPS = ("model", "bodies", "section", "monitors", "results")   # rows _tree_item looks into
+TREE_GROUPS = ("model", "bodies", "section", "monitors", "results", "circuit")   # rows _tree_item looks into
+CIRCUIT_ROLES = ("circuit", "circuit_element", "circuit_port", "circuit_param")
 
 
 class _Cancelled(Exception):
@@ -1994,6 +1996,7 @@ class MainWindow(QMainWindow):
         self._fill_holes()
 
         self.tree.blockSignals(False)
+        self._fill_circuit()
         self._resize_columns()
         self._show_summary()
 
@@ -2887,7 +2890,7 @@ class MainWindow(QMainWindow):
     def _show_runs(self):
         """Results tab and the Results list after a change of the runs or of their ticks."""
         shown = [r for r in self.runs if (r.path or id(r)) in self.shown]
-        self.results.set_results(shown)
+        self.results.set_results(self._circuit_runs(shown))
         self.farfield_panel.set_results(shown)
         self.farfield_sweep_panel.set_results(shown)
         if self.farfield_panel.frequency.currentData() is not None:
@@ -2898,6 +2901,7 @@ class MainWindow(QMainWindow):
             self.results.set_message("no run ticked in Project > Simulation > Results")
         self._update_result_status()
         self._fill_results()
+        self._fill_circuit()                    # its errors follow the shown runs' ports
         self._update_tdr()
 
     def _is_current(self, run):
@@ -3057,6 +3061,244 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(f"rename: {error}", 6000)
         QTimer.singleShot(0, self._show_runs)
 
+    # =====================================================
+    # Circuit (project [circuit], solver/circuit.py): elements on the runs'
+    # ports, applied when the runs are shown (no re-run, never outdates one)
+    # =====================================================
+
+    def _circuit_base(self):
+        """Where an element's relative file name is looked up: the model's folder."""
+        return os.path.dirname(os.path.abspath(self.project.step_path)) if self.project is not None else ""
+
+    def _circuit_runs(self, shown):
+        """The shown runs with the circuit connected (a run it does not apply to stays as it is)."""
+        if self.project is None or not any(e.enabled for e in self.project.circuit.values()):
+            return shown
+        elements = list(self.project.circuit.values())
+        return [apply_circuit(run, elements, self._circuit_base())[0] for run in shown]
+
+    def _circuit_ports(self):
+        """Port names to connect to: the model's, then those of the shown runs."""
+        names = list(self._port_list())
+        for run in self.runs:
+            if (run.path or id(run)) in self.shown:
+                names += [p for p in run.ports if p not in names]
+        return names
+
+    def _fill_circuit(self):
+        """The Circuit group (after Model): one row per element, its ports, values and errors."""
+        old = self._tree_item("circuit", None)
+        if self.project is None or self._tree_item("model", None) is None:
+            if old is not None:
+                self.tree.takeTopLevelItem(self.tree.indexOfTopLevelItem(old))
+            return
+        self.tree.blockSignals(True)
+        if old is None:
+            group = _group_item(None, "Circuit", "circuit",
+                                "Circuit elements on the runs' ports (loads, 2-ports, .sNp files): applied "
+                                "to the shown runs at once, no re-run. Right click: Add element")
+            self.tree.addTopLevelItem(group)
+            group.setExpanded(True)
+        else:
+            group = old
+            group.takeChildren()
+        circuit = self.project.circuit
+        group.setText(1, str(len(circuit)) if circuit else "")
+        shown = [r for r in self.runs if (r.path or id(r)) in self.shown]
+        errors = (check_elements(list(circuit.values()), shown[-1].ports, self._circuit_base())
+                  if shown and circuit else {})
+        if not circuit:
+            self._note_row(group, "circuit", "right click: Add element (a load on a port, a 2-port "
+                                             "between ports, a .sNp file)", "#888")
+        for name, element in circuit.items():
+            kind = element.element_kind
+            row = QTreeWidgetItem([name, kind.label, ", ".join(p or "—" for p in element.ports)])
+            row.setData(0, Qt.UserRole, ("circuit_element", name, None))
+            row.setFlags(row.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEditable)
+            row.setCheckState(0, Qt.Checked if element.enabled else Qt.Unchecked)
+            row.setToolTip(0, "Ticked: connected in the shown runs. Double click: rename; right click: remove")
+            group.addChild(row)
+            for i, port in enumerate(element.ports):
+                r = QTreeWidgetItem(row, [f"port {i + 1}", port or "(not set)", ""])
+                r.setData(0, Qt.UserRole, ("circuit_port", name, i))
+                r.setToolTip(1, "Double click: one of the model's ports")
+                if not port:
+                    r.setForeground(1, QColor("#d33"))
+            for param in kind.all_params():
+                value = element.values[param.name]
+                r = QTreeWidgetItem(row, [param.label, value if param.text else _fmt_value(value), param.unit])
+                r.setData(0, Qt.UserRole, ("circuit_param", name, param.name))
+                r.setFlags(r.flags() | Qt.ItemIsEditable)
+                tip = param.tooltip or "Double click to edit"
+                r.setToolTip(0, tip)
+                r.setToolTip(1, tip + ("; right click: Browse" if param.name == "file" else ""))
+            if kind.note:
+                self._note_row(row, "circuit", kind.note, "#888")
+            if name in errors and element.enabled:
+                self._note_row(row, "circuit", f"✗ {errors[name]}", "#d33")
+            row.setExpanded(True)
+        self.tree.blockSignals(False)
+
+    def _circuit_edit(self, action):
+        """A change of the circuit: done, saved, the runs shown again (raises ProjectError / ValueError)."""
+        result = action()
+        self._save()
+        self._show_runs()                       # refills the Circuit group too
+        return result
+
+    def _circuit_try(self, action):
+        try:
+            return self._circuit_edit(action)
+        except (ProjectError, ValueError) as error:
+            self.statusBar().showMessage(str(error), 6000)
+            self._fill_circuit()
+            return None
+
+    def add_element(self, kind, name=None, ports=None, values=None):
+        """A new element (ports: names in order; values: its parameters); returns its name."""
+        def act():
+            new = self.project.add_element(kind, name)
+            try:
+                for key, value in (values or {}).items():     # a file first: it sets the port count
+                    self.project.set_element_value(new, key, value)
+                for i, port in enumerate(ports or []):
+                    self.project.set_element_port(new, i, port)
+            except (ProjectError, ValueError):
+                self.project.remove_element(new)
+                raise
+            return new
+        return self._circuit_edit(act)
+
+    def set_element_port(self, name, index, port):
+        self._circuit_edit(lambda: self.project.set_element_port(name, index, port))
+
+    def set_element_value(self, name, key, value):
+        self._circuit_edit(lambda: self.project.set_element_value(name, key, value))
+
+    def set_element_enabled(self, name, enabled):
+        self._circuit_edit(lambda: self.project.set_element_enabled(name, enabled))
+
+    def rename_element(self, old, new):
+        self._circuit_edit(lambda: self.project.rename_element(old, new))
+
+    def remove_element(self, name):
+        self._circuit_edit(lambda: self.project.remove_element(name))
+
+    def _circuit_menu(self, item, role, name):
+        menu = QMenu(self)
+        add = menu.addMenu("Add element")
+        for kind in ELEMENT_KINDS.values():
+            if kind.name == "touchstone":
+                continue
+            add.addAction(kind.label).triggered.connect(
+                lambda _=False, k=kind.name: self._circuit_try(lambda: self.add_element(k)))
+        menu.addAction("Add Touchstone file…").triggered.connect(lambda: self._add_touchstone())
+        if role in ("circuit_element", "circuit_port", "circuit_param") and name in self.project.circuit:
+            element = self.project.circuit[name]
+            menu.addSeparator()
+            if role == "circuit_port":
+                index = item.data(0, Qt.UserRole)[2]
+                ports = menu.addMenu(f"Port {index + 1}")
+                self._fill_port_menu(ports, name, index)
+            if role == "circuit_param" and item.data(0, Qt.UserRole)[2] == "file":
+                menu.addAction("Browse…").triggered.connect(lambda: self._browse_touchstone(name))
+            applied = menu.addAction("Connected")
+            applied.setCheckable(True)
+            applied.setChecked(element.enabled)
+            applied.triggered.connect(lambda on: self._circuit_try(lambda: self.set_element_enabled(name, on)))
+            menu.addAction("Rename").triggered.connect(
+                lambda: self.tree.editItem(self._circuit_row(name), 0))
+            menu.addAction(f"Remove {name}").triggered.connect(
+                lambda: self._circuit_try(lambda: self.remove_element(name)))
+        menu.exec(QCursor.pos())
+
+    def _circuit_row(self, name):
+        group = self._tree_item("circuit", None)
+        for i in range(group.childCount() if group else 0):
+            if group.child(i).data(0, Qt.UserRole)[:2] == ("circuit_element", name):
+                return group.child(i)
+        return None
+
+    def _fill_port_menu(self, menu, name, index):
+        current = self.project.circuit[name].ports[index]
+        for port in self._circuit_ports():
+            action = menu.addAction(port)
+            action.setCheckable(True)
+            action.setChecked(port == current)
+            action.triggered.connect(
+                lambda _=False, p=port: self._circuit_try(lambda: self.set_element_port(name, index, p)))
+        if not self._circuit_ports():
+            menu.addAction("(the model has no ports)").setEnabled(False)
+
+    def _circuit_double_clicked(self, item, role, owner, key):
+        if role == "circuit_element":
+            self.tree.editItem(item, 0)
+        elif role == "circuit_port":
+            menu = QMenu(self)
+            self._fill_port_menu(menu, owner, key)
+            menu.exec(self.tree.viewport().mapToGlobal(self.tree.visualItemRect(item).bottomLeft()))
+        elif role == "circuit_param":
+            param = self.project.circuit[owner].element_kind.param(key)
+            if not param.choices:
+                self.tree.editItem(item, 1)
+                return
+            menu = QMenu(self)
+            for choice in param.choices:
+                action = menu.addAction(choice)
+                action.setCheckable(True)
+                action.setChecked(item.text(1) == choice)
+                action.triggered.connect(lambda _=False, c=choice: item.setText(1, c))
+            menu.exec(self.tree.viewport().mapToGlobal(self.tree.visualItemRect(item).bottomLeft()))
+
+    def _circuit_item_changed(self, item, column, role, owner, key):
+        if owner not in self.project.circuit:
+            return
+        element = self.project.circuit[owner]
+        if role == "circuit_element" and column == 0:
+            on = item.checkState(0) == Qt.Checked
+            text = item.text(0).strip()
+            if on != element.enabled:
+                QTimer.singleShot(0, lambda: self._circuit_try(lambda: self.set_element_enabled(owner, on)))
+            elif text != owner:
+                QTimer.singleShot(0, lambda: self._circuit_try(lambda: self.rename_element(owner, text)))
+            return
+        if role == "circuit_param" and column == 1:
+            param = element.element_kind.param(key)
+            text = item.text(1).strip()
+            if not param.text:
+                text = text.replace(",", ".")
+            if text == (element.values[key] if param.text else _fmt_value(element.values[key])):
+                return
+            # rebuilds the rows: not under the editor's own commit
+            QTimer.singleShot(0, lambda: self._circuit_try(lambda: self.set_element_value(owner, key, text)))
+
+    def _touchstone_name(self, path):
+        """A file name as stored: relative to the model's folder when it is on the same drive."""
+        base = self._circuit_base()
+        try:
+            rel = os.path.relpath(path, base)
+        except ValueError:                      # another drive
+            return os.path.abspath(path)
+        return rel.replace("\\", "/")
+
+    def _pick_touchstone(self):
+        start = self._circuit_base()
+        path, _ = QFileDialog.getOpenFileName(self, "Touchstone file", start,
+                                              "Touchstone (*.s1p *.s2p *.s3p *.s4p *.s*p);;All files (*)")
+        return path
+
+    def _add_touchstone(self):
+        path = self._pick_touchstone()
+        if path:
+            stem = os.path.splitext(os.path.basename(path))[0]
+            name = stem if stem not in self.project.circuit else None
+            self._circuit_try(lambda: self.add_element("touchstone", name, values={"file": self._touchstone_name(path)}))
+
+    def _browse_touchstone(self, name):
+        path = self._pick_touchstone()
+        if path:
+            self._circuit_try(lambda: self.set_element_value(name, "file", self._touchstone_name(path)))
+
     def _tree_item(self, role, owner):
         """
         A row by its (role, owner): a top-level section or group, or a row in
@@ -3141,6 +3383,9 @@ class MainWindow(QMainWindow):
         if role == "pending":
             self._pending_menu(item, name)
             return
+        if role in CIRCUIT_ROLES or (role == "note" and name == "circuit"):
+            self._circuit_menu(item, role, name)
+            return
         if self._body_row(item) is None:
             return
 
@@ -3205,6 +3450,9 @@ class MainWindow(QMainWindow):
             return
         if role == "z0profile":
             self._show_path_profile(owner)
+            return
+        if role in CIRCUIT_ROLES and self.project is not None:
+            self._circuit_double_clicked(item, role, owner, name)
             return
         if role == "local_mesh_param" and self.project is not None:
             self.tree.editItem(item, 1)
@@ -3292,6 +3540,9 @@ class MainWindow(QMainWindow):
             return
         if role == "z0profile" and column == 0:
             self._path_profile_renamed(item, owner)
+            return
+        if role in ("circuit_element", "circuit_param"):
+            self._circuit_item_changed(item, column, role, owner, param)
             return
 
         if role == "z0path_param" and column == 1:

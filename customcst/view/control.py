@@ -51,6 +51,11 @@
 #   clean_server [names] [list]  list the server's models (status: server_models),
 #                                or delete these (never one whose run goes)
 #   clear_notices                empty the notices
+#   circuit [name] [kind] [ports] [remove] [rename] [enabled] [at_ghz] [param=value ...]
+#                                circuit elements on the runs' ports (solver/circuit.py):
+#                                no name = list; a new name needs kind; answers the
+#                                elements, their errors and the shown run's outer ports
+#                                (at_ghz=[f, ...]: S and Z there)
 # Locked, the window opens no dialog (MainWindow.notify / ask): a message
 # or a question it would have shown is a notice in `status` (and the status
 # bar); a question takes its default (a command sets it: fetch take_server,
@@ -557,6 +562,61 @@ def clean_server(window, names=None, list=False):
     return "deleting: the result in status remote.last when the transfer is done"
 
 
+def circuit(window, name=None, kind=None, ports=None, remove=False, rename=None, enabled=None, at_ghz=None,
+            **values):
+    """Circuit elements on the runs' ports: list (no name); name kind=t ports=[a,b] l1=1.7 ... adds or
+    changes one; remove=true; rename=NEW; enabled=true|false; at_ghz=[f]: the shown result there."""
+    from solver.circuit import check_elements
+    from solver import vna
+    project = window.project
+    if project is None:
+        raise CommandError("no project (the model's project file has errors?)")
+    try:
+        if name is not None:
+            if remove:
+                project.element(name)
+                window.remove_element(name)
+            else:
+                if name not in project.circuit:
+                    if kind is None:
+                        raise CommandError(f"no element {name!r}: give kind= to add it")
+                    window.add_element(kind, name, ports, values)
+                else:
+                    if kind is not None and kind != project.circuit[name].kind:
+                        raise CommandError(f"{name} is a {project.circuit[name].kind}: remove it to change the kind")
+                    for key, value in values.items():
+                        window.set_element_value(name, key, value)
+                    for i, port in enumerate(ports or []):
+                        window.set_element_port(name, i, port)
+                if enabled is not None:
+                    window.set_element_enabled(name, bool(enabled))
+                if rename:
+                    window.rename_element(name, rename)
+    except ValueError as error:                 # ProjectError too
+        raise CommandError(str(error)) from None
+    shown = [r for r in window.runs if (r.path or id(r)) in window.shown]
+    errors = check_elements(list(project.circuit.values()), shown[-1].ports, window._circuit_base()) if shown else {}
+    answer = {"circuit": [{"name": e.name, "kind": e.kind, "enabled": e.enabled, "ports": e.ports,
+                           "values": e.values, "error": errors.get(e.name)} for e in project.circuit.values()]}
+    run = window.results.primary
+    if run is not None:
+        note = next((line for line in run.info if line.startswith("circuit")), "")
+        answer["shown"] = {"run": run.name, "ports": run.ports, "circuit": note}
+        points = []
+        for f in (at_ghz or []):
+            k = int(abs(run.frequencies - float(f) * 1e9).argmin())
+            row = {"f_ghz": round(float(run.frequencies[k]) / 1e9, 4)}
+            for (j, i), s in sorted(run.s.items()):
+                row[f"S{j + 1}{i + 1}_db"] = round(float(vna.logmag(s[k])), 3)
+                if j == i:
+                    z = complex(vna.gamma_to_z(s[k], run.resistances[j]))
+                    row[f"Z{j + 1}"] = [round(z.real, 2), round(z.imag, 2)]
+            points.append(row)
+        if points:
+            answer["shown"]["at"] = points
+    return answer
+
+
 # name: (function, changes the window: needs the lock)
 COMMANDS = {
     "describe": (describe, False),
@@ -580,4 +640,5 @@ COMMANDS = {
     "stop_server": (stop_server, True),
     "clean_server": (clean_server, True),
     "clear_notices": (clear_notices, False),
+    "circuit": (circuit, True),
 }

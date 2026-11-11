@@ -462,6 +462,42 @@ cast complex64 arrays to complex128 before squaring small values.
 Typical figures: S11 minimum (dB, GHz) via `np.abs(s11).argmin()`, the
 −10 dB band, Z at f0, then D / G / efficiency / beam direction / F/B.
 
+### Circuit elements on the ports (`solver/circuit.py`)
+Like CST's schematic over the 3D result: elements connected to a finished
+run's ports when the runs are shown, no re-run, never outdating a run (not
+in the fingerprint). Put a PORT (cone, or a waveport) where a part goes,
+run once with all ports excited (the full S matrix is needed), then try
+any part there:
+- `rlc` (1-port): R, L, C in series or parallel terminating a port; all 0
+  in parallel = an open (a port to leave unconnected must be terminated:
+  an unused port stays an outer 50 Ω port of the result);
+- `series` (2-port): R, L, C between two ports; `t` (L1+R1, shunt C,
+  R2+L2); `pi` (shunt C1, L+R, shunt C2); `line` (Z0, delay ps, dB/GHz);
+- `touchstone`: a .sNp (v1: RI / MA / DB, any unit, its R), relative to
+  the model's folder or absolute; renormalized to the ports' references,
+  interpolated (NaN outside its band, noted);
+- `port_l` (nH, every kind): taken off in series at each element port.
+  A lumped port's edge column adds ~0.3 nH compared with the lumped
+  element body (justswitch, 0.8 mm gap): `port_l = 0.3` makes a part with
+  the values of the old lumped body act the same.
+The result has the ports no element uses; its info ends with a `circuit:`
+line. Project file:
+```toml
+[circuit.switch]
+kind = "t"
+enabled = true
+ports = ["P_rfc", "P_rf2"]          # the run's port names, in the element's order
+l1 = 1.7   # nH
+...
+port_l = 0.0   # nH
+```
+Python: `apply_circuit(run, list(project.circuit.values()), model_folder)`
+→ (the shown run, note); `Project.add_element(kind, name, ports)`,
+`set_element_value`, `set_element_port`, `set_element_enabled`,
+`rename_element`, `remove_element`. Tree: the Circuit group after Model
+(right click: Add element / Add Touchstone file; tick = connected; double
+click a port row: pick a port). Check: `checks/check_circuit.py`.
+
 ## 13. Driving the window: the control channel
 
 The open window listens on 127.0.0.1 (a free port; port and a random
@@ -488,6 +524,7 @@ positionally; `show` takes the run names. From Python:
 | `reload` | yes | | the open model again (STEP + .toml), the camera kept; meshing follows (`wait`) |
 | `save_as` | yes | `path`, `overwrite=true` | the open model copied under a new name (STEP, .toml, runs, presets; not remote.json), the copy opened |
 | `tab` | yes | `name` | `3d`, `results`, `farfield`, `farfield_f` |
+| `circuit` | yes | `name=`, `kind=`, `ports=[..]`, param=value…, `remove=true`, `rename=`, `enabled=`, `at_ghz=[..]` | circuit elements on the runs' ports (12, Circuit): no name = list; a new name needs kind; answers the elements, errors, the shown result's ports and, at_ghz, its S (dB) and Z there |
 | `show` | yes | run names | tick these runs (the others off) |
 | `run_server` | yes | | Run on server (refused: no model, cannot run, shorts, a run going, a transfer, Remote not set) |
 | `fetch` | yes | `take_server` | Fetch; take_server: take the server's model files where they differ (default: keep ours; also for the fetch after a followed run) |
