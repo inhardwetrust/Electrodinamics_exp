@@ -18,7 +18,8 @@
 #   ... launch STEP              like Run on server: push, start run.py, record the
 #                                launch (model.results/remote.json) so the window
 #                                shows the pending run
-#   ... wait-run STEP            polls the run's status until it ends
+#   ... wait-run STEP            polls the run's status until it ends, a progress line every 30 s
+#   ... progress STEP            the run's progress now, one line
 #   ... fetch STEP               like Fetch: takes the finished run into model.results/
 #
 # Run from the customcst folder. The start command is
@@ -141,6 +142,34 @@ def launch(step):
     print("launched:", {k: now.get(k) for k in ("state", "pid", "message")})
 
 
+def _progress_line(now):
+    """One line of a run's status: the port being excited, how far its pulse / decay is, the time."""
+    def clock(seconds):
+        seconds = int(seconds or 0)
+        return f"{seconds // 3600}:{seconds % 3600 // 60:02d}:{seconds % 60:02d}"
+    text = f"{time.strftime('%H:%M:%S')}  {now.get('state', '?')}"
+    ports = now.get("ports") or []
+    if now.get("port_index"):
+        text += f"  port {now['port_index']}/{len(ports)} {now.get('port', '')}"
+    if now.get("energy_db") is not None:
+        text += f"  decay {now['energy_db']:.1f} dB of {now.get('end_db', -40):.0f}"
+    elif now.get("pulse_pct") is not None:
+        text += f"  pulse {now['pulse_pct']:.0f} %"
+    if now.get("t_ns") is not None:
+        text += f"  t {now['t_ns']:.2f} ns"
+    if now.get("port_elapsed") is not None:
+        text += f"  this port {clock(now['port_elapsed'])}"
+    text += f"  total {clock(now.get('elapsed'))}"
+    if now.get("message"):
+        text += f"  {now['message']}"
+    return text
+
+
+def progress(step):
+    now = sync.status(_config(), os.path.abspath(step))
+    print(_progress_line(now) if now else "never run on the server", flush=True)
+
+
 def wait_run(step):
     step = os.path.abspath(step)
     while True:
@@ -148,6 +177,7 @@ def wait_run(step):
         if now.get("state") not in ("meshing", "running"):
             print("final:", {k: now.get(k) for k in ("state", "message", "result", "elapsed")})
             return
+        print(_progress_line(now), flush=True)
         time.sleep(30)
 
 
@@ -159,7 +189,7 @@ def fetch(step):
 def main():
     if len(sys.argv) < 2:
         sys.exit("commands: status, sync-code, sweep NAME -- ARGS, wait-sweep NAME PID, clean NAME, "
-                 "launch STEP, wait-run STEP, fetch STEP (see the header of remote_tasks.py)")
+                 "launch STEP, wait-run STEP, progress STEP, fetch STEP (see the header of remote_tasks.py)")
     command, rest = sys.argv[1], sys.argv[2:]
     if command == "status":
         status()
@@ -180,9 +210,11 @@ def main():
         wait_run(rest[0])
     elif command == "fetch":
         fetch(rest[0])
+    elif command == "progress":
+        progress(rest[0])
     else:
         sys.exit("commands: status, sync-code, sweep NAME -- ARGS, wait-sweep NAME PID, clean NAME, "
-                 "launch STEP, wait-run STEP, fetch STEP (see the header of remote_tasks.py)")
+                 "launch STEP, wait-run STEP, progress STEP, fetch STEP (see the header of remote_tasks.py)")
 
 
 if __name__ == "__main__":
