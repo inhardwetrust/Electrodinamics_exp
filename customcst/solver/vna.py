@@ -89,7 +89,7 @@ def marker_readout(fmt, s, frequency, r_ref, j, k):
     name = f"S{j + 1}{k + 1}"
     mag_db = float(logmag(s))
     ang = float(phase_deg(s))
-    text = f"{name}: {mag_db:6.2f} dB  {ang:7.1f}°"
+    text = f"{name}: {mag_db:6.2f} dB  |{name}| {abs(complex(s)):.3f}  {ang:7.1f}°"
     if is_reflection(j, k):
         z = complex(gamma_to_z(s, r_ref))
         text += f"  SWR {float(swr(s)):.3f}  Z = {z.real:.1f} {'+' if z.imag >= 0 else '−'} j{abs(z.imag):.1f} Ω"

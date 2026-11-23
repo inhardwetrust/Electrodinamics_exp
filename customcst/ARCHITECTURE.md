@@ -130,7 +130,7 @@ VNA view (`solver/vna.py`, no Qt; `view/results_panel.py`,
 - Formats: LogMag, Phase, Group delay (-dφ/dω, unwrapped), SWR, LinMag,
   Smith and Z in. SWR, Smith and Z in show reflection traces only.
 - Traces S_jk are checkboxes; S11 and S21 are on by default.
-- A frequency marker reads out dB, phase, SWR and Z = R(1+Γ)/(1-Γ), with
+- A frequency marker reads out dB, |S| (linear), phase, SWR and Z = R(1+Γ)/(1-Γ), with
   the series L or C equivalent.
 - "Save .sNp" writes Touchstone v1 (RI, GHz, one reference R).
 - `checks/check_vna.py`: hand cases for Γ, SWR, L and C, the group delay of

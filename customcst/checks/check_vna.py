@@ -55,6 +55,8 @@ def main():
           reactance_element(-1 / (w * 3e-12), f))
     text = marker_readout("Smith", z_to_gamma(50 + 1j * w * 1e-9, r), f, r, 0, 0)
     check("marker readout shows Z and L", "Z = 50.0 + j15.1 Ω" in text and "L = 1 nH" in text, text)
+    text = marker_readout("LogMag", 0.716 * np.exp(-1j * np.radians(103)), f, r, 0, 0)
+    check("marker readout shows |S| linear", "|S11| 0.716" in text and "-2.90 dB" in text, text)
 
     freqs = np.linspace(1e9, 5e9, 401)
     tau = 0.3e-9
