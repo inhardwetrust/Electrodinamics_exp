@@ -154,6 +154,14 @@ corner turn with the view.
   - waveguide ports, which use the line's own quasi-TEM mode from a 2D
     solver. Cylinders work for coax and boxes for PCB lines.
 - **Lumped R, L, C**, series or parallel, drawn as a cylinder across a gap.
+- **Circuit on the ports** (the Circuit group in the tree): parts hung on a
+  finished run's ports with no re-run, like a schematic over the 3D result:
+  R, L, C (series / parallel), 2-ports (series, T, Pi, a line), Touchstone
+  `.sNp` files (a chip, a measured load), `port_l` to take a lumped port's
+  own L off. Put a port where a part goes, run once with all ports excited,
+  then try any value. How to use it, in Russian, with an 0402 drawn with its
+  terminations: `docs/education/ru/lumped_and_circuit.html`; reference:
+  `REFERENCE.md` section 12.
 - **Results**:
   - S11 as LogMag, phase, SWR, Smith chart or Z;
   - a marker readout;

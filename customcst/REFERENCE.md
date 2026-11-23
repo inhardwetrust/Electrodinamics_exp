@@ -497,6 +497,8 @@ Python: `apply_circuit(run, list(project.circuit.values()), model_folder)`
 `rename_element`, `remove_element`. Tree: the Circuit group after Model
 (right click: Add element / Add Touchstone file; tick = connected; double
 click a port row: pick a port). Check: `checks/check_circuit.py`.
+How-to in Russian (lumped body vs port + Circuit, the 50 Ω reference, port_l,
+an 0402 with PEC terminations): `docs/education/ru/lumped_and_circuit.html`.
 
 ## 13. Driving the window: the control channel
 

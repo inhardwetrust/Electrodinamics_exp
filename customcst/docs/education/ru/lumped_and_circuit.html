@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lumped и Circuit</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@500;700&family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,600;1,7..72,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a lab notebook. One reading column, a sticky contents rail on wide screens, demos as instrument panels. */
+:root {
+  --bg: #f3f5f4;
+  --paper: #fbfcfb;
+  --ink: #17232b;
+  --muted: #5b6970;
+  --rule: #d5dcdc;
+  --accent: #0b6f80;      /* the incident wave, the line */
+  --warm: #b85f00;        /* the reflected wave, the warnings */
+  --band: rgba(11, 111, 128, 0.10);
+  --good: #2f7d32;
+  --f-display: "Unbounded", "Trebuchet MS", sans-serif;
+  --f-body: "Literata", Georgia, "Times New Roman", serif;
+  --f-mono: "IBM Plex Mono", Consolas, "Courier New", monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1417; --paper: #141c20; --ink: #dfe7e8; --muted: #93a3a8; --rule: #2a383d;
+    --accent: #4fc0d0; --warm: #f0a14a; --band: rgba(79, 192, 208, 0.12); --good: #7cc47f;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1417; --paper: #141c20; --ink: #dfe7e8; --muted: #93a3a8; --rule: #2a383d;
+  --accent: #4fc0d0; --warm: #f0a14a; --band: rgba(79, 192, 208, 0.12); --good: #7cc47f;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { margin: 0; }
+body {
+  background: var(--bg); color: var(--ink); font-family: var(--f-body); font-size: 17px; line-height: 1.62;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 32px 80px;
+}
+.wrap { max-width: 1180px; margin: 0 auto; display: grid; grid-template-columns: 1fr; gap: 40px; }
+@media (min-width: 1100px) { .wrap { grid-template-columns: 220px minmax(0, 1fr); } }
+nav.toc { display: none; }
+@media (min-width: 1100px) {
+  nav.toc { display: block; position: sticky; top: calc(24px + env(safe-area-inset-top, 0px)); align-self: start;
+    font-family: var(--f-mono); font-size: 12.5px; line-height: 1.5; }
+  nav.toc a { display: block; color: var(--muted); text-decoration: none; padding: 4px 0 4px 10px; border-left: 2px solid var(--rule); }
+  nav.toc a:hover, nav.toc a:focus-visible { color: var(--accent); border-left-color: var(--accent); }
+}
+main { min-width: 0; max-width: 820px; }
+header.hero { padding-bottom: 28px; border-bottom: 1px solid var(--rule); margin-bottom: 8px; }
+.eyebrow { font-family: var(--f-mono); font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); }
+h1 { font-family: var(--f-display); font-weight: 700; font-size: clamp(30px, 5vw, 46px); line-height: 1.1; margin: 10px 0 14px; text-wrap: balance; letter-spacing: -0.01em; }
+h2 { font-family: var(--f-display); font-weight: 500; font-size: 24px; line-height: 1.25; margin: 0 0 14px; text-wrap: balance; }
+h2 .num { color: var(--accent); margin-right: 10px; }
+h3 { font-family: var(--f-body); font-weight: 600; font-size: 19px; margin: 26px 0 8px; }
+section { padding-top: 44px; scroll-margin-top: 16px; }
+p { margin: 0 0 14px; max-width: 68ch; }
+.lead { font-size: 19px; color: var(--muted); max-width: 62ch; }
+a { color: var(--accent); }
+code, .mono { font-family: var(--f-mono); font-size: 0.86em; }
+ul, ol { padding-left: 22px; margin: 0 0 14px; max-width: 66ch; }
+li { margin-bottom: 6px; }
+strong { font-weight: 600; }
+
+.formula { font-family: var(--f-body); font-style: italic; font-size: 20px; background: var(--paper); border: 1px solid var(--rule);
+  padding: 14px 18px; margin: 4px 0 16px; overflow-x: auto; display: flex; flex-wrap: wrap; gap: 8px 28px; align-items: center; }
+.formula .note { font-style: normal; font-size: 14px; color: var(--muted); font-family: var(--f-mono); }
+.frac { display: inline-flex; flex-direction: column; vertical-align: middle; text-align: center; margin: 0 4px; }
+.frac > span:first-child { border-bottom: 1px solid currentColor; padding: 0 4px; }
+.frac > span:last-child { padding: 0 4px; }
+.sqrt { border-top: 1px solid currentColor; padding: 0 2px; margin-left: 1px; }
+.sqrt::before { content: "√"; margin-right: 1px; }
+
+.callout { border-left: 3px solid var(--warm); background: var(--paper); padding: 12px 16px; margin: 6px 0 18px; max-width: 72ch; }
+.callout.info { border-left-color: var(--accent); }
+.callout p:last-child { margin-bottom: 0; }
+.callout .tag { font-family: var(--f-mono); font-size: 11.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--warm); display: block; margin-bottom: 4px; }
+.callout.info .tag { color: var(--accent); }
+
+.tablebox { overflow-x: auto; margin: 6px 0 18px; }
+table { border-collapse: collapse; font-size: 15px; min-width: 420px; }
+th, td { text-align: left; padding: 7px 14px 7px 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-family: var(--f-mono); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+td.n { font-family: var(--f-mono); font-variant-numeric: tabular-nums; font-size: 14px; white-space: nowrap; }
+
+.panel { background: var(--paper); border: 1px solid var(--rule); padding: 18px; margin: 10px 0 22px; }
+.panel .ptitle { font-family: var(--f-mono); font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent); margin-bottom: 12px; }
+.panel .plots { display: grid; grid-template-columns: 1fr; gap: 14px; }
+@media (min-width: 760px) { .panel .plots.two { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); } }
+.cv { width: 100%; height: 300px; display: block; }
+.cv.sq { aspect-ratio: 1 / 1; height: auto; max-width: 100%; }
+.cv.tall { height: 340px; }
+.controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px 22px; margin-top: 14px; }
+.ctl { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; font-family: var(--f-mono); font-size: 13px; align-items: center; }
+.ctl label { color: var(--muted); }
+.ctl output { font-variant-numeric: tabular-nums; color: var(--ink); }
+.ctl input[type=range] { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); }
+.readout { display: flex; flex-wrap: wrap; gap: 8px 22px; margin-top: 14px; font-family: var(--f-mono); font-size: 13.5px; font-variant-numeric: tabular-nums; }
+.readout b { font-weight: 500; color: var(--accent); }
+.readout .warn b { color: var(--warm); }
+.btns { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+button { font-family: var(--f-mono); font-size: 13px; padding: 7px 12px; background: transparent; color: var(--accent); border: 1px solid var(--accent); cursor: pointer; }
+button:hover { background: var(--band); }
+button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-family: var(--f-mono); font-size: 12.5px; color: var(--muted); margin-top: 8px; }
+.legend i { display: inline-block; width: 18px; height: 3px; vertical-align: middle; margin-right: 6px; }
+.svgbox { overflow-x: auto; margin: 6px 0 18px; }
+.svgbox svg { min-width: 640px; width: 100%; height: auto; display: block; }
+svg .ink { stroke: var(--ink); fill: none; }
+svg .inkfill { fill: var(--ink); }
+svg .acc { stroke: var(--accent); fill: none; }
+svg .accfill { fill: var(--accent); }
+svg .warm { stroke: var(--warm); fill: none; }
+svg .warmfill { fill: var(--warm); }
+svg .mut { fill: var(--muted); }
+svg .paper { fill: var(--paper); stroke: var(--rule); }
+svg text { font-family: var(--f-mono); font-size: 12px; }
+.steps { counter-reset: s; list-style: none; padding: 0; max-width: 72ch; }
+.steps > li { counter-increment: s; position: relative; padding: 0 0 14px 44px; margin: 0; }
+.steps > li::before { content: counter(s); position: absolute; left: 0; top: 0; font-family: var(--f-display); font-size: 15px; color: var(--accent);
+  width: 30px; height: 30px; border: 1px solid var(--accent); display: grid; place-items: center; }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; font-size: 15.5px; max-width: 72ch; margin-bottom: 14px; }
+.kv dt { font-family: var(--f-mono); font-size: 13.5px; color: var(--accent); }
+.kv dd { margin: 0; }
+@media (max-width: 520px) { .kv { grid-template-columns: 1fr; } .kv dd { margin-bottom: 8px; } }
+footer { margin-top: 56px; padding-top: 18px; border-top: 1px solid var(--rule); color: var(--muted); font-size: 14px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; scroll-behavior: auto !important; } }
+details.raw { background: var(--paper); border: 1px solid var(--rule); padding: 12px 16px; margin: 8px 0 18px; }
+details.raw summary { font-family: var(--f-mono); font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent); cursor: pointer; }
+details.raw .q { font-style: italic; color: var(--muted); border-left: 3px solid var(--warm); padding-left: 10px; margin-top: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav class="toc" aria-label="Содержание">
+  <a href="#why">0. Зачем это</a>
+  <a href="#two">1. Два способа вставить деталь</a>
+  <a href="#how">2. Что делает расчёт, что делает Circuit</a>
+  <a href="#ref">3. Порт 50 Ом и резистор 51 Ом</a>
+  <a href="#bare">4. Голый порт и деталь с телом</a>
+  <a href="#portl">5. port_l</a>
+  <a href="#kinds">6. Какие элементы есть</a>
+  <a href="#recipe">7. Рецепт: сделать самому</a>
+  <a href="#choose">8. Что когда выбирать</a>
+  <a href="#traps">9. Ловушки</a>
+  <a href="#raw">10. Ответы из диалога</a>
+</nav>
+<main>
+<header class="hero">
+  <div class="eyebrow">customcst · методичка · lumped и Circuit</div>
+  <h1>Деталь в модели: lumped-тело, порт и Circuit</h1>
+  <p class="lead">Как вставить в 3D-модель резистор, конденсатор или целый чип так, чтобы менять номинал без пересчёта. Что такое порт на 50 Ом и почему он не складывается с резистором 51 Ом. Зачем рисовать у детали металлические торцы и что такое port_l. На примере 0402 51 Ом на пине RFC (модели <code>j4_half_clean</code> и <code>j4_half_rstd</code>).</p>
+</header>
+
+<section id="why">
+<h2><span class="num">0</span>Зачем это</h2>
+<p>В модели платы почти всегда есть детали: разделительный конденсатор, нагрузка, чип. Номиналы мы подбираем, а чип часто есть только в виде файла S-параметров. Пересчитывать 3D (часы) ради каждого номинала — дорого. Circuit позволяет посчитать 3D один раз, а детали подставлять потом, за секунды.</p>
+<p>Старый способ — lumped-элемент телом (цилиндр, которому назначено «ты R/L/C») — описан в <a href="rf_matching.html#lumpedel">«Согласование СВЧ-тракта», раздел 12</a>. Здесь — новый способ и как они соотносятся.</p>
+</section>
+
+<section id="two">
+<h2><span class="num">1</span>Два способа вставить деталь</h2>
+<div class="tablebox"><table>
+<tr><th></th><th>Lumped-тело в геометрии</th><th>Порт + Circuit</th></tr>
+<tr><td>что это</td><td>тело, которому сказали «ты резистор 51 Ом»</td><td>порт: дырка в поле с опорой 50 Ом</td></tr>
+<tr><td>где живёт R</td><td>внутри FDTD-расчёта</td><td>в Python, после расчёта</td></tr>
+<tr><td>сменить 51 → 50</td><td>новый расчёт (часы)</td><td>число в Circuit, мгновенно</td></tr>
+<tr><td>время расчёта</td><td>не растёт</td><td>каждый порт — ещё один прогон (3 порта ≈ 3× времени)</td></tr>
+<tr><td>что можно вставить</td><td>R, L, C</td><td>R, L, C, двухполюсники T / П / линия, файлы .s1p / .s2p (чип, измеренная нагрузка), отрицательная L (port_l)</td></tr>
+<tr><td>результат для простого R</td><td>тот же</td><td>тот же</td></tr>
+</table></div>
+<p>Circuit — это расширение lumped: та же деталь, только вынесенная из расчёта поля. Как схема поверх 3D-результата в CST.</p>
+</section>
+
+<section id="how">
+<h2><span class="num">2</span>Что делает расчёт, что делает Circuit</h2>
+<ol class="steps">
+  <li><b>Расчёт.</b> Порты возбуждаются по очереди. Порт, который сейчас не возбуждается, нагружен на свои 50 Ом и поглощает то, что к нему пришло. Получается матрица S между всеми портами — например SMA, P_cap (место C6), P_pin (место резистора). Это «чёрный ящик» платы с тремя дырками.</li>
+  <li><b>Circuit.</b> Когда результат показывается, Circuit математически вставляет в каждую дырку свой элемент: R, L, C или файл. Порты, занятые элементами, исчезают; остаётся то, что не занято, — обычно только SMA, и его S11 ты видишь на графике.</li>
+  <li><b>Сменил номинал</b> — Circuit пересчитал склейку. 3D не трогается, расчёт не устаревает: Circuit не входит в «отпечаток» модели.</li>
+</ol>
+<div class="callout info"><span class="tag">та же склейка</span><p>Ровно так же <code>new_board/halves/cascade.py</code> склеивает две половинки платы и файл свича. Circuit — это то же самое, встроенное в окно customcst.</p></div>
+</section>
+
+<section id="ref">
+<h2><span class="num">3</span>Порт 50 Ом и резистор 51 Ом: как это вместе работает</h2>
+<p>Они не складываются. 50 Ом порта — это не деталь в цепи, а линейка, которой мерили: опорное сопротивление, как у VNA после калибровки.</p>
+<p>Circuit заменяет эти 50 на твой элемент, а не добавляет к ним. Математически:</p>
+<div class="formula"><span>Γ<sub>R</sub> = (Z − 50) / (Z + 50)</span><span class="note">51 Ом → 0.0099</span></div>
+<div class="formula"><span>S11<sub>платы</sub> = S11 + S12·Γ<sub>R</sub>·S21 / (1 − S22·Γ<sub>R</sub>)</span><span class="note">порт «закрыт» нагрузкой</span></div>
+<ul>
+  <li>При Z = 50 получается Γ<sub>R</sub> = 0, и остаётся S11 как посчитано. Поэтому порт без элемента означает «на нём 50 Ом».</li>
+  <li>Замена 51 → 50 меняет Γ<sub>R</sub> всего на 0.01 — почти ничего.</li>
+  <li>Опору можно было взять любую, хоть 10 Ом: после того как Circuit повесит 51 Ом, ответ тот же, это точная математика. 50 удобно, потому что детали обычно рядом.</li>
+</ul>
+</section>
+
+<section id="bare">
+<h2><span class="num">4</span>Голый порт и деталь с телом</h2>
+<p>Одна и та же нагрузка «51 Ом на пине RFC» нарисована двумя способами.</p>
+<div class="panel"><div class="ptitle">j4_half_clean: голый порт</div>
+<img src="../../images/lumped_port_bare.png" alt="Голый lumped-порт: красный конус поперёк зазора от пада пина к paddle" style="width:100%;height:auto;display:block">
+<p style="margin-top:10px">Красный конус P_pin лежит поперёк зазора: от конца пада пина к paddle (земле под чипом). Металла детали нет. В Circuit: R51, <code>port_l 0.3</code>.</p></div>
+<div class="panel"><div class="ptitle">j4_half_rstd: 0402 с настоящими торцами</div>
+<img src="../../images/lumped_port_0402_body.png" alt="0402: два серых медных торца, между ними красный конус порта" style="width:100%;height:auto;display:block">
+<p style="margin-top:10px">Два серых торца — медь (PEC) 0.25 × 0.5 × 0.35 мм: левый на паде пина, правый на paddle. Это металлические концы настоящего 0402. Порт P_pin — конус между внутренними гранями торцов, на середине высоты: там, где в резисторе резистивная плёнка. Керамики нет (её εr не учитываем). В Circuit: R51, <code>port_l 0</code>.</p></div>
+<p>Ток во втором случае идёт так: пад пина → торец → <b>[порт = плёнка = 51 Ом из Circuit]</b> → торец → paddle → виа → земля. Весь металл настоящий, в геометрии; идеален только сам номинал.</p>
+<div class="tablebox"><table>
+<tr><th>модель</th><th>на пине на 5.75 ГГц</th><th>|S11| платы (C6 1.41 пФ)</th></tr>
+<tr><td>голый порт (j4_half_clean)</td><td>≈ 51 Ом</td><td class="n">0.14 (−17 дБ)</td></tr>
+<tr><td>0402 с торцами (j4_half_rstd)</td><td>≈ 53.5 + j18 Ом</td><td class="n">0.28 (−10.8 дБ)</td></tr>
+<tr><td>стенд (тот же 0402 запаян)</td><td></td><td class="n">0.31 (−10.3 дБ)</td></tr>
+</table></div>
+<p>Тело детали со своими ~0.5 нГн (корпус + возврат тока через paddle) отражает больше, чем разница 51 и 50 Ом. Поэтому в <code>j4_half_rstd</code> замена 51 → 50 ничего не меняет, а стенд совпадает только с моделью, где деталь нарисована.</p>
+</section>
+
+<section id="portl">
+<h2><span class="num">5</span>port_l: когда 0.3, а когда 0</h2>
+<p>У самого lumped-порта есть путь тока по краю ячеек сетки — и у него своя индуктивность, ~0.3 нГн на зазоре в доли миллиметра. В реальности её нет. <code>port_l</code> (нГн) снимает её у каждого элемента последовательно, то есть вставляет отрицательную L.</p>
+<ul>
+  <li><b>Голый порт (<code>j4_half_clean</code>, C6 в обеих моделях):</b> <code>port_l 0.3</code>. Порт стоит вместо всей детали, его лишняя L не нужна. С port_l 0.3 деталь ведёт себя так же, как старое lumped-тело с теми же номиналами.</li>
+  <li><b>Порт внутри детали с торцами (<code>j4_half_rstd</code>):</b> <code>port_l 0</code>. Индуктивность резистора уже в геометрии (торцы + возврат через paddle), порт короткий.</li>
+</ul>
+</section>
+
+<section id="kinds">
+<h2><span class="num">6</span>Какие элементы есть в Circuit</h2>
+<div class="tablebox"><table>
+<tr><th>kind</th><th>портов</th><th>что это</th></tr>
+<tr><td><code>rlc</code></td><td>1</td><td>R, L, C последовательно (series) или параллельно (parallel), замыкает порт. series со всеми 0 = перемычка (short), parallel со всеми 0 = обрыв (open)</td></tr>
+<tr><td><code>series</code></td><td>2</td><td>R, L, C между двумя портами</td></tr>
+<tr><td><code>t</code></td><td>2</td><td>T-звено: L1 + R1, C на землю, R2 + L2</td></tr>
+<tr><td><code>pi</code></td><td>2</td><td>П-звено: C1 на землю, L + R, C2 на землю</td></tr>
+<tr><td><code>line</code></td><td>2</td><td>отрезок линии: Z0, задержка (пс), потери (дБ/ГГц)</td></tr>
+<tr><td><code>touchstone</code></td><td>N</td><td>файл .sNp (RI / MA / DB): чип, измеренная нагрузка; пересчитывается к опоре портов, интерполируется, вне своей полосы — NaN</td></tr>
+</table></div>
+<p>У каждого элемента есть <code>port_l</code>. Подробно, с форматом в .toml: <code>REFERENCE.md</code>, раздел 12 «Circuit elements on the ports».</p>
+</section>
+
+<section id="recipe">
+<h2><span class="num">7</span>Рецепт: сделать самому</h2>
+<ol class="steps">
+  <li><b>Геометрия (myCad / part.toml).</b> Нарисовать металл детали (торцы) и тело-порт между ними: короткое, вдоль тока, там, где активная часть детали (плёнка резистора, диэлектрик конденсатора). Если тело детали не важно — просто конус поперёк зазора.</li>
+  <li><b>customcst.</b> Правый клик по телу: торцам тип <b>PEC</b>, порту тип <b>port</b>, impedance <b>50</b>.</li>
+  <li><b>Расчёт.</b> Excite = all ports (нужна вся матрица S). Один расчёт на все номиналы.</li>
+  <li><b>После расчёта.</b> В дереве группа <b>Circuit</b> → правый клик → Add element: kind <code>rlc</code>, topology series, r 51 (или l, c), порт P_pin (двойной клик по строке порта), port_l. <b>Галка = подключено.</b></li>
+  <li><b>Варианты.</b> Несколько элементов на один порт (R51 / short / open) — включать по одному. Или Add Touchstone file — как свич на пине.</li>
+  <li><b>Проверка.</b> Маркер на нужной частоте: для <code>j4_half_rstd</code> на 5.75 ГГц ≈ −10.8 дБ, |S11| 0.28.</li>
+</ol>
+<div class="callout info"><span class="tag">потренироваться</span><p><code>QandA/02_z0/sandbox/j4_half_rstd</code>: копия с готовым расчётом, у P_pin снято назначение, R51 удалён. Назначь P_pin → port, 50 Ом (как было) — отпечаток модели совпадёт, и расчёт снова станет актуальным, пересчитывать не нужно. Потом добавь R51 и сравни с −10.8 дБ.</p></div>
+<p><b>Правило:</b> металл детали — в геометрию, номинал — в Circuit, порт — короткий и на месте активной части. Тогда Circuit добавляет только то, что действительно «идеально», а всё паразитное считает поле.</p>
+</section>
+
+<section id="choose">
+<h2><span class="num">8</span>Что когда выбирать</h2>
+<ul>
+  <li><b>Номинал известен и менять его не будешь</b> (подтяжки, блокировочные кондёры, стандартная нагрузка) — lumped-тело. Дешевле по времени.</li>
+  <li><b>Номинал подбираешь, или вместо детали стоит сложная штука</b> (свич из .s2p, кондёр согласования, тестовая нагрузка open / short / 51) — порт + Circuit. Один расчёт, дальше перебор за секунды. Так сделаны C6, C2 и свич на новой короткой плате.</li>
+  <li><b>Стандарт для сравнения со стендом</b> (резистор, перемычка, обрыв) — рисуй его телом, порт внутри: голый порт врёт на 0.1–0.2 по |Γ| (раздел 4).</li>
+</ul>
+</section>
+
+<section id="traps">
+<h2><span class="num">9</span>Ловушки</h2>
+<ul>
+  <li><b>Снятая галка — не обрыв и не перемычка.</b> Порт без элемента остаётся внешним портом результата на своих 50 Ом. Обрыв — parallel со всеми 0, перемычка — series со всеми 0 (или C = 1000 пФ вместо кондёра).</li>
+  <li><b>Сменил impedance порта или его тип</b> — это меняет модель, расчёт устаревает. Номиналы в Circuit — нет.</li>
+  <li><b>C в series-резисторе — последовательно.</b> Ёмкость «к резистору» (паразит) ставится в parallel, иначе получится разделительный конденсатор.</li>
+  <li><b>Каждый порт — ещё один прогон.</b> Не делай портами детали, которые не собираешься менять.</li>
+  <li><b>Забыл port_l у голого порта</b> — лишние ~0.3 нГн, на 5.75 ГГц это +11 Ом последовательно.</li>
+  <li><b>touchstone вне своей полосы</b> — NaN: график обрывается там, где кончается файл.</li>
+</ul>
+</section>
+
+<section id="raw">
+<h2><span class="num">10</span>Ответы из диалога</h2>
+<details class="raw" open><summary>Ответ из диалога</summary>
+<p class="q">Вопрос: как мы сделали lumped с настоящей геометрией? Два контакта как геометрия, потом как-то присоединили R51… Раньше lumped был просто цилиндр одним телом.</p>
+<p>Два медных торца (PEC) — обычные тела геометрии: левый на паде пина, правый на paddle. Между ними порт P_pin — конус на середине высоты, там, где резистивная плёнка. В Circuit на P_pin — R51, series, port_l 0. Ток: пад → торец → [порт = 51 Ом из Circuit] → торец → paddle → виа → земля. Металл настоящий, идеален только номинал. Раньше цилиндр был сам и металлом, и номиналом — и номинал жил внутри расчёта.</p>
+<p class="q">Вопрос: порт у нас 50 Ом, а резистор 51 — как это вместе работает?</p>
+<p>Они не складываются. 50 Ом порта — линейка, которой мерили. Circuit заменяет эти 50 на элемент: Γ<sub>R</sub> = (51 − 50)/(51 + 50) = 0.0099, S11 = S11 + S12·Γ<sub>R</sub>·S21/(1 − S22·Γ<sub>R</sub>). При Z = 50 Γ<sub>R</sub> = 0 — остаётся посчитанное. Опора может быть любой: ответ тот же.</p>
+<p class="q">Вопрос: Circuit — это расширение lumped? Можно было вставить lumped вместо порта, но тогда любое изменение номинала — пересчёт?</p>
+<p>Да. Lumped-тело: время не растёт, но номинал — новый расчёт. Порт + Circuit: каждый порт — прогон, зато номиналы, файлы S-параметров и отрицательная L — мгновенно. Номинал известен — lumped; подбираешь или вставляешь чип — порт + Circuit.</p>
+</details>
+</section>
+
+<footer>customcst · <code>docs/education/ru/lumped_and_circuit.html</code> · справочник: <code>REFERENCE.md</code> §12 · lumped-тело: <a href="rf_matching.html#lumpedel">rf_matching.html §12</a></footer>
+</main>
+</div>
+</body>
+</html>
